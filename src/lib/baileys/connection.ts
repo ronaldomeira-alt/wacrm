@@ -263,3 +263,22 @@ export function getConnectionStatus(
 ): 'connecting' | 'open' | 'closed' | undefined {
   return connections.get(accountId)?.status
 }
+
+/**
+ * Polls up to `timeoutMs` (checking every ~1.5s) for a connection that's
+ * mid-reconnect to finish its handshake. Used by the envios cron so a
+ * lead due right as a reconnect is wrapping up doesn't have to wait for
+ * the next ~30s tick. Returns as soon as the status stops being
+ * 'connecting' (either 'open' or 'closed'/gone), or on timeout.
+ */
+export async function waitForOpen(accountId: string, timeoutMs: number): Promise<boolean> {
+  const pollMs = 1_500
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const status = getConnectionStatus(accountId)
+    if (status === 'open') return true
+    if (status !== 'connecting') return false
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
+  return getConnectionStatus(accountId) === 'open'
+}

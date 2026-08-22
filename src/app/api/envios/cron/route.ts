@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 
 import { supabaseAdmin } from '@/lib/baileys/admin-client'
-import { getOrCreateConnection, isConnected, getConnectionStatus } from '@/lib/baileys/connection'
+import { getOrCreateConnection, isConnected, getConnectionStatus, waitForOpen } from '@/lib/baileys/connection'
 import { sendText, sendImageWithCaption, BaileysSendError } from '@/lib/baileys/send'
 import { randomAttemptDelayMs } from '@/lib/envios/lote-engine'
 import { sendPushToAccount } from '@/lib/push/send'
@@ -86,6 +86,12 @@ export async function GET(request: Request) {
     if (!claimed) continue
 
     await getOrCreateConnection(envio.account_id as string)
+    if (!isConnected(envio.account_id as string) && getConnectionStatus(envio.account_id as string) === 'connecting') {
+      // A reconnect is already in flight for this lead's exact moment —
+      // wait a bit here instead of giving up immediately, cheaper than
+      // the ~30s until the next tick.
+      await waitForOpen(envio.account_id as string, 12_000)
+    }
     if (!isConnected(envio.account_id as string)) {
       // Give the lead back to the queue either way.
       await db
