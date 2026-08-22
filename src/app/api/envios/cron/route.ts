@@ -5,6 +5,7 @@ import { supabaseAdmin } from '@/lib/baileys/admin-client'
 import { getOrCreateConnection, isConnected, getConnectionStatus } from '@/lib/baileys/connection'
 import { sendText, sendImageWithCaption, BaileysSendError } from '@/lib/baileys/send'
 import { randomAttemptDelayMs } from '@/lib/envios/lote-engine'
+import { sendPushToAccount } from '@/lib/push/send'
 
 /**
  * Envios queue tick — mirrors GET /api/automations/cron (same
@@ -103,6 +104,15 @@ export async function GET(request: Request) {
       // session, don't keep retrying.
       await db.from('envio_lotes').update({ status: 'pausado' }).eq('id', lote.id)
       paused++
+      // Fire-and-forget, same pattern as the webhook's push notify —
+      // sendPushToAccount() never throws and no-ops silently without
+      // VAPID configured.
+      void sendPushToAccount(envio.account_id as string, {
+        title: 'Envio pausado',
+        body: 'A conexão do WhatsApp caiu e o lote foi pausado. Reconecte em Configurações para retomar.',
+        url: `/campaigns/envios/${lote.envio_id}`,
+        tag: `wacrm-envio-pausado-${lote.id}`,
+      })
       continue
     }
 
