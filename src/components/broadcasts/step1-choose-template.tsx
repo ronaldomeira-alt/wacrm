@@ -22,6 +22,7 @@ import {
   Plus,
   RefreshCw,
   ImagePlus,
+  X,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { TemplatePickerModal } from './template-picker-modal';
@@ -30,6 +31,13 @@ import { categoryColors } from './template-category-colors';
 /** Same bucket message-composer.tsx / template-manager.tsx upload chat/template media to. */
 const CHAT_MEDIA_BUCKET = 'chat-media';
 
+/** Reasonable ceiling on A/B/C+ variants — each is hand-typed here, unlike Envios' N-lotes split. */
+export const MAX_MESSAGE_VARIANTS = 5;
+
+function variantLetter(index: number): string {
+  return String.fromCharCode(65 + index);
+}
+
 type SendChannel = 'api' | 'external';
 
 interface Step1Props {
@@ -37,8 +45,9 @@ interface Step1Props {
   onSendChannelChange: (channel: SendChannel) => void;
   selectedTemplate: MessageTemplate | null;
   onSelectTemplate: (template: MessageTemplate) => void;
-  messageText: string;
-  onMessageTextChange: (text: string) => void;
+  /** Always length >= 1. Index 0 is the default/only message when there's just one; 2+ entries are A/B/C+ variants rotated round-robin across recipients at export time. */
+  messageVariants: string[];
+  onMessageVariantsChange: (variants: string[]) => void;
   imageUrl: string;
   onImageUrlChange: (url: string) => void;
   onNext: () => void;
@@ -58,8 +67,8 @@ export function Step1ChooseTemplate({
   onSendChannelChange,
   selectedTemplate,
   onSelectTemplate,
-  messageText,
-  onMessageTextChange,
+  messageVariants,
+  onMessageVariantsChange,
   imageUrl,
   onImageUrlChange,
   onNext,
@@ -131,7 +140,24 @@ export function Step1ChooseTemplate({
   }
 
   const isValid =
-    sendChannel === 'api' ? Boolean(selectedTemplate) : messageText.trim().length > 0;
+    sendChannel === 'api'
+      ? Boolean(selectedTemplate)
+      : messageVariants.length > 0 && messageVariants.every((v) => v.trim().length > 0);
+
+  function updateVariant(index: number, value: string) {
+    const next = [...messageVariants];
+    next[index] = value;
+    onMessageVariantsChange(next);
+  }
+
+  function addVariant() {
+    if (messageVariants.length >= MAX_MESSAGE_VARIANTS) return;
+    onMessageVariantsChange([...messageVariants, '']);
+  }
+
+  function removeVariant(index: number) {
+    onMessageVariantsChange(messageVariants.filter((_, i) => i !== index));
+  }
 
   return (
     <div className="space-y-6">
@@ -233,17 +259,51 @@ export function Step1ChooseTemplate({
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="rounded-xl border border-border bg-card/50 p-4">
-            <label className="mb-1.5 block text-sm font-medium text-foreground">
-              {t('chooseTemplate.messageLabel')}
-            </label>
-            <Textarea
-              value={messageText}
-              onChange={(e) => onMessageTextChange(e.target.value)}
-              placeholder={t('chooseTemplate.messagePlaceholder')}
-              className="min-h-32 border-border bg-muted text-foreground placeholder:text-muted-foreground"
-            />
-            <p className="mt-1.5 text-xs text-muted-foreground">{t('chooseTemplate.messageHint')}</p>
+          <div className="rounded-xl border border-border bg-card/50 p-4 space-y-4">
+            {messageVariants.map((variant, i) => (
+              <div key={i}>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <label className="block text-sm font-medium text-foreground">
+                    {messageVariants.length > 1
+                      ? t('chooseTemplate.variantLabel', { letter: variantLetter(i) })
+                      : t('chooseTemplate.messageLabel')}
+                  </label>
+                  {i > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => removeVariant(i)}
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label={t('chooseTemplate.removeVariantButton')}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <Textarea
+                  value={variant}
+                  onChange={(e) => updateVariant(i, e.target.value)}
+                  placeholder={t('chooseTemplate.messagePlaceholder')}
+                  className="min-h-32 border-border bg-muted text-foreground placeholder:text-muted-foreground"
+                />
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              {messageVariants.length > 1
+                ? t('chooseTemplate.variantsHint')
+                : t('chooseTemplate.messageHint')}
+            </p>
+            {messageVariants.length < MAX_MESSAGE_VARIANTS && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addVariant}
+                className="border-dashed border-border text-muted-foreground"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t('chooseTemplate.addVariantButton')}
+              </Button>
+            )}
           </div>
           <div className="rounded-xl border border-border bg-card/50 p-4">
             <label className="mb-1.5 block text-sm font-medium text-foreground">

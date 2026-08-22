@@ -33,7 +33,7 @@ export default function NewCampaignPage() {
   const [currentStep, setCurrentStep] = useState(0);
   const [sendChannel, setSendChannel] = useState<SendChannel>('api');
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
-  const [messageText, setMessageText] = useState('');
+  const [messageVariants, setMessageVariants] = useState<string[]>(['']);
   const [imageUrl, setImageUrl] = useState('');
   const [audience, setAudience] = useState<AudienceConfig>({ type: 'all' });
   const [variables, setVariables] = useState<
@@ -48,6 +48,11 @@ export default function NewCampaignPage() {
   // for a path that has nothing to personalize (spec section 1/2).
   const personalizeStepIndex = 2;
   const sendStepIndex = sendChannel === 'external' ? 2 : 3;
+
+  /** Trimmed, non-empty variants only — used whenever we persist to Supabase (spec: adapt existing structure, no half-typed variant rows). */
+  function cleanVariants(variants: string[]): string[] {
+    return variants.map((v) => v.trim()).filter(Boolean);
+  }
 
   function goToAudienceNext() {
     setCurrentStep(sendChannel === 'external' ? sendStepIndex : personalizeStepIndex);
@@ -106,7 +111,7 @@ export default function NewCampaignPage() {
               name,
               description,
               audience,
-              messageText,
+              messageVariants: cleanVariants(messageVariants),
               imageUrl,
             },
       );
@@ -146,6 +151,7 @@ export default function NewCampaignPage() {
       return;
     }
 
+    const draftVariants = sendChannel === 'external' ? cleanVariants(messageVariants) : [];
     const { error } = await supabase.from('broadcasts').insert({
       user_id: user.id,
       account_id: accountId,
@@ -155,7 +161,8 @@ export default function NewCampaignPage() {
       template_name: sendChannel === 'api' ? (template?.name ?? null) : null,
       template_language: sendChannel === 'api' ? (template?.language ?? 'en_US') : 'en_US',
       template_variables: sendChannel === 'api' ? variables : null,
-      message_text: sendChannel === 'external' ? messageText.trim() || null : null,
+      message_text: sendChannel === 'external' ? draftVariants[0] || null : null,
+      message_variants: sendChannel === 'external' && draftVariants.length > 1 ? draftVariants : null,
       header_media_url: sendChannel === 'api' ? headerMediaUrl.trim() || null : imageUrl.trim() || null,
       audience_filter: {
         type: audience.type,
@@ -250,8 +257,8 @@ export default function NewCampaignPage() {
               onSendChannelChange={setSendChannel}
               selectedTemplate={template}
               onSelectTemplate={setTemplate}
-              messageText={messageText}
-              onMessageTextChange={setMessageText}
+              messageVariants={messageVariants}
+              onMessageVariantsChange={setMessageVariants}
               imageUrl={imageUrl}
               onImageUrlChange={setImageUrl}
               onNext={() => setCurrentStep(1)}
@@ -285,7 +292,7 @@ export default function NewCampaignPage() {
               onDescriptionChange={setDescription}
               sendChannel={sendChannel}
               template={template}
-              messageText={messageText}
+              messageVariants={messageVariants}
               imageUrl={imageUrl}
               audience={audience}
               onSend={handleSend}

@@ -79,8 +79,16 @@ type BroadcastPayload =
       description?: string;
       sendChannel: 'external';
       audience: AudienceConfig;
-      /** Free-text message body — no template, no variable mapping. */
-      messageText: string;
+      /**
+       * Free-text message variant(s) — no template, no variable
+       * mapping. Trimmed, non-empty entries only (spec: A/B/C+
+       * message-variant authoring, migration 081). Index 0 persists as
+       * `broadcasts.message_text` (the default/legacy single-message
+       * field); 2+ entries also persist the full array to
+       * `broadcasts.message_variants` for round-robin rotation across
+       * recipients at export time.
+       */
+      messageVariants: string[];
       /** Optional image to send alongside the message. */
       imageUrl?: string;
     };
@@ -538,7 +546,11 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
             }
           : {
               template_name: null,
-              message_text: payload.messageText.trim(),
+              message_text: payload.messageVariants[0]?.trim() ?? '',
+              message_variants:
+                payload.messageVariants.length > 1
+                  ? payload.messageVariants.map((v) => v.trim())
+                  : null,
               header_media_url: payload.imageUrl?.trim() || null,
             }),
         audience_filter: {

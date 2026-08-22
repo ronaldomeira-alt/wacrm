@@ -697,8 +697,10 @@ export interface Broadcast {
   template_name: string | null;
   template_language: string;
   template_variables?: Record<string, unknown>;
-  /** Free-text body for send_channel = 'external' — migration 076. */
+  /** Free-text body for send_channel = 'external' — migration 076. When message_variants is set, this holds variant A (index 0) for backward compatibility. */
   message_text?: string | null;
+  /** A/B/C+ message variants for send_channel = 'external' (migration 081) — 2+ entries means recipients rotate through them round-robin in send order; NULL/single entry = message_text alone is used, unchanged. */
+  message_variants?: string[] | null;
   audience_filter?: Record<string, unknown>;
   /** Media header URL (API) or the optional external-message image (migration 076). */
   header_media_url?: string | null;
