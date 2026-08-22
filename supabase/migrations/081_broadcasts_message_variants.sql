@@ -1,0 +1,28 @@
+-- ============================================================
+-- 081_broadcasts_message_variants.sql — A/B/C+ message variants for
+-- 'external'-channel campaigns (migration 076/077).
+--
+-- Corrects where variant authoring belongs: the Envios upload step
+-- (migration 080) already RUNS variants — it accepts a `messages`
+-- array in the uploaded JSON and rotates leads through it round-robin
+-- per lote — but that JSON is supposed to be produced by the Campanhas
+-- "Criar campanha" flow (Step1's message field + "Exportar para Claude
+-- Code"), not hand-authored. This migration adds the missing piece:
+-- variant authoring at campaign-creation time.
+--
+-- broadcasts.message_variants — nullable JSONB array of strings.
+--   NULL (the common case): single message, unchanged behavior —
+--     broadcasts.message_text alone is the source of truth, exactly as
+--     before this migration.
+--   2+ entries: A/B/C+ variants. message_text still holds variant A
+--     (index 0) for backward compatibility with anything reading it
+--     directly (e.g. POST /api/v1/campaigns, which has no concept of
+--     variants and only ever sets message_text); message_variants
+--     holds the full array and is what the review/export step
+--     (external-campaign-review.tsx) rotates recipients through and
+--     includes as the exported JSON's top-level `messages` field.
+--
+-- Idempotent — safe to run multiple times.
+-- ============================================================
+
+ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS message_variants JSONB;

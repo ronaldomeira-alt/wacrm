@@ -1053,6 +1053,7 @@
       "exportForCloudCode": "Exportar para Claude Code",
       "unknownContact": "Contato desconhecido",
       "edited": "Editado",
+      "variantBadge": "Variante {letter}",
       "resetToDefault": "Restaurar padrão",
       "editMessage": "Editar",
       "removeRecipient": "Remover",
@@ -1099,6 +1100,10 @@
         "messageLabel": "Mensagem",
         "messagePlaceholder": "Oi '{{nome}}', tudo bem? ...",
         "messageHint": "Use '{{nome}}' para o nome do contato. Você poderá revisar e editar a mensagem de cada destinatário individualmente antes de aprovar.",
+        "variantLabel": "Variante {letter}",
+        "addVariantButton": "Adicionar variante (teste A/B)",
+        "removeVariantButton": "Remover variante",
+        "variantsHint": "Cada destinatário recebe uma das variantes, distribuídas em rodízio. Você poderá revisar e editar a mensagem de cada destinatário individualmente antes de aprovar.",
         "imageLabel": "Imagem (opcional)",
         "imagePlaceholder": "https://exemplo.com/imagem.jpg",
         "addImageButton": "Adicionar imagem",
@@ -1238,6 +1243,7 @@
         "channelApiBadge": "Envio via WACRM — template oficial pela API do WhatsApp",
         "channelExternalBadge": "Envio Externo — WhatsApp Web (manual)",
         "messagePreview": "Mensagem",
+        "variantLabel": "Variante {letter}",
         "externalExplainer": "O WACRM prepara e registra os destinatários. O envio será feito manualmente pelo WhatsApp Web, e o resultado deve ser reportado de volta para atualizar o histórico.",
         "prepareExternal": "Preparar campanha"
       }

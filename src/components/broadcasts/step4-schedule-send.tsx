@@ -28,8 +28,8 @@ interface Step4Props {
   sendChannel: SendChannel;
   /** Required (non-null) when sendChannel === 'api'. */
   template: MessageTemplate | null;
-  /** Required (non-empty) when sendChannel === 'external'. */
-  messageText: string;
+  /** Required (non-empty entries) when sendChannel === 'external'. 2+ entries are A/B/C+ variants. */
+  messageVariants: string[];
   imageUrl: string;
   audience: AudienceConfig;
   /** 'api' only — WACRM never sends 'external' campaigns itself (spec section 4/7). */
@@ -63,7 +63,7 @@ export function Step4ScheduleSend({
   onDescriptionChange,
   sendChannel,
   template,
-  messageText,
+  messageVariants,
   imageUrl,
   audience,
   onSend,
@@ -170,7 +170,20 @@ export function Step4ScheduleSend({
           ) : (
             <div className="col-span-2">
               <p className="text-xs text-muted-foreground">{t('scheduleSend.messagePreview')}</p>
-              <p className="whitespace-pre-wrap text-foreground">{messageText}</p>
+              {messageVariants.length > 1 ? (
+                <div className="space-y-1">
+                  {messageVariants.map((variant, i) => (
+                    <p key={i} className="whitespace-pre-wrap text-foreground">
+                      <span className="font-medium">
+                        {t('scheduleSend.variantLabel', { letter: String.fromCharCode(65 + i) })}:{' '}
+                      </span>
+                      {variant}
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <p className="whitespace-pre-wrap text-foreground">{messageVariants[0]}</p>
+              )}
               {imageUrl.trim() && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img

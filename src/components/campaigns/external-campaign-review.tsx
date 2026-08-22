@@ -55,6 +55,9 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
 
   const isApproved = Boolean(campaign.approved_at);
   const template = campaign.message_text ?? '';
+  /** 2+ entries only — a single-entry array is functionally the same as no variants, so it's treated as the plain template path. */
+  const variants =
+    campaign.message_variants && campaign.message_variants.length > 1 ? campaign.message_variants : null;
 
   // Send order = the order recipients were added to the campaign, not
   // the "newest first" order the parent page displays the status
@@ -71,14 +74,26 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
     return byCreatedAt !== 0 ? byCreatedAt : a.id.localeCompare(b.id);
   });
 
-  function messageFor(r: BroadcastRecipient): string {
+  /**
+   * `index` is the recipient's position in `ordered` (send order) —
+   * variants rotate round-robin across that order, same rule as
+   * Envios' per-lote rotation (`variantIndexForPosition`), just without
+   * the lote boundary since Campaigns has a single flat recipient list.
+   */
+  function messageFor(r: BroadcastRecipient, index: number): string {
     if (r.message_text != null && r.message_text !== '') return r.message_text;
+    if (variants) return variants[index % variants.length];
     return resolveExternalMessage(template, { name: r.contact?.name, phone: r.contact?.phone });
   }
 
-  function startEdit(r: BroadcastRecipient) {
+  function variantLetterFor(index: number): string | null {
+    if (!variants) return null;
+    return String.fromCharCode(65 + (index % variants.length));
+  }
+
+  function startEdit(r: BroadcastRecipient, index: number) {
     setEditingId(r.id);
-    setDraft(messageFor(r));
+    setDraft(messageFor(r, index));
   }
 
   function cancelEdit() {
@@ -171,7 +186,7 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
         contact_id: r.contact_id,
         name: r.contact?.name ?? '',
         phone: r.contact?.phone ?? '',
-        message: messageFor(r),
+        message: messageFor(r, i),
         order: i + 1,
       }));
 
@@ -187,6 +202,12 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
         // uploads a local file for 'external' campaigns) — Claude Code
         // fetches it itself. No binary bundling needed.
         creative: campaign.header_media_url ? { url: campaign.header_media_url } : null,
+        // A/B/C+ variants (migration 081) — consumed by Envios'
+        // parse-campaign-file.ts, which rotates leads through this
+        // array round-robin per lote. Omitted entirely for a
+        // single-message campaign, matching that parser's optional-field
+        // contract.
+        ...(variants ? { messages: variants } : {}),
         recipients: exportRecipients,
       };
 
@@ -275,7 +296,8 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
           {ordered.map((r, i) => {
             const isEditing = editingId === r.id;
             const isOverridden = r.message_text != null && r.message_text !== '';
-            const displayText = messageFor(r);
+            const displayText = messageFor(r, i);
+            const variantLetter = !isOverridden ? variantLetterFor(i) : null;
             const isBusy = busyId === r.id;
             return (
               <div key={r.id} className="p-4">
@@ -286,6 +308,11 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
                       {r.contact?.name ?? t('unknownContact')}
                     </p>
                     <span className="text-xs text-muted-foreground">{r.contact?.phone}</span>
+                    {variantLetter && (
+                      <span className="inline-flex items-center rounded-full border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {t('variantBadge', { letter: variantLetter })}
+                      </span>
+                    )}
                     {isOverridden && (
                       <span className="inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                         {t('edited')}
@@ -310,7 +337,7 @@ export function ExternalCampaignReview({ campaign, recipients, onRefresh }: Prop
                         variant="outline"
                         size="sm"
                         disabled={isBusy}
-                        onClick={() => startEdit(r)}
+                        onClick={() => startEdit(r, i)}
                         className="h-7 border-border text-muted-foreground hover:bg-muted"
                       >
                         <Pencil className="h-3.5 w-3.5" />
