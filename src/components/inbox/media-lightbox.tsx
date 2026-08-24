@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { X } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useTranslations } from "next-intl";
 
@@ -23,9 +23,9 @@ interface MediaLightboxProps {
   alt: string;
   /**
    * Album context: sibling images (already-resolved srcs, same
-   * convention as `src`) to step through with prev/next controls. Omit
-   * for the existing single-image behavior — every current caller keeps
-   * working unchanged.
+   * convention as `src`) to scroll through vertically, iPhone-Photos-
+   * style — see the component doc. Omit for the existing single-image
+   * behavior; every current caller keeps working unchanged.
    */
   images?: string[];
   /** Index into `images` to open on. Ignored when `images` is omitted. */
@@ -33,12 +33,19 @@ interface MediaLightboxProps {
 }
 
 /**
- * Full-bleed image viewer with hand-rolled pinch-zoom + pan (Pointer
- * Events — no library; the project has none and this is the only place
- * that needs it, see AGENTS task) plus double-tap-to-zoom and a mouse
- * wheel fallback for desktop. Reuses the shared Dialog primitive rather
+ * Full-bleed image viewer. Reuses the shared Dialog primitive rather
  * than a bespoke overlay, just overriding DialogContent to fill the
  * screen instead of the default centered card.
+ *
+ * Two modes, chosen by whether `images` has more than one entry:
+ *  - Single image (the default — every existing caller): hand-rolled
+ *    pinch-zoom + pan (Pointer Events — no library; the project has
+ *    none and this is the only place that needs it) plus double-tap-to-
+ *    zoom and a mouse wheel fallback for desktop.
+ *  - Album (2+ images): no zoom/pan, no arrow buttons — a native
+ *    vertical `scroll-snap` list, iPhone-Photos-style. The browser's own
+ *    scroll physics (touch, trackpad, or mouse wheel) drive it; the
+ *    counter tracks whichever image is currently snapped into view.
  */
 export function MediaLightbox({
   open,
@@ -97,34 +104,47 @@ export function MediaLightbox({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialIndex]);
 
-  const canPrev = index > 0;
-  const canNext = index < items.length - 1;
-
-  const goPrev = useCallback(() => {
-    if (index <= 0) return;
-    setIndex((i) => i - 1);
-    reset();
-  }, [index, reset]);
-
-  const goNext = useCallback(() => {
-    if (index >= items.length - 1) return;
-    setIndex((i) => i + 1);
-    reset();
-  }, [index, items.length, reset]);
-
-  // Desktop keyboard nav — no-op (and no listener) when there's nothing
-  // to navigate between.
-  useEffect(() => {
-    if (!open || items.length <= 1) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "ArrowLeft") goPrev();
-      else if (e.key === "ArrowRight") goNext();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, items.length, goPrev, goNext]);
-
+  const isAlbum = items.length > 1;
   const currentSrc = items[index] ?? items[0] ?? "";
+
+  // --- Album mode: vertical scroll-snap, index follows scroll ---------
+  const albumScrollRef = useRef<HTMLDivElement>(null);
+  const albumScrollRafRef = useRef<number | null>(null);
+
+  // Land on whichever image the caller opened at. Deferred one frame so
+  // the container (freshly mounted when the dialog opens) has already
+  // been laid out — setting scrollTop before that is a no-op in some
+  // browsers.
+  useEffect(() => {
+    if (!open || !isAlbum) return;
+    const raf = requestAnimationFrame(() => {
+      const el = albumScrollRef.current;
+      if (el) el.scrollTop = initialIndex * el.clientHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [open, isAlbum, initialIndex]);
+
+  // Cheap: one rAF-throttled read of scrollTop/clientHeight per frame,
+  // no per-render work and nothing that runs outside an active scroll.
+  const handleAlbumScroll = useCallback(() => {
+    if (albumScrollRafRef.current !== null) return;
+    albumScrollRafRef.current = requestAnimationFrame(() => {
+      albumScrollRafRef.current = null;
+      const el = albumScrollRef.current;
+      if (!el || el.clientHeight <= 0) return;
+      const next = Math.min(
+        Math.max(Math.round(el.scrollTop / el.clientHeight), 0),
+        items.length - 1,
+      );
+      setIndex((prev) => (prev === next ? prev : next));
+    });
+  }, [items.length]);
+
+  useEffect(() => {
+    return () => {
+      if (albumScrollRafRef.current !== null) cancelAnimationFrame(albumScrollRafRef.current);
+    };
+  }, []);
 
   function clampTranslate(nextScale: number, nextTx: number, nextTy: number) {
     // Keeps the image from being panned entirely off-screen once
@@ -260,49 +280,56 @@ export function MediaLightbox({
           </div>
         )}
 
-        {items.length > 1 && canPrev && (
-          <button
-            type="button"
-            onClick={goPrev}
-            aria-label={t("previous")}
-            className="absolute left-3 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white/90 hover:bg-black/60"
+        {isAlbum ? (
+          // Vertical scroll-snap feed — one full-screen slot per image,
+          // native browser scroll physics (touch, trackpad, or wheel)
+          // drive the motion, so it's smooth for free and needs no
+          // custom gesture code. No zoom/pan here — matches the
+          // reference iPhone album viewer, which doesn't offer it either.
+          <div
+            ref={albumScrollRef}
+            onScroll={handleAlbumScroll}
+            className="h-full w-full snap-y snap-mandatory overflow-y-auto overscroll-y-contain"
           >
-            <ChevronLeft className="h-5 w-5" />
-          </button>
-        )}
-        {items.length > 1 && canNext && (
-          <button
-            type="button"
-            onClick={goNext}
-            aria-label={t("next")}
-            className="absolute right-3 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white/90 hover:bg-black/60"
+            {items.map((url, i) => (
+              <div
+                key={i}
+                className="flex h-full w-full snap-start snap-always items-center justify-center"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={url}
+                  alt={i === 0 ? alt : ""}
+                  draggable={false}
+                  className="max-h-full max-w-full object-contain"
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            ref={containerRef}
+            className="flex h-full w-full items-center justify-center overflow-hidden touch-none select-none"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={endGesture}
+            onPointerCancel={endGesture}
+            onClick={handleClick}
+            onWheel={handleWheel}
           >
-            <ChevronRight className="h-5 w-5" />
-          </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={currentSrc}
+              alt={alt}
+              draggable={false}
+              className="max-h-full max-w-full object-contain"
+              style={{
+                transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+                transition: dragging ? "none" : "transform 150ms ease-out",
+              }}
+            />
+          </div>
         )}
-
-        <div
-          ref={containerRef}
-          className="flex h-full w-full items-center justify-center overflow-hidden touch-none select-none"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={endGesture}
-          onPointerCancel={endGesture}
-          onClick={handleClick}
-          onWheel={handleWheel}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={currentSrc}
-            alt={alt}
-            draggable={false}
-            className="max-h-full max-w-full object-contain"
-            style={{
-              transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
-              transition: dragging ? "none" : "transform 150ms ease-out",
-            }}
-          />
-        </div>
       </DialogContent>
     </Dialog>
   );
