@@ -88,6 +88,23 @@ function InboxPageInner() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] =
     useState<Conversation | null>(null);
+  /**
+   * Ref mirror of `activeConversation.id`, read (not the state itself) by
+   * `handleNewMessage` below. A multi-file media batch's send chain
+   * (MessageComposer → handleSendMedia) deliberately freezes its own
+   * `conversation` closure at batch-start — by design, so every file in
+   * the batch keeps going to the conversation it was started in even if
+   * the agent switches threads mid-batch. That means the specific
+   * `onNewMessage` function object such a frozen chain calls is *also*
+   * the one captured at batch-start, with whatever `activeConversation`
+   * was closed over back then — a plain `[activeConversation]` dependency
+   * on handleNewMessage would still read that stale, frozen value. This
+   * ref is written on every render instead, so its `.current` is always
+   * genuinely up to date at call time regardless of which stale closure
+   * is calling in.
+   */
+  const activeConversationIdRef = useRef<string | null>(null);
+  activeConversationIdRef.current = activeConversation?.id ?? null;
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   // Delete-lead confirmation — same shared dialog/entry point as the
@@ -668,15 +685,25 @@ function InboxPageInner() {
   }, []);
 
   const handleNewMessage = useCallback((msg: Message) => {
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === msg.id)) return prev;
-      return [...prev, msg];
-    });
+    // Only add the optimistic bubble to the list actually on screen —
+    // a still-resolving send from a conversation the agent has since
+    // navigated away from (e.g. a multi-file media batch) must not leak
+    // into whatever thread is currently open. Mirrors the same
+    // `conversation_id === activeConversation.id` guard
+    // handleMessageEvent's realtime INSERT branch already applies.
+    if (msg.conversation_id === activeConversationIdRef.current) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
+    }
     // Optimistic color update: the realtime echo for the sender's own
     // send round-trips through the DB, so patch the map immediately
     // rather than waiting for it (mirrors the optimistic message bubble
     // itself, which message-thread.tsx already shows before the send
-    // resolves).
+    // resolves). Runs regardless of which conversation is currently
+    // open — this only feeds the conversation-list responder-color
+    // indicator, not the open thread's message list.
     if (msg.sender_type === "agent" && msg.sender_id) {
       const senderId = msg.sender_id;
       setAssignedAgentMap((prev) => {
