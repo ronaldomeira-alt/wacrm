@@ -333,20 +333,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [profile?.account_role, profile?.account_id]);
 
+  // Memoized so consumers relying on context identity (e.g. a memoized
+  // component reading useAuth()) don't see a new `value` object — and
+  // re-render — on every AuthProvider render when none of these fields
+  // actually changed.
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      profile,
+      loading,
+      profileLoading,
+      signOut,
+      refreshProfile,
+      account,
+      defaultCurrency: account?.default_currency ?? DEFAULT_CURRENCY,
+      ...derived,
+    }),
+    [user, profile, loading, profileLoading, signOut, refreshProfile, account, derived],
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        profile,
-        loading,
-        profileLoading,
-        signOut,
-        refreshProfile,
-        account,
-        defaultCurrency: account?.default_currency ?? DEFAULT_CURRENCY,
-        ...derived,
-      }}
-    >
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

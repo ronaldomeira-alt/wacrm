@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
@@ -131,8 +132,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("storage", onStorage);
   }, [theme, mode]);
 
+  // Memoized so consumers relying on context identity don't see a new
+  // `value` object — and re-render — on every ThemeProvider render when
+  // theme/mode themselves haven't changed.
+  const value = useMemo<ThemeContextValue>(
+    () => ({ theme, setTheme, mode, setMode, toggleMode }),
+    [theme, setTheme, mode, setMode, toggleMode],
+  );
+
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, mode, setMode, toggleMode }}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   );
