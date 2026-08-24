@@ -35,6 +35,7 @@ import { toast } from "sonner";
 import {
   uploadAccountMedia,
   deleteAccountMedia,
+  resolveAccountId,
   MEDIA_MAX_BYTES_BY_KIND,
   ALLOWED_MIME_TYPES_BY_KIND,
 } from "@/lib/storage/upload-media";
@@ -545,8 +546,17 @@ export function MessageComposer({
   // validation exactly (same size cap, same MIME whitelist, same .mov
   // transcode), kept as a separate function so the existing single-file
   // draft/caption/send flow above is completely untouched.
+  //
+  // `accountId` is resolved once by the batch caller (handlePicked) and
+  // threaded through here to skip the auth.getUser()+profiles round-trip
+  // uploadAccountMedia would otherwise repeat for every file — pure
+  // network-cost elimination, doesn't touch upload order/timing/content.
   const uploadAndSend = useCallback(
-    async (kind: Exclude<ComposerMediaKind, "audio">, pickedFile: File) => {
+    async (
+      kind: Exclude<ComposerMediaKind, "audio">,
+      pickedFile: File,
+      accountId: string,
+    ) => {
       let file = pickedFile;
       if (kind === "video" && isQuickTimeVideo(file)) {
         try {
@@ -573,7 +583,7 @@ export function MessageComposer({
         return;
       }
       try {
-        const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
+        const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file, accountId);
         onSendMedia({
           kind,
           mediaUrl: publicUrl,
@@ -593,7 +603,9 @@ export function MessageComposer({
       const files = Array.from(fileList);
 
       // Exactly one file — unchanged behavior: stage it as a draft with
-      // a caption field, wait for an explicit Send tap.
+      // a caption field, wait for an explicit Send tap. (stageUpload
+      // resolves its own account id — a single file has nothing to
+      // amortize the lookup across.)
       if (files.length === 1) {
         void stageUpload(kind, files[0]);
         return;
@@ -608,12 +620,23 @@ export function MessageComposer({
       // picked. `busy` covers the whole batch, same as it does for a
       // single staged upload — disables the attach button/shows the
       // spinner until every file has been handled.
+      //
+      // account_id is resolved once here, up front, and reused for every
+      // file in the loop below (instead of each uploadAndSend/
+      // uploadAccountMedia call repeating that same auth+profile lookup)
+      // — the loop itself stays exactly as sequential as before.
       setBusy(true);
       void (async () => {
-        for (const file of files) {
-          await uploadAndSend(kind, file);
+        try {
+          const accountId = await resolveAccountId();
+          for (const file of files) {
+            await uploadAndSend(kind, file, accountId);
+          }
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Upload failed.");
+        } finally {
+          setBusy(false);
         }
-        setBusy(false);
       })();
     },
     [stageUpload, uploadAndSend],

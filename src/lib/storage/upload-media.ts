@@ -101,17 +101,16 @@ export interface UploadAccountMediaResult {
 }
 
 /**
- * Upload a file to an account-scoped Storage bucket and return its public
- * URL. Throws with a user-facing message on auth / account-resolution /
- * upload failure — callers surface it via a toast.
- *
- * Size validation is the caller's responsibility (limits can differ per
- * feature); `MEDIA_MAX_BYTES` is exported for the common case.
+ * Resolves the current user's account_id — the auth.getUser() + profiles
+ * lookup that `uploadAccountMedia` otherwise repeats on every call.
+ * Exported so a caller uploading several files in one batch (e.g. the
+ * inbox composer's multi-file send) can resolve it once up front and pass
+ * it into `uploadAccountMedia`'s optional `accountId` argument for every
+ * file, instead of paying both round-trips again per file. Throws the
+ * same user-facing messages `uploadAccountMedia` used to throw for this
+ * part of the work.
  */
-export async function uploadAccountMedia(
-  bucket: string,
-  file: File,
-): Promise<UploadAccountMediaResult> {
+export async function resolveAccountId(): Promise<string> {
   const supabase = createClient();
 
   const {
@@ -134,7 +133,31 @@ export async function uploadAccountMedia(
     throw new Error("Could not resolve your account.");
   }
 
-  const path = buildMediaPath(profile.account_id as string, file.name);
+  return profile.account_id as string;
+}
+
+/**
+ * Upload a file to an account-scoped Storage bucket and return its public
+ * URL. Throws with a user-facing message on auth / account-resolution /
+ * upload failure — callers surface it via a toast.
+ *
+ * Size validation is the caller's responsibility (limits can differ per
+ * feature); `MEDIA_MAX_BYTES` is exported for the common case.
+ *
+ * `accountId` is optional — pass it (via `resolveAccountId()`) when
+ * uploading several files in one batch so each call skips its own
+ * auth/profile round-trip; omitted, it resolves the id itself exactly as
+ * before, so every existing single-file caller is unaffected.
+ */
+export async function uploadAccountMedia(
+  bucket: string,
+  file: File,
+  accountId?: string,
+): Promise<UploadAccountMediaResult> {
+  const supabase = createClient();
+  const resolvedAccountId = accountId ?? (await resolveAccountId());
+
+  const path = buildMediaPath(resolvedAccountId, file.name);
   const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
     cacheControl: "3600",
     upsert: false,
