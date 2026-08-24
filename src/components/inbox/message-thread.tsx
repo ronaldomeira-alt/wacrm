@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { usePresence } from "@/hooks/use-presence";
@@ -163,6 +163,53 @@ function renderTemplateBody(body: string, params: string[]): string {
     return params[idx] ?? `{{${raw}}}`;
   });
 }
+
+interface MessageRowProps {
+  message: Message;
+  reply: { authorLabel: string; preview: string } | null;
+  reactions: MessageReaction[] | undefined;
+  currentUserId: string | undefined;
+  onReply: (message: Message) => void;
+  onReact: (messageId: string, emoji: string) => void;
+  onDelete: (message: Message) => Promise<void> | void;
+  onToggleReaction: (messageId: string, emoji: string) => void;
+}
+
+/**
+ * One row (actions wrapper + bubble) per message, memoized as its own
+ * unit. `<MessageBubble>` is passed as JSX children to `<MessageActions>`
+ * at the call site below — a fresh element every render regardless of
+ * `MessageBubble`'s own `memo()` — so wrapping this composition, instead
+ * of each piece separately, is what lets React actually skip re-rendering
+ * a message whose own props haven't changed (REACT-1).
+ */
+const MessageRow = memo(function MessageRow({
+  message,
+  reply,
+  reactions,
+  currentUserId,
+  onReply,
+  onReact,
+  onDelete,
+  onToggleReaction,
+}: MessageRowProps) {
+  return (
+    <MessageActions
+      message={message}
+      onReply={onReply}
+      onReact={onReact}
+      onDelete={onDelete}
+    >
+      <MessageBubble
+        message={message}
+        reply={reply}
+        reactions={reactions}
+        currentUserId={currentUserId}
+        onToggleReaction={onToggleReaction}
+      />
+    </MessageActions>
+  );
+});
 
 interface MessageThreadProps {
   conversation: Conversation | null;
@@ -917,6 +964,30 @@ export function MessageThread({
     return map;
   }, [reactions]);
 
+  // Pre-computed reply-quote info per message, keyed by message id — moved
+  // out of the render loop below so a message's `reply` prop keeps the
+  // same object reference across renders where `messages`/`contact`
+  // haven't changed, letting MessageRow's memo() actually skip it (REACT-1).
+  // Same authorLabel/preview logic as before, just computed once here
+  // instead of inline per message on every render.
+  const replyPreviewByMessageId = useMemo(() => {
+    const map = new Map<string, { authorLabel: string; preview: string }>();
+    for (const m of messages) {
+      if (!m.reply_to_message_id) continue;
+      const parent = messagesById.get(m.reply_to_message_id);
+      if (!parent) continue;
+      map.set(m.id, {
+        authorLabel:
+          parent.sender_type === "agent" || parent.sender_type === "bot"
+            ? t("me")
+            : contact?.name || contact?.phone || "Unknown",
+        preview: buildReplyPreview(parent, tQuote),
+      });
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, messagesById, contact, tQuote]);
+
   const contactDisplayName = contact?.name || contact?.phone || "Customer";
 
   // Author label for a quoted message: "You" when we sent the parent,
@@ -1003,6 +1074,18 @@ export function MessageThread({
       }
     },
     [conversation, user?.id],
+  );
+
+  // Stable wrapper around postReaction for MessageBubble's reaction-pill
+  // toggle — MessageBubble now resolves "own"/"next" itself from its own
+  // `reactions`/`currentUserId` props (same logic previously computed
+  // per-message here), so this can be one function shared by every
+  // bubble instead of a closure recreated per message per render.
+  const handleReactionToggle = useCallback(
+    (messageId: string, emoji: string) => {
+      void postReaction(messageId, emoji);
+    },
+    [postReaction],
   );
 
   const handleAssignChange = useCallback(
@@ -1409,51 +1492,19 @@ export function MessageThread({
                 </div>
                 {/* Messages */}
                 <div className="space-y-2">
-                  {group.messages.map((msg) => {
-                    const parent = msg.reply_to_message_id
-                      ? messagesById.get(msg.reply_to_message_id)
-                      : null;
-                    const reply = parent
-                      ? {
-                          authorLabel:
-                            parent.sender_type === "agent" || parent.sender_type === "bot"
-                              ? t("me") 
-                              : contact?.name || contact?.phone || "Unknown",
-                          preview: buildReplyPreview(parent, tQuote),
-                        }
-                      : null;
-                    const msgReactions = reactionsByMessageId.get(msg.id);
-                    // Toggle is computed at the call site — `msgReactions`
-                    // and `user?.id` are already in scope, no extra hook.
-                    const handlePillToggle = (emoji: string) => {
-                      const own = msgReactions?.find(
-                        (r) =>
-                          r.actor_type === "agent" &&
-                          r.actor_id === user?.id,
-                      );
-                      const next = own?.emoji === emoji ? "" : emoji;
-                      void postReaction(msg.id, next);
-                    };
-                    return (
-                      <MessageActions
-                        key={msg.id}
-                        message={msg}
-                        onReply={() => handleStartReply(msg)}
-                        onReact={(emoji) => {
-                          if (emoji) void postReaction(msg.id, emoji);
-                        }}
-                        onDelete={() => handleDeleteMessage(msg)}
-                      >
-                        <MessageBubble
-                          message={msg}
-                          reply={reply}
-                          reactions={msgReactions}
-                          currentUserId={user?.id}
-                          onToggleReaction={handlePillToggle}
-                        />
-                      </MessageActions>
-                    );
-                  })}
+                  {group.messages.map((msg) => (
+                    <MessageRow
+                      key={msg.id}
+                      message={msg}
+                      reply={replyPreviewByMessageId.get(msg.id) ?? null}
+                      reactions={reactionsByMessageId.get(msg.id)}
+                      currentUserId={user?.id}
+                      onReply={handleStartReply}
+                      onReact={postReaction}
+                      onDelete={handleDeleteMessage}
+                      onToggleReaction={handleReactionToggle}
+                    />
+                  ))}
                 </div>
               </div>
             ))}

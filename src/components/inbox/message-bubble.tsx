@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { memo, useId, useMemo, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -33,7 +33,13 @@ interface MessageBubbleProps {
   reply?: { authorLabel: string; preview: string } | null;
   reactions?: MessageReaction[];
   currentUserId?: string;
-  onToggleReaction?: (emoji: string) => void;
+  /**
+   * Sets the agent's reaction to the final emoji value ("" removes it).
+   * Takes the message id explicitly so the caller can pass a single
+   * stable function shared by every bubble instead of a per-message
+   * closure — required for `memo()` below to actually skip re-renders.
+   */
+  onToggleReaction?: (messageId: string, emoji: string) => void;
 }
 
 function StatusIcon({
@@ -359,7 +365,7 @@ function MessageContent({
   }
 }
 
-export function MessageBubble({
+function MessageBubbleComponent({
   message,
   reply,
   reactions,
@@ -522,9 +528,27 @@ export function MessageBubble({
         <MessageReactions
           reactions={reactions}
           currentUserId={currentUserId}
-          onToggle={onToggleReaction}
+          onToggle={(emoji) => {
+            // Same toggle semantic as before (swap/add, or remove if the
+            // agent already reacted with this emoji) — just resolved here
+            // from this bubble's own props instead of a closure the
+            // parent recreated per message on every render.
+            const own = reactions.find(
+              (r) => r.actor_type === "agent" && r.actor_id === currentUserId,
+            );
+            const next = own?.emoji === emoji ? "" : emoji;
+            onToggleReaction(message.id, next);
+          }}
         />
       )}
     </div>
   );
 }
+
+/**
+ * Memoized: a message thread can render hundreds of bubbles, and only the
+ * one(s) whose message/reply/reactions actually changed need to re-render.
+ * Effective as long as callers pass stable prop references — see
+ * `onToggleReaction`'s doc above and MessageThread's call site.
+ */
+export const MessageBubble = memo(MessageBubbleComponent);

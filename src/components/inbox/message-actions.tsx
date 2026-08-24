@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { ChevronDown, Copy, CornerUpLeft, Forward, SmilePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -41,11 +41,17 @@ const DELETABLE_TYPES = FORWARDABLE_TYPES;
 
 interface MessageActionsProps {
   message: Message;
-  onReply: () => void;
-  onReact: (emoji: string) => void;
+  /**
+   * All three callbacks take the message (or its id) explicitly so the
+   * caller can pass one stable function shared across every message
+   * instead of a per-message closure — required for `memo()` below to
+   * actually skip re-renders.
+   */
+  onReply: (message: Message) => void;
+  onReact: (messageId: string, emoji: string) => void;
   /** Delete this (agent-sent) message. Awaited so the confirm dialog can
    *  show a spinner and stay open on failure. */
-  onDelete: () => Promise<void> | void;
+  onDelete: (message: Message) => Promise<void> | void;
   children: ReactNode;
 }
 
@@ -61,7 +67,7 @@ interface MessageActionsProps {
  * `contextmenu` for that natively) opens the exact same menu directly,
  * anchored to the bubble, without needing the hover step first.
  */
-export function MessageActions({
+function MessageActionsComponent({
   message,
   onReply,
   onReact,
@@ -94,7 +100,7 @@ export function MessageActions({
   const handleDelete = async () => {
     setDeleting(true);
     try {
-      await onDelete();
+      await onDelete(message);
       setDeleteConfirmOpen(false);
     } catch {
       toast.error(t("deleteFailed"));
@@ -118,7 +124,7 @@ export function MessageActions({
   };
 
   const handlePickEmoji = (emoji: string) => {
-    onReact(emoji);
+    onReact(message.id, emoji);
     setPickerOpen(false);
     setTouchOpen(false);
   };
@@ -197,7 +203,7 @@ export function MessageActions({
             <ChevronDown className="h-3.5 w-3.5" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align={isAgent ? "end" : "start"}>
-            <DropdownMenuItem onClick={onReply}>
+            <DropdownMenuItem onClick={() => onReply(message)}>
               <CornerUpLeft />
               {t("reply")}
             </DropdownMenuItem>
@@ -258,3 +264,11 @@ export function MessageActions({
     </div>
   );
 }
+
+/**
+ * Memoized: a message thread can render hundreds of these, and only the
+ * one(s) whose message actually changed need to re-render. Effective as
+ * long as callers pass stable prop references — see the doc on
+ * MessageActionsProps and MessageThread's call site.
+ */
+export const MessageActions = memo(MessageActionsComponent);
