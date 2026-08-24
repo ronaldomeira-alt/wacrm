@@ -50,6 +50,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble } from "./message-bubble";
 import { MessageActions } from "./message-actions";
+import { MessageAlbum, computeAlbumGroups } from "./message-album";
 import {
   MessageComposer,
   CHAT_MEDIA_BUCKET,
@@ -964,6 +965,12 @@ export function MessageThread({
     return map;
   }, [reactions]);
 
+  // Visual-only grouping of consecutive same-sender images into an
+  // album — see computeAlbumGroups' own doc for the exact rules. Purely
+  // a rendering concern: each message stays its own row/messageId/status
+  // in the DB and over the wire.
+  const albumGroups = useMemo(() => computeAlbumGroups(messages), [messages]);
+
   // Pre-computed reply-quote info per message, keyed by message id — moved
   // out of the render loop below so a message's `reply` prop keeps the
   // same object reference across renders where `messages`/`contact`
@@ -1492,19 +1499,42 @@ export function MessageThread({
                 </div>
                 {/* Messages */}
                 <div className="space-y-2">
-                  {group.messages.map((msg) => (
-                    <MessageRow
-                      key={msg.id}
-                      message={msg}
-                      reply={replyPreviewByMessageId.get(msg.id) ?? null}
-                      reactions={reactionsByMessageId.get(msg.id)}
-                      currentUserId={user?.id}
-                      onReply={handleStartReply}
-                      onReact={postReaction}
-                      onDelete={handleDeleteMessage}
-                      onToggleReaction={handleReactionToggle}
-                    />
-                  ))}
+                  {group.messages.map((msg) => {
+                    const album = albumGroups.get(msg.id);
+                    if (album) {
+                      // Every message in the group renders once, as the
+                      // album, at the position of its first message —
+                      // the rest are skipped here (they're still their
+                      // own row/message/status in `messages`, just not
+                      // given a second visual row of their own).
+                      if (album.messages[0].id !== msg.id) return null;
+                      return (
+                        <MessageAlbum
+                          key={album.id}
+                          messages={album.messages}
+                          currentUserId={user?.id}
+                          reactions={reactionsByMessageId.get(album.messages[0].id)}
+                          onReply={handleStartReply}
+                          onReact={postReaction}
+                          onDelete={handleDeleteMessage}
+                          onToggleReaction={handleReactionToggle}
+                        />
+                      );
+                    }
+                    return (
+                      <MessageRow
+                        key={msg.id}
+                        message={msg}
+                        reply={replyPreviewByMessageId.get(msg.id) ?? null}
+                        reactions={reactionsByMessageId.get(msg.id)}
+                        currentUserId={user?.id}
+                        onReply={handleStartReply}
+                        onReact={postReaction}
+                        onDelete={handleDeleteMessage}
+                        onToggleReaction={handleReactionToggle}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             ))}

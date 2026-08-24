@@ -475,6 +475,8 @@
     "bubble": {
       "photo": "Foto",
       "close": "Fechar",
+      "previous": "Anterior",
+      "next": "Próxima",
       "video": "Vídeo",
       "audio": "Áudio",
       "unavailable": "{label} indisponível",

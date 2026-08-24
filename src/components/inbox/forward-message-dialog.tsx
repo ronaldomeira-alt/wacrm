@@ -21,6 +21,13 @@ import type { Contact, Message } from "@/types";
 interface ForwardMessageDialogProps {
   /** The message being forwarded. Null hides the dialog. */
   message: Message | null;
+  /**
+   * Album context: forward every message in this array (in order)
+   * instead of just `message`. Takes precedence over `message` when
+   * non-empty; falls back to `[message]` otherwise, so every existing
+   * single-message caller is unaffected.
+   */
+  messages?: Message[] | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -38,10 +45,15 @@ interface ForwardResult {
  */
 export function ForwardMessageDialog({
   message,
+  messages,
   open,
   onOpenChange,
 }: ForwardMessageDialogProps) {
   const t = useTranslations("Inbox.forward");
+  const targets = useMemo(
+    () => (messages && messages.length > 0 ? messages : message ? [message] : []),
+    [messages, message],
+  );
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [search, setSearch] = useState("");
@@ -90,26 +102,36 @@ export function ForwardMessageDialog({
   }, []);
 
   const handleForward = useCallback(async () => {
-    if (!message || selectedIds.length === 0) return;
+    if (targets.length === 0 || selectedIds.length === 0) return;
     setSending(true);
     try {
-      const res = await fetch("/api/whatsapp/forward", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message_id: message.id,
-          contact_ids: selectedIds,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast.error(data.error ?? t("toastFailed"));
-        return;
+      let successCount = 0;
+      let failCount = 0;
+      // Sequential, not Promise.all — same call, same endpoint, same
+      // request shape as a single-message forward, just repeated once
+      // per message so an album forwards as its individual messages
+      // (never a single combined API call) and lands in the order the
+      // album itself is in. Mirrors the project's established
+      // one-at-a-time convention for multi-item sends (e.g. the
+      // composer's own multi-file upload).
+      for (const target of targets) {
+        const res = await fetch("/api/whatsapp/forward", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message_id: target.id,
+            contact_ids: selectedIds,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          failCount += selectedIds.length;
+          continue;
+        }
+        const results = (data.results ?? []) as ForwardResult[];
+        successCount += results.filter((r) => r.success).length;
+        failCount += results.length - results.filter((r) => r.success).length;
       }
-
-      const results = (data.results ?? []) as ForwardResult[];
-      const successCount = results.filter((r) => r.success).length;
-      const failCount = results.length - successCount;
 
       if (failCount === 0) {
         toast.success(t("toastForwarded", { count: successCount }));
@@ -126,7 +148,7 @@ export function ForwardMessageDialog({
     } finally {
       setSending(false);
     }
-  }, [message, selectedIds, t, onOpenChange]);
+  }, [targets, selectedIds, t, onOpenChange]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

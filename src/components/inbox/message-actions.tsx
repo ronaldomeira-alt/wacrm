@@ -114,6 +114,13 @@ interface MessageActionsProps {
   /** Delete this (agent-sent) message. Awaited so the confirm dialog can
    *  show a spinner and stay open on failure. */
   onDelete: (message: Message) => Promise<void> | void;
+  /**
+   * Album context: when set, "Encaminhar" forwards every message in this
+   * array (in order) instead of just `message` — same ForwardMessageDialog
+   * mechanism underneath, just given more than one target. Absent for a
+   * regular single-message bubble.
+   */
+  forwardMessages?: Message[];
   children: ReactNode;
 }
 
@@ -134,6 +141,7 @@ function MessageActionsComponent({
   onReply,
   onReact,
   onDelete,
+  forwardMessages,
   children,
 }: MessageActionsProps) {
   const t = useTranslations("Inbox.actions");
@@ -503,6 +511,7 @@ function MessageActionsComponent({
 
       <ForwardMessageDialog
         message={forwardOpen ? message : null}
+        messages={forwardOpen ? forwardMessages : null}
         open={forwardOpen}
         onOpenChange={setForwardOpen}
       />

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useTranslations } from "next-intl";
 
@@ -16,9 +16,20 @@ interface MediaLightboxProps {
   onOpenChange: (open: boolean) => void;
   /** Already-resolved src (blob: URL for proxy-backed media, or a plain
    *  URL) — passed in rather than fetched here so opening the lightbox
-   *  never re-downloads an image the bubble already loaded. */
+   *  never re-downloads an image the bubble already loaded. Used as-is
+   *  when `images` is omitted; otherwise only a fallback if `images`
+   *  turns out empty. */
   src: string;
   alt: string;
+  /**
+   * Album context: sibling images (already-resolved srcs, same
+   * convention as `src`) to step through with prev/next controls. Omit
+   * for the existing single-image behavior — every current caller keeps
+   * working unchanged.
+   */
+  images?: string[];
+  /** Index into `images` to open on. Ignored when `images` is omitted. */
+  initialIndex?: number;
 }
 
 /**
@@ -29,8 +40,17 @@ interface MediaLightboxProps {
  * than a bespoke overlay, just overriding DialogContent to fill the
  * screen instead of the default centered card.
  */
-export function MediaLightbox({ open, onOpenChange, src, alt }: MediaLightboxProps) {
+export function MediaLightbox({
+  open,
+  onOpenChange,
+  src,
+  alt,
+  images,
+  initialIndex = 0,
+}: MediaLightboxProps) {
   const t = useTranslations("Inbox.bubble");
+  const items = images && images.length > 0 ? images : [src];
+  const [index, setIndex] = useState(initialIndex);
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
@@ -66,6 +86,45 @@ export function MediaLightbox({ open, onOpenChange, src, alt }: MediaLightboxPro
     },
     [onOpenChange, reset]
   );
+
+  // Sync to whichever image the caller opened on, and reset zoom — runs
+  // on every open (not just mount) since this same lightbox instance is
+  // reused across different messages/albums.
+  useEffect(() => {
+    if (!open) return;
+    setIndex(initialIndex);
+    reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialIndex]);
+
+  const canPrev = index > 0;
+  const canNext = index < items.length - 1;
+
+  const goPrev = useCallback(() => {
+    if (index <= 0) return;
+    setIndex((i) => i - 1);
+    reset();
+  }, [index, reset]);
+
+  const goNext = useCallback(() => {
+    if (index >= items.length - 1) return;
+    setIndex((i) => i + 1);
+    reset();
+  }, [index, items.length, reset]);
+
+  // Desktop keyboard nav — no-op (and no listener) when there's nothing
+  // to navigate between.
+  useEffect(() => {
+    if (!open || items.length <= 1) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "ArrowLeft") goPrev();
+      else if (e.key === "ArrowRight") goNext();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, items.length, goPrev, goNext]);
+
+  const currentSrc = items[index] ?? items[0] ?? "";
 
   function clampTranslate(nextScale: number, nextTx: number, nextTy: number) {
     // Keeps the image from being panned entirely off-screen once
@@ -192,6 +251,36 @@ export function MediaLightbox({ open, onOpenChange, src, alt }: MediaLightboxPro
           <X className="h-5 w-5" />
         </button>
 
+        {items.length > 1 && (
+          <div
+            className="absolute left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/40 px-2.5 py-1 text-xs text-white/90"
+            style={{ top: "calc(0.75rem + env(safe-area-inset-top))" }}
+          >
+            {index + 1} / {items.length}
+          </div>
+        )}
+
+        {items.length > 1 && canPrev && (
+          <button
+            type="button"
+            onClick={goPrev}
+            aria-label={t("previous")}
+            className="absolute left-3 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white/90 hover:bg-black/60"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+        )}
+        {items.length > 1 && canNext && (
+          <button
+            type="button"
+            onClick={goNext}
+            aria-label={t("next")}
+            className="absolute right-3 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white/90 hover:bg-black/60"
+          >
+            <ChevronRight className="h-5 w-5" />
+          </button>
+        )}
+
         <div
           ref={containerRef}
           className="flex h-full w-full items-center justify-center overflow-hidden touch-none select-none"
@@ -204,7 +293,7 @@ export function MediaLightbox({ open, onOpenChange, src, alt }: MediaLightboxPro
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={src}
+            src={currentSrc}
             alt={alt}
             draggable={false}
             className="max-h-full max-w-full object-contain"
