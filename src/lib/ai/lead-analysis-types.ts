@@ -54,10 +54,21 @@ export interface StageSuggestion {
   score: number | null;
 }
 
+/** Lead-warmth score (`contacts.ai_score`, migration 082) — the model
+ *  is given the current value and decides the next one (up, down, or
+ *  unchanged); this is never a delta. `reason` is a short, evidence-
+ *  based note for `contacts.ai_score_reason`. */
+export interface LeadScoreResult {
+  /** 0–10 integer. */
+  value: number;
+  reason: string | null;
+}
+
 export interface LeadAnalysisResult {
   summary: LeadSummary;
   tag_changes: TagChange[];
   stage_suggestion: StageSuggestion | null;
+  lead_score: LeadScoreResult | null;
 }
 
 export function emptyLeadSummary(): LeadSummary {
@@ -153,6 +164,14 @@ function sanitizeStageSuggestion(v: unknown): StageSuggestion | null {
   };
 }
 
+function sanitizeLeadScore(v: unknown): LeadScoreResult | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.value !== 'number' || !Number.isFinite(o.value)) return null;
+  const value = Math.max(0, Math.min(10, Math.round(o.value)));
+  return { value, reason: nullableString(o.reason) };
+}
+
 /**
  * Parse the model's raw text output into a `LeadAnalysisResult`.
  * Never throws — returns `null` on anything that isn't recoverable
@@ -179,5 +198,6 @@ export function parseLeadAnalysisResult(raw: string): LeadAnalysisResult | null 
     summary: sanitizeSummary(o.summary),
     tag_changes: sanitizeTagChanges(o.tag_changes),
     stage_suggestion: sanitizeStageSuggestion(o.stage_suggestion),
+    lead_score: sanitizeLeadScore(o.lead_score),
   };
 }

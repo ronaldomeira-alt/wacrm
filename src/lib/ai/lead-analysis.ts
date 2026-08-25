@@ -89,6 +89,26 @@ export async function applyLeadAnalysisResult(args: ApplyLeadAnalysisArgs): Prom
   }
 
   await applyStageSuggestion(args)
+  await applyLeadScore(args)
+}
+
+// Score IA (migration 082) — writes contacts.ai_score/ai_score_reason/
+// ai_score_updated_at from the same extraction pass that already
+// produces tags, per the AGENTS task's "reuse the same reading, don't
+// add a second AI call" requirement. No-op when the model didn't
+// return a lead_score.
+async function applyLeadScore(args: ApplyLeadAnalysisArgs): Promise<void> {
+  const { db, contactId, result } = args
+  if (!result.lead_score) return
+
+  await db
+    .from('contacts')
+    .update({
+      ai_score: result.lead_score.value,
+      ai_score_reason: result.lead_score.reason,
+      ai_score_updated_at: new Date().toISOString(),
+    })
+    .eq('id', contactId)
 }
 
 async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> {
@@ -186,6 +206,7 @@ interface ExtractArgs {
   currentStageName: string | null
   availableStageNames: string[]
   newMessages: ChatMessage[]
+  currentScore: number
 }
 
 async function extractLeadIntelligence(
@@ -199,6 +220,7 @@ async function extractLeadIntelligence(
     currentStageName: args.currentStageName,
     availableStageNames: args.availableStageNames,
     newMessages: args.newMessages,
+    currentScore: args.currentScore,
   })
 
   const providerArgs = {
@@ -316,7 +338,7 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
     const newestMessageId = textRows[textRows.length - 1].id
 
     const [{ data: contact }, { data: existingTags }] = await Promise.all([
-      db.from('contacts').select('name').eq('id', contactId).maybeSingle(),
+      db.from('contacts').select('name, ai_score').eq('id', contactId).maybeSingle(),
       db
         .from('tags')
         .select('name, category')
@@ -324,6 +346,7 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
         .in('category', CATEGORY_ORDER as unknown as string[]),
     ])
     const contactName = contact?.name || 'Lead'
+    const currentScore = contact?.ai_score ?? 0
 
     const existingTagsByCategory: Record<string, string[]> = {}
     for (const t of (existingTags ?? []) as { name: string; category: string | null }[]) {
@@ -367,6 +390,7 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
         currentStageName,
         availableStageNames: stages.map((s) => s.name),
         newMessages,
+        currentScore,
       })
     } catch (err) {
       console.error('[lead analysis] provider call failed:', err)

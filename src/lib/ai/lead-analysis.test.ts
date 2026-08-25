@@ -28,14 +28,30 @@ import { emptyLeadSummary, parseLeadAnalysisResult, type LeadAnalysisResult } fr
 // ------------------------------------------------------------
 interface FakeSuggestionsDb {
   db: { from: (table: string) => unknown };
-  calls: { insert: unknown[]; update: { id: string; patch: unknown }[] };
+  calls: {
+    insert: unknown[];
+    update: { id: string; patch: unknown }[];
+    contactUpdate: unknown[];
+  };
 }
 
 function fakeDb(existingPending: { id: string; payload: unknown } | null = null): FakeSuggestionsDb {
-  const calls: FakeSuggestionsDb['calls'] = { insert: [], update: [] };
+  const calls: FakeSuggestionsDb['calls'] = { insert: [], update: [], contactUpdate: [] };
 
   const db = {
     from(table: string) {
+      if (table === 'contacts') {
+        return {
+          update(patch: unknown) {
+            calls.contactUpdate.push(patch);
+            return {
+              eq() {
+                return Promise.resolve({ data: null, error: null });
+              },
+            };
+          },
+        };
+      }
       if (table !== 'ai_suggestions') {
         throw new Error(`unexpected table in test: ${table}`);
       }
@@ -81,6 +97,7 @@ function result(overrides: Partial<LeadAnalysisResult> = {}): LeadAnalysisResult
     summary: emptyLeadSummary(),
     tag_changes: [],
     stage_suggestion: null,
+    lead_score: null,
     ...overrides,
   };
 }
@@ -184,6 +201,7 @@ describe('applyLeadAnalysisResult — tags (section 19.1/19.2/19.3)', () => {
     expect(mocks.removeContactTag).not.toHaveBeenCalled();
     expect(calls.insert).toHaveLength(0);
     expect(calls.update).toHaveLength(0);
+    expect(calls.contactUpdate).toHaveLength(0);
   });
 
   it('section 3: skips a low-confidence tag change', async () => {
@@ -401,6 +419,40 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
   });
 });
 
+describe('applyLeadAnalysisResult — lead_score (Score IA, migration 082)', () => {
+  it('writes ai_score/ai_score_reason/ai_score_updated_at when the model returns a lead_score', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: null,
+      stages: [],
+      result: result({
+        lead_score: { value: 7, reason: 'Pediu simulação e confirmou orçamento de R$500 mil.' },
+      }),
+    });
+
+    expect(calls.contactUpdate).toHaveLength(1);
+    expect(calls.contactUpdate[0]).toMatchObject({
+      ai_score: 7,
+      ai_score_reason: 'Pediu simulação e confirmou orçamento de R$500 mil.',
+    });
+  });
+
+  it('does not touch contacts when the model returns no lead_score', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: null,
+      stages: [],
+      result: result(),
+    });
+
+    expect(calls.contactUpdate).toHaveLength(0);
+  });
+});
+
 describe('parseLeadAnalysisResult', () => {
   it('parses a well-formed JSON response', () => {
     const raw = JSON.stringify({
@@ -438,5 +490,14 @@ describe('parseLeadAnalysisResult', () => {
   it('drops a stage_suggestion missing a target or score even if should_suggest is true', () => {
     const raw = JSON.stringify({ stage_suggestion: { should_suggest: true } });
     expect(parseLeadAnalysisResult(raw)?.stage_suggestion?.should_suggest).toBe(false);
+  });
+
+  it('parses and clamps lead_score to an integer 0-10', () => {
+    const raw = JSON.stringify({ lead_score: { value: 12.6, reason: 'Pediu visita.' } });
+    expect(parseLeadAnalysisResult(raw)?.lead_score).toEqual({ value: 10, reason: 'Pediu visita.' });
+  });
+
+  it('returns lead_score null when absent', () => {
+    expect(parseLeadAnalysisResult('{}')?.lead_score).toBeNull();
   });
 });
