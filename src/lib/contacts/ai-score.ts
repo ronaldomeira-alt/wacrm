@@ -24,15 +24,19 @@ export function aiScoreBand(score: number): AiScoreBand {
 // point on the bar always matches that exact score position — the fill
 // is a right-side mask that reveals more of this same gradient as the
 // score rises, instead of restretching a shorter gradient.
+// Colors: score 0=#2563EB … 5=#22C55E … 10=#DC2626 (blue→cyan→green→yellow→orange→red)
 const AI_SCORE_GRADIENT_STOPS = [
-  '#64748B',
-  '#5B7FA3',
-  '#4F8FAF',
-  '#4CA6A8',
-  '#78A85A',
-  '#C5A44A',
-  '#D88A3D',
-  '#C96B4B',
+  '#2563EB', // 0
+  '#1D6FFF', // 1
+  '#1677FF', // 2
+  '#00C2E6', // 3
+  '#00AFC7', // 4
+  '#22C55E', // 5
+  '#EAB308', // 6
+  '#F59E0B', // 7
+  '#F97316', // 8
+  '#EF4444', // 9
+  '#DC2626', // 10
 ] as const;
 
 export const AI_SCORE_GRADIENT_CSS = `linear-gradient(90deg, ${AI_SCORE_GRADIENT_STOPS.map(

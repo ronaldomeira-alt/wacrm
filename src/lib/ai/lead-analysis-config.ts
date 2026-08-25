@@ -40,6 +40,40 @@ export function meetsTagConfidenceThreshold(confidence: TagConfidence): boolean 
   return CONFIDENCE_RANK[confidence] >= CONFIDENCE_RANK[TAG_CONFIDENCE_MIN];
 }
 
+// ── Pipeline auto-progression rules ─────────────────────────────────────────
+// Defines the 3 forward transitions that are executed automatically (without
+// human review in the Central de IA) when BOTH conditions are met:
+//   1. The AI's stage_suggestion.score (0-100) ≥ STAGE_SUGGESTION_MIN_SCORE
+//      — the AI has real behavioral evidence (checked earlier in the flow)
+//   2. The lead's ai_score (0-10) ≥ minAiScore below
+//      — the lead's warmth/intent level qualifies for the target stage
+//
+// Stage names are stored lowercase for case-insensitive matching. The Score
+// alone never triggers a move; the AI's evidence signal (should_suggest: true
+// + score ≥ 60) is always required in addition.
+//
+// NEVER add backward transitions here. NEVER include Follow-up as a target
+// — Follow-up moves remain human-approved suggestions in the Central de IA.
+
+export interface PipelineAutoMoveRule {
+  /** Current stage name, lowercase. */
+  from: string
+  /** Target stage name, lowercase. */
+  to: string
+  /** Minimum contacts.ai_score (0-10) required to trigger the automatic move. */
+  minAiScore: number
+}
+
+export const PIPELINE_AUTO_MOVE_RULES: PipelineAutoMoveRule[] = [
+  // Novo Lead → Qualificação: client started defining what they're looking for
+  { from: 'novo lead', to: 'qualificação', minAiScore: 3 },
+  // Novo Lead → Interesse (skip): strong commercial intent signal (simulation,
+  // financing, visit, proposal, etc.) plus high warmth
+  { from: 'novo lead', to: 'interesse', minAiScore: 7 },
+  // Qualificação → Interesse: client clearly moved beyond discovery phase
+  { from: 'qualificação', to: 'interesse', minAiScore: 7 },
+]
+
 /** Human-readable band for a 0–100 score, for display only (section 8). */
 export function scoreConfidenceBand(score: number): 'strong' | 'good' | 'moderate' | 'low' {
   if (score >= 90) return 'strong';

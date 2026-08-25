@@ -21,6 +21,7 @@ import {
   LEAD_ANALYSIS_COOLDOWN_SECONDS,
   LEAD_ANALYSIS_INCREMENTAL_MESSAGE_LIMIT,
   LEAD_ANALYSIS_INITIAL_MESSAGE_LIMIT,
+  PIPELINE_AUTO_MOVE_RULES,
   STAGE_SUGGESTION_MIN_SCORE,
   meetsTagConfidenceThreshold,
 } from './lead-analysis-config'
@@ -60,6 +61,10 @@ export interface ApplyLeadAnalysisArgs {
   /** The deal's pipeline stages, ordered by position. Ignored when `deal` is null. */
   stages: StageRef[]
   result: LeadAnalysisResult
+  /** The contact's ai_score (0-10) BEFORE this analysis run. Used as a fallback
+   *  when the model didn't return a lead_score in the current batch, so that
+   *  pipeline auto-progression rules always have a score to evaluate against. */
+  currentAiScore?: number
 }
 
 export async function applyLeadAnalysisResult(args: ApplyLeadAnalysisArgs): Promise<void> {
@@ -124,6 +129,8 @@ async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> 
   // The model must reference a real stage of this pipeline — never invent one.
   if (!targetStage) return
 
+  const fromStageName = stages.find((s) => s.id === deal.stage_id)?.name ?? '?'
+
   if (targetStage.id === deal.stage_id) {
     // Already there. If a stale pending suggestion proposed exactly this
     // move (e.g. an agent applied it manually before the AI caught up),
@@ -146,7 +153,55 @@ async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> 
     return
   }
 
-  const fromStageName = stages.find((s) => s.id === deal.stage_id)?.name ?? '?'
+  // ── Auto-progression ────────────────────────────────────────────────────
+  // Moves Novo Lead → Qualificação / Interesse and Qualificação → Interesse
+  // are executed automatically when the ai_score and AI confidence both meet
+  // the required thresholds. Score alone is never enough — the AI must also
+  // set should_suggest: true with a stage_suggestion.score ≥ STAGE_SUGGESTION_MIN_SCORE
+  // (already checked above), which encodes the "evidência comercial" requirement.
+  //
+  // These 3 transitions never produce a pending suggestion in Central de IA:
+  //   • if score qualifies → auto-move (no pending card needed)
+  //   • if score insufficient → silent skip (still no pending card)
+  //
+  // All other transitions (→ Follow-up, backward, unrecognised) fall through
+  // to the existing human-approval suggestion flow below.
+  const fromLower = fromStageName.trim().toLowerCase()
+  const toLower = targetStage.name.trim().toLowerCase()
+  const rule = PIPELINE_AUTO_MOVE_RULES.find((r) => r.from === fromLower && r.to === toLower)
+
+  if (rule) {
+    // Effective lead warmth: prefer the freshly-computed score from this
+    // analysis batch; fall back to the pre-run score when the model skipped
+    // lead_score (shouldn't happen in practice, but safe default = 0 → no move).
+    const aiScore = result.lead_score?.value ?? args.currentAiScore ?? 0
+    if (aiScore >= rule.minAiScore) {
+      // Execute the automatic stage change.
+      await db.from('deals').update({ stage_id: targetStage.id }).eq('id', deal.id)
+      // Resolve any stale pending pipeline_move suggestion for this lead
+      // (e.g. from an earlier run that created one before auto-progression
+      // was active, or a manual-accept race).
+      const { data: staleSuggestion } = await db
+        .from('ai_suggestions')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('contact_id', contactId)
+        .eq('category', 'pipeline_move')
+        .eq('status', 'pending')
+        .maybeSingle()
+      if (staleSuggestion) {
+        await db
+          .from('ai_suggestions')
+          .update({ status: 'done', resolved_at: new Date().toISOString() })
+          .eq('id', staleSuggestion.id)
+      }
+    }
+    // Whether we auto-moved or the score was insufficient, these transitions
+    // must never produce a pending Central de IA suggestion — return early.
+    return
+  }
+  // ── End auto-progression ─────────────────────────────────────────────────
+
   const payload = {
     deal_id: deal.id,
     from_stage_id: deal.stage_id,
@@ -419,6 +474,7 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
       deal,
       stages,
       result: extraction.result,
+      currentAiScore: currentScore,
     })
 
     await db

@@ -32,11 +32,12 @@ interface FakeSuggestionsDb {
     insert: unknown[];
     update: { id: string; patch: unknown }[];
     contactUpdate: unknown[];
+    dealUpdate: unknown[];
   };
 }
 
 function fakeDb(existingPending: { id: string; payload: unknown } | null = null): FakeSuggestionsDb {
-  const calls: FakeSuggestionsDb['calls'] = { insert: [], update: [], contactUpdate: [] };
+  const calls: FakeSuggestionsDb['calls'] = { insert: [], update: [], contactUpdate: [], dealUpdate: [] };
 
   const db = {
     from(table: string) {
@@ -47,6 +48,18 @@ function fakeDb(existingPending: { id: string; payload: unknown } | null = null)
             return {
               eq() {
                 return Promise.resolve({ data: null, error: null });
+              },
+            };
+          },
+        };
+      }
+      if (table === 'deals') {
+        return {
+          update(patch: unknown) {
+            calls.dealUpdate.push(patch);
+            return {
+              eq() {
+                return Promise.resolve({ data: { id: 'deal-1' }, error: null });
               },
             };
           },
@@ -241,13 +254,19 @@ describe('applyLeadAnalysisResult — tags (section 19.1/19.2/19.3)', () => {
 });
 
 describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19.7)', () => {
-  it('scenario 4: creates a suggestion on a clear interest signal', async () => {
+  // ── Scenario 4 (updated): auto-move transitions no longer produce suggestions ──
+  // Qualificação → Interesse is now handled by auto-progression; a pending
+  // suggestion must NOT be created regardless of score, because these moves
+  // now appear in Central de IA only as auto-executed history (status: done),
+  // never as pending cards awaiting human action.
+  it('scenario 4a: does NOT create a suggestion for Qualificação → Interesse (insufficient ai_score)', async () => {
     const { db, calls } = fakeDb();
     await applyLeadAnalysisResult({
       db: db as never,
       ...BASE_ARGS,
       deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
       stages: STAGES,
+      currentAiScore: 5, // below minAiScore 7 for this transition
       result: result({
         stage_suggestion: {
           should_suggest: true,
@@ -258,19 +277,152 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
       }),
     });
 
-    expect(calls.insert).toHaveLength(1);
-    const inserted = calls.insert[0] as Record<string, unknown>;
-    expect(inserted.category).toBe('pipeline_move');
-    expect(inserted.title).toBe('Qualificação → Interesse');
-    expect(inserted.payload).toMatchObject({
-      deal_id: 'deal-1',
-      from_stage_id: 'stage-qualificacao',
-      to_stage_id: 'stage-interesse',
-      score: 87,
-    });
+    // Score insufficient → silent skip; no pending suggestion, no auto-move
+    expect(calls.insert).toHaveLength(0);
+    expect(calls.dealUpdate).toHaveLength(0);
   });
 
-  it('scenario 5: respects whatever real stage the model targets (e.g. Follow-up, not Interesse)', async () => {
+  it('scenario 4b: auto-moves Qualificação → Interesse when ai_score qualifies', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
+      stages: STAGES,
+      currentAiScore: 8, // ≥ minAiScore 7 → auto-move
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Solicitou simulação de financiamento.',
+          score: 87,
+        },
+      }),
+    });
+
+    // Auto-move executed; no pending suggestion in Central de IA
+    expect(calls.dealUpdate).toHaveLength(1);
+    expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
+    expect(calls.insert).toHaveLength(0);
+  });
+
+  it('scenario 4c: auto-moves Qualificação → Interesse using freshly-computed lead_score over currentAiScore', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
+      stages: STAGES,
+      currentAiScore: 5, // would be insufficient on its own
+      result: result({
+        lead_score: { value: 9, reason: 'Agendou visita.' }, // freshly-computed wins
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Agendou visita ao imóvel.',
+          score: 92,
+        },
+      }),
+    });
+
+    expect(calls.dealUpdate).toHaveLength(1);
+    expect(calls.insert).toHaveLength(0);
+  });
+
+  it('auto-moves Novo Lead → Qualificação when ai_score ≥ 3 and AI has evidence', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 4, // ≥ minAiScore 3
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Qualificação',
+          justification: 'Informou bairro e número de quartos desejados.',
+          score: 75,
+        },
+      }),
+    });
+
+    expect(calls.dealUpdate).toHaveLength(1);
+    expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-qualificacao' });
+    expect(calls.insert).toHaveLength(0);
+  });
+
+  it('does NOT auto-move Novo Lead → Qualificação when ai_score is too low', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 2, // < minAiScore 3
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Qualificação',
+          justification: 'Sinal fraco.',
+          score: 65,
+        },
+      }),
+    });
+
+    expect(calls.dealUpdate).toHaveLength(0);
+    expect(calls.insert).toHaveLength(0);
+  });
+
+  it('auto-moves Novo Lead → Interesse directly when ai_score ≥ 7', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 8,
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Pediu simulação de financiamento na primeira mensagem.',
+          score: 88,
+        },
+      }),
+    });
+
+    expect(calls.dealUpdate).toHaveLength(1);
+    expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
+    expect(calls.insert).toHaveLength(0);
+  });
+
+  it('resolves a stale pending suggestion when auto-moving', async () => {
+    const { db, calls } = fakeDb({ id: 'stale-sugg', payload: { to_stage_id: 'stage-interesse' } });
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
+      stages: STAGES,
+      currentAiScore: 8,
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Solicitou proposta formal.',
+          score: 90,
+        },
+      }),
+    });
+
+    expect(calls.dealUpdate).toHaveLength(1);
+    // Stale pending suggestion must be resolved as done
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]).toMatchObject({ id: 'stale-sugg', patch: { status: 'done' } });
+    expect(calls.insert).toHaveLength(0);
+  });
+
+  it('scenario 5: keeps suggestion flow for Follow-up (not automated)', async () => {
     const { db, calls } = fakeDb();
     await applyLeadAnalysisResult({
       db: db as never,
@@ -287,8 +439,11 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
       }),
     });
 
+    // Follow-up is NOT an auto-move transition → creates pending suggestion for human review
+    expect(calls.insert).toHaveLength(1);
     const inserted = calls.insert[0] as Record<string, unknown>;
     expect((inserted.payload as Record<string, unknown>).to_stage_name).toBe('Follow-up');
+    expect(calls.dealUpdate).toHaveLength(0);
   });
 
   it('scenario 7: does not duplicate a suggestion for a lead already correctly staged', async () => {
@@ -336,8 +491,10 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     expect(calls.update[0]).toMatchObject({ id: 'sugg-1', patch: { status: 'done' } });
   });
 
-  it('section 7: updates an existing pending suggestion instead of creating a second one', async () => {
-    const { db, calls } = fakeDb({ id: 'sugg-1', payload: { to_stage_id: 'stage-interesse' } });
+  it('section 7: updates an existing pending Follow-up suggestion instead of creating a second one', async () => {
+    // For non-auto-move transitions (Follow-up), the existing dedup logic must
+    // still update the existing pending suggestion rather than inserting a new one.
+    const { db, calls } = fakeDb({ id: 'sugg-1', payload: { to_stage_id: 'stage-followup' } });
     await applyLeadAnalysisResult({
       db: db as never,
       ...BASE_ARGS,
@@ -346,9 +503,9 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
       result: result({
         stage_suggestion: {
           should_suggest: true,
-          target_stage_name: 'Interesse',
-          justification: 'Mais um sinal de interesse.',
-          score: 88,
+          target_stage_name: 'Follow-up',
+          justification: 'Continua aguardando venda do imóvel atual.',
+          score: 72,
         },
       }),
     });
@@ -396,6 +553,35 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     });
 
     expect(calls.insert).toHaveLength(0);
+  });
+
+  it('Interesse stage is never auto-moved backward — suggestion created for human review', async () => {
+    // Backward moves are not in PIPELINE_AUTO_MOVE_RULES, so they fall through
+    // to the existing human-approval suggestion flow (the AI rarely suggests
+    // backward, but when it does we surface it as a normal suggestion, not a
+    // silent skip, so agents can review).
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-interesse' },
+      stages: STAGES,
+      currentAiScore: 9,
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Qualificação',
+          justification: 'Lead disse que precisa repensar.',
+          score: 65,
+        },
+      }),
+    });
+
+    // Not an auto-move transition → no auto-move; creates a pending suggestion
+    expect(calls.dealUpdate).toHaveLength(0);
+    expect(calls.insert).toHaveLength(1);
+    const inserted = calls.insert[0] as Record<string, unknown>;
+    expect((inserted.payload as Record<string, unknown>).to_stage_name).toBe('Qualificação');
   });
 
   it('does nothing when the lead has no deal, even with a strong signal', async () => {
