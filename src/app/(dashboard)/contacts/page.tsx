@@ -17,6 +17,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Slider } from '@/components/ui/slider';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -666,14 +667,18 @@ function ContactsPageInner() {
   const activeFilterCount =
     selectedTagIds.length + (scoreActive ? 1 : 0) + (personalWhatsappActive ? 1 : 0);
 
-  const SCORE_PRESETS: [number, number][] = [
-    [0, 2],
-    [0, 3],
-    [4, 6],
-    [6, 10],
-    [7, 10],
-    [8, 10],
-  ];
+  // Live thumb positions while dragging the score range slider — kept
+  // separate from scoreMin/scoreMax (the committed filter state that
+  // actually drives fetchContacts) so dragging doesn't fire a query per
+  // pixel. Resynced whenever the committed range changes elsewhere
+  // (e.g. "Limpar tudo") via the render-time "adjusting state when a
+  // prop changes" pattern — no effect needed.
+  const [scoreDraft, setScoreDraft] = useState<[number, number]>([scoreMin, scoreMax]);
+  const committedScoreRef = useRef<[number, number]>([scoreMin, scoreMax]);
+  if (committedScoreRef.current[0] !== scoreMin || committedScoreRef.current[1] !== scoreMax) {
+    committedScoreRef.current = [scoreMin, scoreMax];
+    setScoreDraft([scoreMin, scoreMax]);
+  }
 
   function toggleView() {
     setPage(0);
@@ -835,34 +840,39 @@ function ContactsPageInner() {
                 )}
               </div>
 
-              {/* Score */}
+              {/* Score — dual-thumb range slider, integer steps 0-10.
+                  scoreDraft drives the label/thumbs live while dragging;
+                  the actual filter (scoreMin/scoreMax) only commits on
+                  release, so dragging doesn't fire a query per pixel. */}
               <div className="px-3 py-2 border-b border-border">
-                <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {t('filterSectionScore')}
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  <button
-                    onClick={clearScoreFilter}
-                    className={`rounded-full px-2 py-1 text-xs font-medium transition-colors ${
-                      !scoreActive
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-muted text-muted-foreground hover:bg-muted/70'
-                    }`}
-                  >
-                    {t('scoreAll')}
-                  </button>
-                  {SCORE_PRESETS.map(([min, max]) => (
-                    <button
-                      key={`${min}-${max}`}
-                      onClick={() => applyScorePreset(min, max)}
-                      className={`rounded-full px-2 py-1 text-xs font-medium transition-colors ${
-                        scoreMin === min && scoreMax === max
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted text-muted-foreground hover:bg-muted/70'
-                      }`}
-                    >
-                      {min}–{max}
-                    </button>
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {t('filterSectionScore')}
+                  </p>
+                  <span className="text-xs font-medium text-foreground">
+                    {scoreDraft[0] === 0 && scoreDraft[1] === 10
+                      ? t('scoreAll')
+                      : `${t('filterSectionScore')} ${scoreDraft[0]}–${scoreDraft[1]}`}
+                  </span>
+                </div>
+                <Slider
+                  min={0}
+                  max={10}
+                  step={1}
+                  minStepsBetweenValues={0}
+                  value={scoreDraft}
+                  onValueChange={(value) => setScoreDraft(value as [number, number])}
+                  onValueCommitted={(value) => {
+                    const [min, max] = value as [number, number];
+                    applyScorePreset(min, max);
+                  }}
+                  className="px-0.5"
+                />
+                <div className="flex justify-between px-0.5">
+                  {Array.from({ length: 11 }, (_, n) => (
+                    <span key={n} className="text-[9px] tabular-nums text-muted-foreground">
+                      {n}
+                    </span>
                   ))}
                 </div>
               </div>
