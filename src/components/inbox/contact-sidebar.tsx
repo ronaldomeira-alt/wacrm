@@ -22,7 +22,7 @@ import {
   MessageCircle,
   MoreHorizontal,
 } from "lucide-react";
-import { aiScoreBand } from "@/lib/contacts/ai-score";
+import { aiScoreBand, AI_SCORE_GRADIENT_CSS } from "@/lib/contacts/ai-score";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -352,10 +352,11 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
               </div>
               <span className="text-sm font-bold text-foreground">{aiScore}</span>
             </div>
-            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div className="relative mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div className="absolute inset-0 rounded-full" style={{ backgroundImage: AI_SCORE_GRADIENT_CSS }} />
               <div
-                className="h-full rounded-full bg-primary transition-all"
-                style={{ width: `${(aiScore / 10) * 100}%` }}
+                className="absolute inset-y-0 right-0 rounded-full bg-muted transition-all"
+                style={{ width: `${100 - (aiScore / 10) * 100}%` }}
               />
             </div>
             <p className="mt-1 px-1 text-[11px] text-muted-foreground">

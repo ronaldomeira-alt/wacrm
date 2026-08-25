@@ -18,3 +18,23 @@ export function aiScoreBand(score: number): AiScoreBand {
   if (score === 9) return 'hot';
   return 'ready';
 }
+
+// Continuous 0→10 gradient for the score bar. Stops are evenly spaced
+// across the fixed-width track (not the fill div) so the color at any
+// point on the bar always matches that exact score position — the fill
+// is a right-side mask that reveals more of this same gradient as the
+// score rises, instead of restretching a shorter gradient.
+const AI_SCORE_GRADIENT_STOPS = [
+  '#64748B',
+  '#5B7FA3',
+  '#4F8FAF',
+  '#4CA6A8',
+  '#78A85A',
+  '#C5A44A',
+  '#D88A3D',
+  '#C96B4B',
+] as const;
+
+export const AI_SCORE_GRADIENT_CSS = `linear-gradient(90deg, ${AI_SCORE_GRADIENT_STOPS.map(
+  (color, i) => `${color} ${((i / (AI_SCORE_GRADIENT_STOPS.length - 1)) * 100).toFixed(2)}%`,
+).join(', ')})`;

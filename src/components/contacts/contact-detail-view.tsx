@@ -51,7 +51,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { aiScoreBand } from '@/lib/contacts/ai-score';
+import { aiScoreBand, AI_SCORE_GRADIENT_CSS } from '@/lib/contacts/ai-score';
 import { useTranslations } from 'next-intl';
 
 interface ContactDetailViewProps {
@@ -616,10 +616,11 @@ export function ContactDetailView({
                       </div>
                       <span className="text-sm font-bold text-foreground">{aiScore}</span>
                     </div>
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                    <div className="relative mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div className="absolute inset-0 rounded-full" style={{ backgroundImage: AI_SCORE_GRADIENT_CSS }} />
                       <div
-                        className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${(aiScore / 10) * 100}%` }}
+                        className="absolute inset-y-0 right-0 rounded-full bg-muted transition-all"
+                        style={{ width: `${100 - (aiScore / 10) * 100}%` }}
                       />
                     </div>
                     <p className="mt-1.5 text-xs text-muted-foreground">

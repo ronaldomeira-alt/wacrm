@@ -569,7 +569,7 @@
       "aiScore": "Score IA",
       "aiScoreBand": {
         "cold": "Frio",
-        "curious": "Curioso",
+        "curious": "Explorando",
         "interested": "Interessado",
         "warm": "Aquecido",
         "hot": "Muito quente",
@@ -736,7 +736,7 @@
       "aiScore": "Score IA",
       "aiScoreBand": {
         "cold": "Frio",
-        "curious": "Curioso",
+        "curious": "Explorando",
         "interested": "Interessado",
         "warm": "Aquecido",
         "hot": "Muito quente",
