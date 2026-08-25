@@ -121,6 +121,17 @@ export interface Contact {
   /** Reserved for a future AI suggestion (migration 048) — not read or
    *  written by any UI yet. */
   suggested_has_purchased?: boolean | null;
+  /** "WhatsApp pessoal" (migration 082) — true once this lead moved off
+   *  the business number (8810/profissional) onto the agent's personal
+   *  WhatsApp. Defaults to false for every existing and new contact. */
+  is_personal_whatsapp?: boolean;
+  /** Lead-warmth score (migration 082), 0–10, written by the lead
+   *  analysis job (src/lib/ai/lead-analysis.ts) alongside tags — never
+   *  hand-edited. Defaults to 0. */
+  ai_score?: number;
+  /** Short, evidence-based explanation for the current `ai_score`. */
+  ai_score_reason?: string | null;
+  ai_score_updated_at?: string | null;
   /** "Hidden from the active Contacts list" (migration 069), same
    *  reversible-timestamp convention as deals.archived_at. */
   archived_at?: string | null;

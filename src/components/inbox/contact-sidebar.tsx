@@ -18,7 +18,11 @@ import {
   ShoppingBag,
   BrainCircuit,
   Megaphone,
+  Gauge,
+  MessageCircle,
+  MoreHorizontal,
 } from "lucide-react";
+import { aiScoreBand } from "@/lib/contacts/ai-score";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -75,6 +79,21 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
     setOptimisticHasPurchased(null);
   }
   const hasPurchased = optimisticHasPurchased ?? contact?.has_purchased ?? false;
+
+  // Same optimistic-override pattern as hasPurchased above, for the new
+  // "WhatsApp pessoal" flag (migration 082).
+  const [savingPersonalWhatsapp, setSavingPersonalWhatsapp] = useState(false);
+  const [personalWhatsappContactId, setPersonalWhatsappContactId] = useState(contact?.id);
+  const [optimisticPersonalWhatsapp, setOptimisticPersonalWhatsapp] = useState<
+    boolean | null
+  >(null);
+  if (contact?.id !== personalWhatsappContactId) {
+    setPersonalWhatsappContactId(contact?.id);
+    setOptimisticPersonalWhatsapp(null);
+  }
+  const isPersonalWhatsapp =
+    optimisticPersonalWhatsapp ?? contact?.is_personal_whatsapp ?? false;
+  const aiScore = contact?.ai_score ?? 0;
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
@@ -150,6 +169,37 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
     },
     [contact, hasPurchased],
   );
+
+  const handleTogglePersonalWhatsapp = useCallback(
+    async (value: boolean) => {
+      if (!contact) return;
+      const previous = isPersonalWhatsapp;
+      setOptimisticPersonalWhatsapp(value);
+      setSavingPersonalWhatsapp(true);
+
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("contacts")
+        .update({ is_personal_whatsapp: value, updated_at: new Date().toISOString() })
+        .eq("id", contact.id);
+
+      if (error) {
+        setOptimisticPersonalWhatsapp(previous);
+      }
+      setSavingPersonalWhatsapp(false);
+    },
+    [contact, isPersonalWhatsapp],
+  );
+
+  // Opens WhatsApp Web against this contact's own number — no new API,
+  // no calendar/contacts sync, just wa.me with the digits already on
+  // the contact record (AGENTS task section 1).
+  const handleOpenPersonalWhatsapp = useCallback(() => {
+    if (!contact?.phone) return;
+    const digits = contact.phone.replace(/\D/g, "");
+    if (!digits) return;
+    window.open(`https://wa.me/${digits}`, "_blank", "noopener,noreferrer");
+  }, [contact]);
 
   if (!contact) {
     return (
@@ -286,6 +336,74 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
                 onCheckedChange={handleToggleHasPurchased}
                 disabled={savingHasPurchased}
               />
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
+          {/* Score IA — same job that writes tags also writes ai_score
+              (migration 082); this is display-only, no manual edit. */}
+          <div>
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                <Gauge className="h-3 w-3" />
+                {tSidebar("aiScore")}
+              </div>
+              <span className="text-sm font-bold text-foreground">{aiScore}</span>
+            </div>
+            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${(aiScore / 10) * 100}%` }}
+              />
+            </div>
+            <p className="mt-1 px-1 text-[11px] text-muted-foreground">
+              {tSidebar(`aiScoreBand.${aiScoreBand(aiScore)}`)}
+            </p>
+          </div>
+
+          {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
+          {/* WhatsApp pessoal — toggle only flips the flag; the ⋯ menu
+              opens WhatsApp Web on this contact's own number (AGENTS
+              task section 1). Disabled while the contact is still on
+              8810/profissional, matching the task's "oculto/desabilitado"
+              rule. */}
+          <div>
+            <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <MessageCircle className="h-3 w-3" />
+              {tSidebar("personalWhatsapp")}
+            </div>
+            <div className="mt-2 flex items-center justify-between rounded-lg bg-muted px-3 py-2">
+              <span className="text-xs text-muted-foreground">
+                {isPersonalWhatsapp ? tSidebar("hasPurchasedYes") : tSidebar("hasPurchasedNo")}
+              </span>
+              <div className="flex items-center gap-1">
+                <Switch
+                  checked={isPersonalWhatsapp}
+                  onCheckedChange={handleTogglePersonalWhatsapp}
+                  disabled={savingPersonalWhatsapp}
+                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    disabled={!isPersonalWhatsapp}
+                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                  >
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-52 border-border bg-popover">
+                    <DropdownMenuItem
+                      onClick={handleOpenPersonalWhatsapp}
+                      className="text-popover-foreground focus:bg-muted focus:text-foreground"
+                    >
+                      <MessageCircle className="h-3.5 w-3.5" />
+                      {tSidebar("openPersonalWhatsapp")}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           </div>
 

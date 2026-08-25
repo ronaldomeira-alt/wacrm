@@ -120,6 +120,12 @@ function ContactsPageInner() {
   // filter_contacts_by_all_tags, migrations 025 and 039).
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [tagFilterMode, setTagFilterMode] = useState<'any' | 'all'>('any');
+  // Score + WhatsApp pessoal filters — combine with tags via
+  // filter_contacts_combined (migration 082). Full range (0-10) and
+  // 'all' mean "no filter" on that axis.
+  const [scoreMin, setScoreMin] = useState(0);
+  const [scoreMax, setScoreMax] = useState(10);
+  const [personalWhatsappFilter, setPersonalWhatsappFilter] = useState<'all' | 'yes' | 'no'>('all');
 
   // Modals
   const [formOpen, setFormOpen] = useState(false);
@@ -161,6 +167,14 @@ function ContactsPageInner() {
       });
     }
   }, [supabase]);
+
+  // Any of the three combinable filters (tags, score range, WhatsApp
+  // pessoal) being non-default routes fetchContacts/handleExportCsv
+  // through filter_contacts_combined instead of the plain query.
+  const scoreActive = scoreMin > 0 || scoreMax < 10;
+  const personalWhatsappActive = personalWhatsappFilter !== 'all';
+  const hasStructuredFilter =
+    selectedTagIds.length > 0 || scoreActive || personalWhatsappActive;
 
   const fetchContacts = useCallback(async () => {
     const seq = ++fetchSeq.current;
@@ -221,17 +235,19 @@ function ContactsPageInner() {
       const rows = (data ?? []) as { contact: Contact; total_count: number }[];
       contactRows = rows.map((r) => r.contact);
       count = rows.length > 0 ? Number(rows[0].total_count) : 0;
-    } else if (selectedTagIds.length > 0) {
-      // Tag filter active — resolve it server-side (join + distinct +
-      // windowed total count + pagination) so a tag covering many
-      // contacts can't silently truncate the result or overflow an IN
-      // clause. filter_contacts_by_tags matches ANY selected tag
-      // (migration 025); filter_contacts_by_all_tags requires ALL of
-      // them (migration 039) for combined qualification filtering.
-      const rpcName =
-        tagFilterMode === 'all' ? 'filter_contacts_by_all_tags' : 'filter_contacts_by_tags';
-      const { data, error } = await supabase.rpc(rpcName, {
+    } else if (hasStructuredFilter) {
+      // Tags and/or score and/or WhatsApp pessoal active — resolve
+      // server-side via filter_contacts_combined (migration 082), same
+      // join + windowed total count + pagination reasoning as the old
+      // tags-only filter_contacts_by_tags/_all_tags (025/039) it
+      // replaces: a tag covering many contacts can't silently truncate
+      // the result or overflow an IN clause.
+      const { data, error } = await supabase.rpc('filter_contacts_combined', {
         p_tag_ids: selectedTagIds,
+        p_tag_mode: tagFilterMode,
+        p_min_score: scoreMin,
+        p_max_score: scoreMax,
+        p_personal_whatsapp: personalWhatsappFilter === 'all' ? null : personalWhatsappFilter,
         p_search: term || null,
         p_limit: PAGE_SIZE,
         p_offset: from,
@@ -300,7 +316,21 @@ function ContactsPageInner() {
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagFilterMode, tagsMap, isUnclassifiedFilter, view, t]);
+  }, [
+    supabase,
+    page,
+    search,
+    selectedTagIds,
+    tagFilterMode,
+    hasStructuredFilter,
+    scoreMin,
+    scoreMax,
+    personalWhatsappFilter,
+    tagsMap,
+    isUnclassifiedFilter,
+    view,
+    t,
+  ]);
 
   // Exports every contact matching the *current* filters (search + tag
   // selection, including the unclassified drill-through) — not just the
@@ -337,11 +367,13 @@ function ContactsPageInner() {
           });
           if (error) throw error;
           rows = ((data ?? []) as { contact: Contact }[]).map((r) => r.contact);
-        } else if (selectedTagIds.length > 0) {
-          const rpcName =
-            tagFilterMode === 'all' ? 'filter_contacts_by_all_tags' : 'filter_contacts_by_tags';
-          const { data, error } = await supabase.rpc(rpcName, {
+        } else if (hasStructuredFilter) {
+          const { data, error } = await supabase.rpc('filter_contacts_combined', {
             p_tag_ids: selectedTagIds,
+            p_tag_mode: tagFilterMode,
+            p_min_score: scoreMin,
+            p_max_score: scoreMax,
+            p_personal_whatsapp: personalWhatsappFilter === 'all' ? null : personalWhatsappFilter,
             p_search: term || null,
             p_limit: EXPORT_BATCH_SIZE,
             p_offset: offset,
@@ -410,6 +442,10 @@ function ContactsPageInner() {
     search,
     selectedTagIds,
     tagFilterMode,
+    hasStructuredFilter,
+    scoreMin,
+    scoreMax,
+    personalWhatsappFilter,
     isUnclassifiedFilter,
     tagsMap,
     totalCount,
@@ -576,7 +612,8 @@ function ContactsPageInner() {
   const allTags = Object.values(tagsMap).sort((a, b) =>
     a.name.localeCompare(b.name)
   );
-  const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0;
+  const hasActiveFilters =
+    search.trim().length > 0 || selectedTagIds.length > 0 || scoreActive || personalWhatsappActive;
 
   function toggleTagFilter(tagId: string) {
     // A manual tag pick is a positive "has this tag" selection, which
@@ -596,6 +633,47 @@ function ContactsPageInner() {
     setTagFilterMode('any');
     setPage(0);
   }
+
+  // Score/WhatsApp pessoal setters mirror toggleTagFilter above: a
+  // manual pick can't compose with the unclassified drill-through, and
+  // any change resets to page 0 since the result set size can change.
+  function applyScorePreset(min: number, max: number) {
+    if (isUnclassifiedFilter) clearUnclassifiedFilter();
+    setScoreMin(min);
+    setScoreMax(max);
+    setPage(0);
+  }
+
+  function clearScoreFilter() {
+    applyScorePreset(0, 10);
+  }
+
+  function applyPersonalWhatsappFilter(value: 'all' | 'yes' | 'no') {
+    if (isUnclassifiedFilter) clearUnclassifiedFilter();
+    setPersonalWhatsappFilter(value);
+    setPage(0);
+  }
+
+  function clearAllFilters() {
+    setSelectedTagIds([]);
+    setTagFilterMode('any');
+    setScoreMin(0);
+    setScoreMax(10);
+    setPersonalWhatsappFilter('all');
+    setPage(0);
+  }
+
+  const activeFilterCount =
+    selectedTagIds.length + (scoreActive ? 1 : 0) + (personalWhatsappActive ? 1 : 0);
+
+  const SCORE_PRESETS: [number, number][] = [
+    [0, 2],
+    [0, 3],
+    [4, 6],
+    [6, 10],
+    [7, 10],
+    [8, 10],
+  ];
 
   function toggleView() {
     setPage(0);
@@ -721,8 +799,9 @@ function ContactsPageInner() {
             />
           </div>
 
-          {/* Tag filter only applies to the active list — fetchContacts
-              skips selectedTagIds entirely while viewing archived. */}
+          {/* Combined filter (tags + score + WhatsApp pessoal) only
+              applies to the active list — fetchContacts skips all three
+              while viewing archived. */}
           {view === 'active' && (
           <Popover>
             <PopoverTrigger
@@ -734,88 +813,163 @@ function ContactsPageInner() {
               }
             >
               <Filter className="size-4" />
-              {t('filterByTags')}
-              {selectedTagIds.length > 0 && (
+              {t('filterButton')}
+              {activeFilterCount > 0 && (
                 <span className="ml-1 inline-flex items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
-                  {selectedTagIds.length}
+                  {activeFilterCount}
                 </span>
               )}
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-64 p-0">
+            <PopoverContent align="start" className="w-72 p-0">
               <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                 <span className="text-sm font-medium text-popover-foreground">
-                  {t('filterByTags')}
+                  {t('filterButton')}
                 </span>
-                {selectedTagIds.length > 0 && (
+                {activeFilterCount > 0 && (
                   <button
-                    onClick={clearTagFilters}
+                    onClick={clearAllFilters}
                     className="text-xs text-muted-foreground hover:text-foreground"
                   >
                     {t('clearAll')}
                   </button>
                 )}
               </div>
-              {selectedTagIds.length >= 2 && (
-                <div className="flex gap-1 px-3 py-2 border-b border-border">
-                  {(['any', 'all'] as const).map((mode) => (
+
+              {/* Score */}
+              <div className="px-3 py-2 border-b border-border">
+                <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  {t('filterSectionScore')}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    onClick={clearScoreFilter}
+                    className={`rounded-full px-2 py-1 text-xs font-medium transition-colors ${
+                      !scoreActive
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted text-muted-foreground hover:bg-muted/70'
+                    }`}
+                  >
+                    {t('scoreAll')}
+                  </button>
+                  {SCORE_PRESETS.map(([min, max]) => (
                     <button
-                      key={mode}
-                      onClick={() => {
-                        setTagFilterMode(mode);
-                        setPage(0);
-                      }}
-                      className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-                        tagFilterMode === mode
+                      key={`${min}-${max}`}
+                      onClick={() => applyScorePreset(min, max)}
+                      className={`rounded-full px-2 py-1 text-xs font-medium transition-colors ${
+                        scoreMin === min && scoreMax === max
                           ? 'bg-primary text-primary-foreground'
                           : 'bg-muted text-muted-foreground hover:bg-muted/70'
                       }`}
                     >
-                      {mode === 'any' ? t('filterModeAny') : t('filterModeAll')}
+                      {min}–{max}
                     </button>
                   ))}
                 </div>
-              )}
-              {allTags.length === 0 ? (
-                <p className="px-3 py-4 text-sm text-muted-foreground text-center">
-                  {t('noTagsYet')}
+              </div>
+
+              {/* WhatsApp pessoal */}
+              <div className="px-3 py-2 border-b border-border">
+                <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  {t('filterSectionWhatsapp')}
                 </p>
-              ) : (
-                <div className="max-h-64 overflow-y-auto py-1">
-                  {groupTagsByCategory(allTags).map(([category, group]) => (
-                    <div key={category ?? '__none__'}>
-                      <p className="px-3 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                        {category ?? t('noCategory')}
-                      </p>
-                      {group.map((tag) => (
-                        <label
-                          key={tag.id}
-                          className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50"
-                        >
-                          <Checkbox
-                            checked={selectedTagIds.includes(tag.id)}
-                            onCheckedChange={() => toggleTagFilter(tag.id)}
-                            aria-label={`Filter by ${tag.name}`}
-                          />
-                          <span
-                            className="size-2.5 shrink-0 rounded-full"
-                            style={{ backgroundColor: tag.color }}
-                          />
-                          <span className="text-sm text-popover-foreground truncate">
-                            {tag.name}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
+                <div className="flex gap-1">
+                  {(['all', 'yes', 'no'] as const).map((value) => (
+                    <button
+                      key={value}
+                      onClick={() => applyPersonalWhatsappFilter(value)}
+                      className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                        personalWhatsappFilter === value
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted text-muted-foreground hover:bg-muted/70'
+                      }`}
+                    >
+                      {value === 'all'
+                        ? t('personalWhatsappAll')
+                        : value === 'yes'
+                          ? t('personalWhatsappYes')
+                          : t('personalWhatsappNo')}
+                    </button>
                   ))}
                 </div>
-              )}
+              </div>
+
+              {/* Tags */}
+              <div>
+                <div className="flex items-center justify-between px-3 pt-2">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {t('filterSectionTags')}
+                  </p>
+                  {selectedTagIds.length > 0 && (
+                    <button
+                      onClick={clearTagFilters}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      {t('clearAll')}
+                    </button>
+                  )}
+                </div>
+                {selectedTagIds.length >= 2 && (
+                  <div className="flex gap-1 px-3 py-2">
+                    {(['any', 'all'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => {
+                          setTagFilterMode(mode);
+                          setPage(0);
+                        }}
+                        className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                          tagFilterMode === mode
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-muted text-muted-foreground hover:bg-muted/70'
+                        }`}
+                      >
+                        {mode === 'any' ? t('filterModeAny') : t('filterModeAll')}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {allTags.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-muted-foreground text-center">
+                    {t('noTagsYet')}
+                  </p>
+                ) : (
+                  <div className="max-h-64 overflow-y-auto py-1">
+                    {groupTagsByCategory(allTags).map(([category, group]) => (
+                      <div key={category ?? '__none__'}>
+                        <p className="px-3 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                          {category ?? t('noCategory')}
+                        </p>
+                        {group.map((tag) => (
+                          <label
+                            key={tag.id}
+                            className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50"
+                          >
+                            <Checkbox
+                              checked={selectedTagIds.includes(tag.id)}
+                              onCheckedChange={() => toggleTagFilter(tag.id)}
+                              aria-label={`Filter by ${tag.name}`}
+                            />
+                            <span
+                              className="size-2.5 shrink-0 rounded-full"
+                              style={{ backgroundColor: tag.color }}
+                            />
+                            <span className="text-sm text-popover-foreground truncate">
+                              {tag.name}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </PopoverContent>
           </Popover>
           )}
         </div>
 
-        {/* Active tag-filter chips */}
-        {view === 'active' && selectedTagIds.length > 0 && (
+        {/* Active filter chips — tags, score range, WhatsApp pessoal */}
+        {view === 'active' && activeFilterCount > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             {selectedTagIds.map((id) => {
               const tag = tagsMap[id];
@@ -840,8 +994,33 @@ function ContactsPageInner() {
                 </span>
               );
             })}
+            {scoreActive && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                {t('filterSectionScore')}: {scoreMin}–{scoreMax}
+                <button
+                  onClick={clearScoreFilter}
+                  aria-label="Remove score filter"
+                  className="hover:opacity-70"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            )}
+            {personalWhatsappActive && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                {t('filterSectionWhatsapp')}:{' '}
+                {personalWhatsappFilter === 'yes' ? t('personalWhatsappYes') : t('personalWhatsappNo')}
+                <button
+                  onClick={() => applyPersonalWhatsappFilter('all')}
+                  aria-label="Remove WhatsApp pessoal filter"
+                  className="hover:opacity-70"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            )}
             <button
-              onClick={clearTagFilters}
+              onClick={clearAllFilters}
               className="text-xs text-muted-foreground hover:text-foreground px-1"
             >
               {t('clearAll')}

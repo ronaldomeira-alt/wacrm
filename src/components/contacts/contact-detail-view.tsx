@@ -41,7 +41,17 @@ import {
   X,
   DollarSign,
   LayoutTemplate,
+  Gauge,
+  MessageCircle,
+  MoreHorizontal,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { aiScoreBand } from '@/lib/contacts/ai-score';
 import { useTranslations } from 'next-intl';
 
 interface ContactDetailViewProps {
@@ -79,6 +89,9 @@ export function ContactDetailView({
   const [savingDetails, setSavingDetails] = useState(false);
   const [hasPurchased, setHasPurchased] = useState(false);
   const [savingHasPurchased, setSavingHasPurchased] = useState(false);
+  const [isPersonalWhatsapp, setIsPersonalWhatsapp] = useState(false);
+  const [savingPersonalWhatsapp, setSavingPersonalWhatsapp] = useState(false);
+  const [aiScore, setAiScore] = useState(0);
 
   // Tags tab
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -118,6 +131,8 @@ export function ContactDetailView({
       setEditEmail(data.email ?? '');
       setEditCompany(data.company ?? '');
       setHasPurchased(data.has_purchased ?? false);
+      setIsPersonalWhatsapp(data.is_personal_whatsapp ?? false);
+      setAiScore(data.ai_score ?? 0);
     }
     setLoading(false);
   }, [contactId, supabase]);
@@ -248,6 +263,35 @@ export function ContactDetailView({
       onUpdated();
     }
     setSavingHasPurchased(false);
+  }
+
+  async function togglePersonalWhatsapp(value: boolean) {
+    if (!contactId) return;
+    const previous = isPersonalWhatsapp;
+    setIsPersonalWhatsapp(value);
+    setSavingPersonalWhatsapp(true);
+
+    const { error } = await supabase
+      .from('contacts')
+      .update({ is_personal_whatsapp: value, updated_at: new Date().toISOString() })
+      .eq('id', contactId);
+
+    if (error) {
+      setIsPersonalWhatsapp(previous);
+      toast.error(t('toastUpdateFailed'));
+    } else {
+      onUpdated();
+    }
+    setSavingPersonalWhatsapp(false);
+  }
+
+  // Opens WhatsApp Web on this contact's own number — no new API, no
+  // calendar/contacts sync (AGENTS task section 1).
+  function openPersonalWhatsapp() {
+    if (!contact?.phone) return;
+    const digits = contact.phone.replace(/\D/g, '');
+    if (!digits) return;
+    window.open(`https://wa.me/${digits}`, '_blank', 'noopener,noreferrer');
   }
 
   async function toggleTag(tagId: string) {
@@ -561,6 +605,65 @@ export function ContactDetailView({
                       disabled={savingHasPurchased}
                     />
                   </div>
+
+                  {/* Score IA — display-only, written by the lead
+                      analysis job alongside tags (migration 082). */}
+                  <div className="rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                        <Gauge className="size-3.5 text-muted-foreground" />
+                        {t('aiScore')}
+                      </div>
+                      <span className="text-sm font-bold text-foreground">{aiScore}</span>
+                    </div>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all"
+                        style={{ width: `${(aiScore / 10) * 100}%` }}
+                      />
+                    </div>
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      {t(`aiScoreBand.${aiScoreBand(aiScore)}`)}
+                    </p>
+                  </div>
+
+                  {/* WhatsApp pessoal — toggle only flips the flag; the
+                      ⋯ menu opens WhatsApp Web on this contact's number. */}
+                  <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">
+                        {t('personalWhatsapp')}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {isPersonalWhatsapp ? t('hasPurchasedYes') : t('hasPurchasedNo')}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Switch
+                        checked={isPersonalWhatsapp}
+                        onCheckedChange={togglePersonalWhatsapp}
+                        disabled={savingPersonalWhatsapp}
+                      />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          disabled={!isPersonalWhatsapp}
+                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+                        >
+                          <MoreHorizontal className="size-3.5" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="bg-popover border-border">
+                          <DropdownMenuItem
+                            onClick={openPersonalWhatsapp}
+                            className="text-popover-foreground focus:bg-muted focus:text-foreground"
+                          >
+                            <MessageCircle className="size-3.5" />
+                            {t('openPersonalWhatsapp')}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+
                   <Button
                     onClick={saveDetails}
                     disabled={savingDetails}
