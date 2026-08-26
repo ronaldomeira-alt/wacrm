@@ -21,7 +21,7 @@ async function cancelFollowupIfActive(accountId: string, contactId: string) {
 
     if (activePlan) {
       // Cancela o plano
-      await admin.from('followup_plans').update({ status: 'cancelled' }).eq('id', activePlan.id);
+      await admin.from('followup_plans').update({ status: 'cancelled' } as any).eq('id', activePlan.id);
 
       // Cancela os envios agendados pendentes para este plano
       await admin
