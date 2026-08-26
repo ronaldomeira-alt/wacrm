@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit
 import { loadAiConfig } from '@/lib/ai/config'
 import { generateFollowupFreeMessage, selectFollowupTemplate } from '@/lib/ai/followup-message'
 import { logAiUsage } from '@/lib/ai/usage'
+import { type AiUsage } from '@/lib/ai/types'
 
 function bad(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status })
