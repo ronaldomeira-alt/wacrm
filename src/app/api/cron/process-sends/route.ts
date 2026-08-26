@@ -51,9 +51,9 @@ export async function POST(request: Request) {
 
       await supabase.from('scheduled_sends').update({ status: 'sent', processed_at: new Date().toISOString() }).eq('id', send.id);
 
-    } catch (e) {
+    } catch (e: unknown) {
       console.error('Cron: Failed to send message', e);
-      await supabase.from('scheduled_sends').update({ status: 'failed', error_message: e.message }).eq('id', send.id);
+      await supabase.from('scheduled_sends').update({ status: 'failed', error_message: (e instanceof Error ? e.message : String(e)) }).eq('id', send.id);
     }
   }
 
