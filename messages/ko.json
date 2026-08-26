@@ -388,7 +388,8 @@
       "markRead": "읽음으로 표시",
       "pin": "고정",
       "unpin": "고정 해제",
-      "delete": "삭제"
+      "delete": "삭제",
+      "block": "리드 차단"
     },
     "messageThread": {
       "backToConversations": "대화 목록으로 돌아가기",
@@ -856,6 +857,14 @@
       "deleteBtn": "삭제",
       "toastDeleted": "리드가 삭제되었습니다.",
       "toastFailedDelete": "리드를 삭제할 수 없습니다."
+    },
+    "blockDialog": {
+      "title": "리드 차단",
+      "description": "{name}님을 차단하시겠습니까? 연락처는 받은편지함에 더 이상 표시되지 않으며, 이후 보내는 메시지는 대화를 다시 열거나 자동화, AI, 팔로우업을 실행하지 않습니다. 기록은 유지됩니다.",
+      "cancel": "취소",
+      "blockBtn": "차단",
+      "toastBlocked": "리드가 차단되었습니다.",
+      "toastFailedBlock": "리드를 차단할 수 없습니다."
     }
   },
   "Pipelines": {

@@ -388,7 +388,8 @@
       "markRead": "Mark as read",
       "pin": "Pin",
       "unpin": "Unpin",
-      "delete": "Delete"
+      "delete": "Delete",
+      "block": "Block lead"
     },
     "messageThread": {
       "backToConversations": "Back to conversations",
@@ -856,6 +857,14 @@
       "deleteBtn": "Delete",
       "toastDeleted": "Lead deleted.",
       "toastFailedDelete": "Could not delete the lead."
+    },
+    "blockDialog": {
+      "title": "Block lead",
+      "description": "Are you sure you want to block {name}? The contact stops appearing in the Inbox and new messages from them no longer open a conversation, automations, AI, or follow-ups. History is kept.",
+      "cancel": "Cancel",
+      "blockBtn": "Block",
+      "toastBlocked": "Lead blocked.",
+      "toastFailedBlock": "Could not block the lead."
     }
   },
   "Pipelines": {

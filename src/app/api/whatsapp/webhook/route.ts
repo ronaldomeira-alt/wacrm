@@ -626,6 +626,17 @@ async function processMessage(
   if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
 
+  // Blocked contact ("Bloquear lead" in the Inbox, migration 083) —
+  // recognized before any normal processing: no conversation is
+  // opened/reopened, no message is stored, no follow-up plan is
+  // touched, no automation/Flow/AI dispatch runs below. The contact and
+  // any prior history are left exactly as they were; this only stops
+  // NEW inbound traffic from generating new activity.
+  if (contactRecord.blocked_at) {
+    console.log(`[webhook] Ignoring message from blocked contact ${contactRecord.id}`)
+    return
+  }
+
   // Find or create conversation
   const convResult = await findOrCreateConversation(
     accountId,

@@ -15,6 +15,7 @@ import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
 import { DeleteLeadDialog } from "@/components/contacts/delete-lead-dialog";
+import { BlockLeadDialog } from "@/components/contacts/block-lead-dialog";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -111,6 +112,13 @@ function InboxPageInner() {
   // Pipeline's Kanban card (see AGENTS task). A "lead" is the contact
   // row; deleting it cascades to this conversation + its messages.
   const [deleteLeadTarget, setDeleteLeadTarget] = useState<{
+    contactId: string;
+    name: string;
+  } | null>(null);
+  // Block-lead confirmation — same shared-dialog pattern as delete above,
+  // but reversible: sets contacts.blocked_at (migration 083) instead of
+  // deleting the row. See block-lead-dialog.tsx.
+  const [blockLeadTarget, setBlockLeadTarget] = useState<{
     contactId: string;
     name: string;
   } | null>(null);
@@ -666,6 +674,31 @@ function InboxPageInner() {
     [activeConversation, router]
   );
 
+  const handleRequestBlockConversation = useCallback((conv: Conversation) => {
+    setBlockLeadTarget({
+      contactId: conv.contact_id,
+      name: conv.contact?.name || conv.contact?.phone || t("unknownLead"),
+    });
+  }, [t]);
+
+  const handleLeadBlocked = useCallback(
+    (contactId: string) => {
+      setBlockLeadTarget(null);
+      // Same local-state removal as delete — ConversationList's own
+      // `filtered` memo also excludes any contact.blocked_at row, so
+      // this is belt-and-suspenders for the instant it takes a refetch
+      // to pick that up.
+      setConversations((prev) => prev.filter((c) => c.contact_id !== contactId));
+      if (activeConversation?.contact_id === contactId) {
+        setActiveConversation(null);
+        setActiveContact(null);
+        setMessages([]);
+        router.replace("/inbox", { scroll: false });
+      }
+    },
+    [activeConversation, router]
+  );
+
   // Mobile "back" — deselect the conversation so the list pane comes
   // back. Also clears the ?c= param so a refresh lands on the list
   // instead of re-opening the thread the user just backed out of.
@@ -905,6 +938,7 @@ function InboxPageInner() {
             profiles={profiles}
             assignedAgentMap={assignedAgentMap}
             onRequestDelete={handleRequestDeleteConversation}
+            onRequestBlock={handleRequestBlockConversation}
             onMarkUnread={handleMarkUnread}
             onMarkRead={handleMarkRead}
             onTogglePinned={handleTogglePinned}
@@ -981,6 +1015,16 @@ function InboxPageInner() {
         contactId={deleteLeadTarget?.contactId ?? null}
         contactName={deleteLeadTarget?.name ?? ""}
         onDeleted={handleLeadDeleted}
+      />
+
+      <BlockLeadDialog
+        open={!!blockLeadTarget}
+        onOpenChange={(open) => {
+          if (!open) setBlockLeadTarget(null);
+        }}
+        contactId={blockLeadTarget?.contactId ?? null}
+        contactName={blockLeadTarget?.name ?? ""}
+        onBlocked={handleLeadBlocked}
       />
     </div>
   );

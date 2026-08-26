@@ -388,7 +388,8 @@
       "markRead": "Marcar como lido",
       "pin": "Fixar",
       "unpin": "Desafixar",
-      "delete": "Excluir"
+      "delete": "Excluir",
+      "block": "Bloquear lead"
     },
     "messageThread": {
       "backToConversations": "Voltar às conversas",
@@ -856,6 +857,14 @@
       "deleteBtn": "Excluir",
       "toastDeleted": "Lead excluído.",
       "toastFailedDelete": "Não foi possível excluir o lead."
+    },
+    "blockDialog": {
+      "title": "Bloquear lead",
+      "description": "Tem certeza que deseja bloquear {name}? O contato deixa de aparecer na Caixa de Entrada e novas mensagens dele não geram mais conversa, automações, IA ou follow-ups. O histórico é mantido.",
+      "cancel": "Cancelar",
+      "blockBtn": "Bloquear",
+      "toastBlocked": "Lead bloqueado.",
+      "toastFailedBlock": "Não foi possível bloquear o lead."
     }
   },
   "Pipelines": {

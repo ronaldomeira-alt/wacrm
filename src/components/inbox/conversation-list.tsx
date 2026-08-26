@@ -26,6 +26,7 @@ import {
   CheckCheck,
   Pin,
   PinOff,
+  Ban,
 } from "lucide-react";
 import {
   format,
@@ -80,6 +81,9 @@ interface ConversationListProps {
    *  contact — the parent owns the dialog since it also needs to clear
    *  activeConversation if the deleted one was open. */
   onRequestDelete: (conversation: Conversation) => void;
+  /** Opens the shared block-lead confirmation — same reasoning as
+   *  onRequestDelete above. */
+  onRequestBlock: (conversation: Conversation) => void;
   /** Local-state sync after a manual unread mark — same callback the
    *  thread header's "Marcar como não lida" already uses, reused here so
    *  both entry points stay in sync (see message-thread.tsx). */
@@ -135,6 +139,7 @@ export function ConversationList({
   profiles,
   assignedAgentMap,
   onRequestDelete,
+  onRequestBlock,
   onMarkUnread,
   onMarkRead,
   onTogglePinned,
@@ -329,7 +334,9 @@ export function ConversationList({
   }, [tags]);
 
   const filtered = useMemo(() => {
-    let result = conversations;
+    // Blocked contacts never show in the Inbox, regardless of any other
+    // filter selection — unconditional, not just the default "all" view.
+    let result = conversations.filter((c) => !c.contact?.blocked_at);
 
     if (filter === "unread") {
       result = result.filter((c) => c.unread_count > 0);
@@ -672,6 +679,7 @@ export function ConversationList({
                 isActive={conv.id === activeConversationId}
                 onSelect={handleSelect}
                 onRequestDelete={onRequestDelete}
+                onRequestBlock={onRequestBlock}
                 onMarkUnread={handleMarkUnread}
                 onMarkRead={handleMarkRead}
                 onTogglePinned={handleTogglePinned}
@@ -695,6 +703,7 @@ interface ConversationItemProps {
   isActive: boolean;
   onSelect: (conversation: Conversation) => void;
   onRequestDelete: (conversation: Conversation) => void;
+  onRequestBlock: (conversation: Conversation) => void;
   onMarkUnread: (conversation: Conversation) => void;
   onMarkRead: (conversation: Conversation) => void;
   onTogglePinned: (conversation: Conversation) => void;
@@ -791,6 +800,7 @@ function ConversationItem({
   isActive,
   onSelect,
   onRequestDelete,
+  onRequestBlock,
   onMarkUnread,
   onMarkRead,
   onTogglePinned,
@@ -1199,6 +1209,15 @@ function ConversationItem({
     [conversation, onRequestDelete, closeSwipe]
   );
 
+  const handleBlockAction = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      closeSwipe();
+      onRequestBlock(conversation);
+    },
+    [conversation, onRequestBlock, closeSwipe]
+  );
+
   // --- Desktop right-click context menu -----------------------------
   // Reuses the same DropdownMenu primitive as the "..." button below,
   // just controlled and anchored to the cursor instead of a trigger
@@ -1392,6 +1411,10 @@ function ConversationItem({
                 <DropdownMenuItem onClick={handleMarkReadAction}>
                   <CheckCheck className="h-4 w-4" />
                   {t("markRead")}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleBlockAction}>
+                  <Ban className="h-4 w-4" />
+                  {t("block")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   variant="destructive"

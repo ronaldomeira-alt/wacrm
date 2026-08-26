@@ -135,6 +135,14 @@ export interface Contact {
   /** "Hidden from the active Contacts list" (migration 069), same
    *  reversible-timestamp convention as deals.archived_at. */
   archived_at?: string | null;
+  /** "Bloqueado" (migration 083) — same reversible-timestamp convention
+   *  as archived_at, but distinct: a blocked contact stays visible in
+   *  Contatos, just excluded from the Inbox, and the webhook
+   *  (processMessage in src/app/api/whatsapp/webhook/route.ts) stops
+   *  all processing for new inbound messages from them (no
+   *  conversation/message insert, no automations, no AI, no
+   *  follow-ups). */
+  blocked_at?: string | null;
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the
    *  Inbox conversation list, for tag filtering). Absent otherwise. */
   tags?: Tag[];
