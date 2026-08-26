@@ -1,4 +1,5 @@
 import { NextResponse, after } from 'next/server'
+import { supabaseAdmin } from '@/lib/supabase/admin'
 // ... outros imports
 
 // NOVA FUNÇÃO para cancelar o plano de follow-up
