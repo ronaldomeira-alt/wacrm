@@ -1,0 +1,843 @@
+<title>Auditoria PWA iPhone</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#f2f4f7; --surface:#ffffff; --surface-2:#e9edf2; --surface-3:#dee3ea;
+    --border:#d3d9e1; --border-strong:#b7bfcb;
+    --text:#161b25; --text-muted:#5a6472; --text-faint:#8993a3;
+    --accent:#0e7a8c; --accent-strong:#0a5f6e; --accent-soft:#e2f2f4; --accent-soft-border:#bfe1e6;
+    --sev-critical:#b3261e; --sev-critical-soft:#fbe6e4;
+    --sev-high:#b4530b; --sev-high-soft:#fbe9d9;
+    --sev-medium:#8a6a00; --sev-medium-soft:#faf1cf;
+    --sev-low:#3f6b52; --sev-low-soft:#e3efe8;
+    --pos:#2f7d5a; --pos-soft:#e4f3ec;
+    --code-bg:#eef1f5; --code-border:#d7dde5;
+    --shadow: 0 1px 2px rgba(20,26,38,0.06), 0 8px 24px -12px rgba(20,26,38,0.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#10131a; --surface:#171b24; --surface-2:#1e232e; --surface-3:#272d3a;
+      --border:#2b3140; --border-strong:#3a4254;
+      --text:#e8ebf1; --text-muted:#9aa3b5; --text-faint:#6b7386;
+      --accent:#4fd2c4; --accent-strong:#7ee4d8; --accent-soft:#0f2b2a; --accent-soft-border:#1c4643;
+      --sev-critical:#ff8479; --sev-critical-soft:#391917;
+      --sev-high:#ffb26b; --sev-high-soft:#3a260f;
+      --sev-medium:#f0d264; --sev-medium-soft:#352b0c;
+      --sev-low:#8fd6ac; --sev-low-soft:#152c22;
+      --pos:#8fd6ac; --pos-soft:#122a20;
+      --code-bg:#1b2029; --code-border:#2c3342;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -16px rgba(0,0,0,0.55);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#10131a; --surface:#171b24; --surface-2:#1e232e; --surface-3:#272d3a;
+    --border:#2b3140; --border-strong:#3a4254;
+    --text:#e8ebf1; --text-muted:#9aa3b5; --text-faint:#6b7386;
+    --accent:#4fd2c4; --accent-strong:#7ee4d8; --accent-soft:#0f2b2a; --accent-soft-border:#1c4643;
+    --sev-critical:#ff8479; --sev-critical-soft:#391917;
+    --sev-high:#ffb26b; --sev-high-soft:#3a260f;
+    --sev-medium:#f0d264; --sev-medium-soft:#352b0c;
+    --sev-low:#8fd6ac; --sev-low-soft:#152c22;
+    --pos:#8fd6ac; --pos-soft:#122a20;
+    --code-bg:#1b2029; --code-border:#2c3342;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -16px rgba(0,0,0,0.55);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,sans-serif;
+    font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px 96px;}
+  code, .mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; font-variant-numeric:tabular-nums;}
+
+  /* ---------- header ---------- */
+  header.hero{
+    padding:56px 0 32px; border-bottom:1px solid var(--border);
+  }
+  .eyebrow{
+    font-family:"IBM Plex Sans Condensed"; font-weight:600; font-size:12.5px;
+    letter-spacing:0.11em; text-transform:uppercase; color:var(--accent-strong);
+    display:flex; align-items:center; gap:8px; margin-bottom:14px;
+  }
+  .eyebrow::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--accent); display:inline-block;}
+  h1{
+    font-size:clamp(30px,4.4vw,42px); line-height:1.08; margin:0 0 14px; font-weight:700;
+    letter-spacing:-0.015em; text-wrap:balance;
+  }
+  .dek{font-size:17px; color:var(--text-muted); max-width:62ch; margin:0 0 28px; text-wrap:pretty;}
+  .metarow{display:flex; flex-wrap:wrap; gap:10px 28px; font-size:13.5px; color:var(--text-faint);}
+  .metarow div{display:flex; gap:6px; align-items:baseline;}
+  .metarow b{color:var(--text-muted); font-weight:600;}
+
+  /* ---------- summary dashboard ---------- */
+  .dash{display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:28px 0 8px;}
+  .stat{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:16px 16px 14px;
+  }
+  .stat .n{font-size:28px; font-weight:700; font-family:"IBM Plex Mono"; line-height:1;}
+  .stat .l{font-size:12px; color:var(--text-faint); margin-top:8px; text-transform:uppercase; letter-spacing:0.06em; font-weight:600;}
+  .stat.crit .n{color:var(--sev-critical);}
+  .stat.high .n{color:var(--sev-high);}
+  .stat.med .n{color:var(--sev-medium);}
+  .stat.low .n{color:var(--sev-low);}
+  @media (max-width:640px){ .dash{grid-template-columns:repeat(2,1fr);} }
+
+  .topcallout{
+    margin-top:16px; padding:16px 18px; border:1px solid var(--accent-soft-border);
+    background:var(--accent-soft); border-radius:10px; font-size:14.5px; color:var(--text);
+  }
+  .topcallout b{color:var(--accent-strong);}
+
+  /* ---------- toc ---------- */
+  nav.toc{
+    margin:36px 0; padding:18px 20px; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px;
+  }
+  nav.toc .toctitle{font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-faint); font-weight:600; margin-bottom:10px;}
+  nav.toc ol{margin:0; padding:0; list-style:none; columns:2; column-gap:24px;}
+  nav.toc li{margin-bottom:6px; break-inside:avoid;}
+  nav.toc a{color:var(--text); text-decoration:none; font-size:14.5px; display:flex; gap:8px;}
+  nav.toc a:hover{color:var(--accent-strong);}
+  nav.toc a .num{color:var(--text-faint); font-family:"IBM Plex Mono"; font-size:13px;}
+  @media (max-width:560px){ nav.toc ol{columns:1;} }
+
+  /* ---------- sections ---------- */
+  section.cat{padding:52px 0 8px; border-top:1px solid var(--border);}
+  section.cat:first-of-type{border-top:none;}
+  .cathead{display:flex; align-items:baseline; gap:14px; margin-bottom:6px;}
+  .catnum{font-family:"IBM Plex Mono"; color:var(--text-faint); font-size:15px;}
+  h2{font-size:23px; margin:0; font-weight:700; letter-spacing:-0.01em;}
+  .catnote{color:var(--text-muted); font-size:14.5px; margin:8px 0 26px; max-width:70ch;}
+
+  /* ---------- finding card ---------- */
+  .finding{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:22px 24px 24px; margin-bottom:18px; box-shadow:var(--shadow);
+  }
+  .fhead{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:14px;}
+  .ftitle{font-size:17px; font-weight:600; margin:0; letter-spacing:-0.005em;}
+  .fid{font-family:"IBM Plex Mono"; font-size:12px; color:var(--text-faint); margin-bottom:4px; display:block;}
+  .chips{display:flex; gap:8px; flex-wrap:wrap; flex-shrink:0;}
+  .chip{
+    font-size:12px; font-weight:600; padding:4px 10px; border-radius:999px; white-space:nowrap;
+    font-family:"IBM Plex Sans Condensed"; letter-spacing:0.02em;
+  }
+  .chip.crit{background:var(--sev-critical-soft); color:var(--sev-critical);}
+  .chip.high{background:var(--sev-high-soft); color:var(--sev-high);}
+  .chip.med{background:var(--sev-medium-soft); color:var(--sev-medium);}
+  .chip.low{background:var(--sev-low-soft); color:var(--sev-low);}
+  .chip.risk{background:var(--surface-2); color:var(--text-muted); border:1px solid var(--border);}
+  .prob{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--text-muted); font-family:"IBM Plex Mono";}
+  .probbar{width:56px; height:6px; border-radius:3px; background:var(--surface-3); overflow:hidden; flex-shrink:0;}
+  .probbar i{display:block; height:100%; background:var(--accent); border-radius:3px;}
+
+  .fbody dl{margin:0; display:grid; grid-template-columns:110px 1fr; gap:10px 16px;}
+  .fbody dt{font-size:11.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-faint); font-weight:600; padding-top:2px;}
+  .fbody dd{margin:0; font-size:14.5px; color:var(--text); padding-bottom:6px;}
+  .fbody dd p{margin:0 0 8px;}
+  .fbody dd p:last-child{margin-bottom:0;}
+  .loc{font-family:"IBM Plex Mono"; font-size:13px; background:var(--code-bg); border:1px solid var(--code-border); padding:1px 6px; border-radius:5px; display:inline-block; margin:2px 6px 2px 0;}
+  pre{
+    background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px;
+    padding:12px 14px; overflow-x:auto; font-size:12.8px; line-height:1.5; margin:4px 0 8px;
+  }
+  pre code{font-family:"IBM Plex Mono"; color:var(--text);}
+  hr.fdiv{border:none; border-top:1px solid var(--border); margin:14px 0;}
+
+  /* ---------- positive callouts ---------- */
+  .positive{
+    background:var(--pos-soft); border:1px solid var(--pos); border-radius:12px;
+    padding:20px 24px; margin:22px 0; font-size:14.5px;
+  }
+  .positive .ptitle{display:flex; align-items:center; gap:8px; font-weight:700; color:var(--pos); margin-bottom:10px; font-size:14px; text-transform:uppercase; letter-spacing:0.04em;}
+  .positive ul{margin:0; padding-left:20px;}
+  .positive li{margin-bottom:6px;}
+  .positive li:last-child{margin-bottom:0;}
+  .positive .loc{background:var(--surface); }
+
+  /* ---------- priority table ---------- */
+  .tablewrap{overflow-x:auto; border:1px solid var(--border); border-radius:12px; margin:22px 0 8px; box-shadow:var(--shadow);}
+  table.priority{width:100%; border-collapse:collapse; font-size:13.8px; background:var(--surface); min-width:760px;}
+  table.priority th{
+    text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-faint);
+    padding:12px 14px; border-bottom:1px solid var(--border-strong); background:var(--surface-2); font-weight:600;
+    position:sticky; top:0;
+  }
+  table.priority td{padding:12px 14px; border-bottom:1px solid var(--border); vertical-align:top;}
+  table.priority tr:last-child td{border-bottom:none;}
+  table.priority tr:nth-child(even){background:var(--surface-2);}
+  table.priority td.rank{font-family:"IBM Plex Mono"; color:var(--text-faint); font-weight:600;}
+  table.priority td.prob{font-family:"IBM Plex Mono";}
+
+  footer{margin-top:56px; padding-top:24px; border-top:1px solid var(--border); color:var(--text-faint); font-size:13px;}
+  footer p{max-width:70ch;}
+
+  ::selection{background:var(--accent-soft); color:var(--text);}
+</style>
+
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">Auditoria de performance · leitura apenas</div>
+  <h1>PWA no iPhone: diagnóstico de fluidez</h1>
+  <p class="dek">Levantamento evidenciado do CRM WhatsApp (wacrm) focado exclusivamente na experiência em Safari/WebKit standalone — sem nenhuma alteração de código. 18 achados, cada um com arquivo, linha e mecanismo de dano.</p>
+  <div class="metarow">
+    <div><b>Data</b> 24 ago 2026</div>
+    <div><b>Escopo</b> inbox/chat, CSS &amp; gestos, bundle &amp; arquitetura</div>
+    <div><b>Método</b> leitura direta de código, cruzada por 3 investigações independentes</div>
+    <div><b>Alterações</b> nenhuma</div>
+  </div>
+
+  <div class="dash">
+    <div class="stat crit"><div class="n">1</div><div class="l">Crítico</div></div>
+    <div class="stat high"><div class="n">4</div><div class="l">Alto</div></div>
+    <div class="stat med"><div class="n">7</div><div class="l">Médio</div></div>
+    <div class="stat low"><div class="n">6</div><div class="l">Baixo</div></div>
+  </div>
+
+  <div class="topcallout">
+    <b>Leitura rápida:</b> a base já resolveu corretamente a maior parte das armadilhas clássicas do Safari iOS (safe-area, <code>dvh</code>/teclado, bloqueio de pinch-zoom, gestos com <code>transform</code>/<code>opacity</code>, service worker sem cache). O que resta de fluidez está concentrado em três pontos: a lista de mensagens sem virtualização, contextos globais (Auth/Theme) recriando valor a cada render, e um heartbeat de presença que força a thread inteira a re-renderizar a cada 15s.
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="toctitle">Seções</div>
+  <ol>
+    <li><a href="#s1"><span class="num">01</span> Renderização React</a></li>
+    <li><a href="#s2"><span class="num">02</span> Performance das listas</a></li>
+    <li><a href="#s3"><span class="num">03</span> CSS e layout</a></li>
+    <li><a href="#s4"><span class="num">04</span> Animações</a></li>
+    <li><a href="#s5"><span class="num">05</span> Memória</a></li>
+    <li><a href="#s6"><span class="num">06</span> Requests</a></li>
+    <li><a href="#s7"><span class="num">07</span> Bundle</a></li>
+    <li><a href="#s8"><span class="num">08</span> Compatibilidade Safari iOS</a></li>
+    <li><a href="#s9"><span class="num">09</span> Arquitetura</a></li>
+    <li><a href="#tabela"><span class="num">→</span> Tabela priorizada</a></li>
+  </ol>
+</nav>
+
+<!-- ============ 1. RENDERIZAÇÃO REACT ============ -->
+<section class="cat" id="s1">
+  <div class="cathead"><span class="catnum">01</span><h2>Renderização React</h2></div>
+  <p class="catnote">O maior volume de re-renders evitáveis está em três pontos: as bolhas de mensagem, o heartbeat de presença, e os Providers de Auth/Theme no topo da árvore — este último afeta praticamente toda tela do dashboard, não só o inbox.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">REACT-2</span><h3 class="ftitle">usePresence força o MessageThread inteiro a re-renderizar a cada 15s, mesmo sem atividade</h3></div>
+      <div class="chips">
+        <span class="chip high">Impacto Alto</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:95%"></i></div>95%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><p><span class="loc">src/hooks/use-presence.ts:20,148</span> — <code>const RE_DERIVE_MS = 15_000</code> e <code>setInterval(() =&gt; setNow(Date.now()), RE_DERIVE_MS)</code>. <code>message-thread.tsx:214</code> desestrutura esse <code>now</code> direto do hook: <code>const { getPresence, getRow, now } = usePresence();</code></p>
+        <pre><code>// use-presence.ts
+const tick = setInterval(() =&gt; setNow(Date.now()), RE_DERIVE_MS); // 15_000ms
+
+// message-thread.tsx:214
+const { getPresence, getRow, now } = usePresence();</code></pre>
+        <p>Como <code>now</code> é state do hook e o componente o consome diretamente, <code>MessageThread</code> re-renderiza a cada 15s independente de qualquer mensagem nova — e combinado com REACT-1 e LIST-1, cada tick re-renderiza todas as mensagens visíveis.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/hooks/use-presence.ts</span> <span class="loc">src/components/inbox/message-thread.tsx:214</span></dd>
+        <dt>Como validar</dt>
+        <dd>React DevTools Profiler ligado, abrir uma conversa e não tocar em nada por 30s — deve aparecer um re-render do <code>MessageThread</code> a cada ~15s sem interação.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — não expor <code>now</code> no objeto padrão do hook, ou isolar quem realmente precisa dele atrás de um seletor separado.</dd>
+        <dt>Benefício</dt>
+        <dd>Remove um heartbeat de recomputação silencioso que hoje penaliza justamente as conversas longas — o cenário de uso mais comum e mais visado pelo usuário final.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">REACT-1</span><h3 class="ftitle">MessageBubble e MessageActions sem memo, com callbacks recriados a cada render do pai</h3></div>
+      <div class="chips">
+        <span class="chip high">Impacto Alto</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:90%"></i></div>90%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><p><code>message-bubble.tsx</code> e <code>message-actions.tsx</code> não usam <code>React.memo</code> (zero ocorrências de <code>memo(</code> nos dois arquivos). Em <code>message-thread.tsx:1372-1416</code>, <code>group.messages.map(...)</code> cria uma função inline nova a cada render para <code>onReply</code>, <code>onReact</code>, <code>onDelete</code> e <code>onToggleReaction</code> — mesmo memoizando os componentes filhos, essas props novas invalidariam o memo.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/inbox/message-thread.tsx:1372-1416</span> <span class="loc">src/components/inbox/message-bubble.tsx</span> <span class="loc">src/components/inbox/message-actions.tsx</span></dd>
+        <dt>Como validar</dt>
+        <dd>Profiler → abrir conversa com 50+ mensagens → disparar qualquer re-render do <code>MessageThread</code> (trocar de aba e voltar, ou aguardar o tick do REACT-2) → contar quantas bolhas re-renderizam. Numa árvore saudável, só a mensagem alterada re-renderizaria.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — <code>React.memo</code> nos dois componentes + estabilizar callbacks com <code>useCallback</code>/referência estável por mensagem é padrão conhecido, não muda comportamento.</dd>
+        <dt>Benefício</dt>
+        <dd>Elimina reconciliação desnecessária de toda a conversa a cada atualização não relacionada — efeito direto no jank ao rolar/digitar num iPhone mais antigo.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">REACT-3</span><h3 class="ftitle">AuthContext e ThemeContext recriam o objeto de value a cada render — 46 arquivos consomem useAuth()</h3></div>
+      <div class="chips">
+        <span class="chip high">Impacto Alto</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:90%"></i></div>90%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd>
+        <pre><code>// src/hooks/use-auth.tsx:337-349
+&lt;AuthContext.Provider
+  value={{
+    user, profile, loading, profileLoading, signOut, refreshProfile,
+    account, defaultCurrency: account?.default_currency ?? DEFAULT_CURRENCY,
+    ...derived,
+  }}
+&gt;</code></pre>
+        <p>Esse objeto literal é recriado em todo render de <code>AuthProvider</code>, mesmo com <code>derived</code> já memoizado internamente (linhas 321-334) — memoizar <code>derived</code> não protege o objeto que o envolve. O mesmo padrão se repete em <code>use-theme.tsx:135</code>: <code>&lt;ThemeContext.Provider value={{ theme, setTheme, mode, setMode, toggleMode }}&gt;</code>. <code>useAuth()</code> é consumido em 46 arquivos, incluindo <code>message-thread.tsx:213</code>, <code>sidebar.tsx</code> e <code>dashboard-shell.tsx</code>.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/hooks/use-auth.tsx:337-349</span> <span class="loc">src/hooks/use-theme.tsx:135</span></dd>
+        <dt>Como validar</dt>
+        <dd>Profiler, disparar <code>refreshProfile()</code> (ex.: salvar o perfil em Configurações) e observar quantos componentes fora da tela de perfil re-renderizam.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — envolver o objeto de <code>value</code> num <code>useMemo</code> com as dependências corretas é uma mudança isolada e mecânica.</dd>
+        <dt>Benefício</dt>
+        <dd>Corta re-renders em cascata de um provider montado no topo de toda a árvore do dashboard — efeito colateral positivo em praticamente toda tela, inclusive o inbox.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">REACT-4</span><h3 class="ftitle">SortableDealCard (Kanban) sem memo, enquanto PipelineBoard já é memoizado</h3></div>
+      <div class="chips">
+        <span class="chip low">Impacto Baixo-Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:50%"></i></div>50%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><p><span class="loc">pipeline-board.tsx:95</span> — <code>export const PipelineBoard = memo(function PipelineBoard(...</code> (pai memoizado). <span class="loc">pipeline-board.tsx:613</span> — <code>function SortableDealCard({...</code> sem <code>memo()</code>. Frequência real de re-render do pai durante um drag não foi medida.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/pipelines/pipeline-board.tsx:613</span></dd>
+        <dt>Como validar</dt>
+        <dd>Profiler durante um drag no Kanban — verificar se cards não relacionados ao card arrastado re-renderizam a cada frame.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco.</dd>
+        <dt>Benefício</dt>
+        <dd>Ganho potencial em boards com muitas colunas/cards — não confirmado se é perceptível hoje.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2. LISTAS ============ -->
+<section class="cat" id="s2">
+  <div class="cathead"><span class="catnum">02</span><h2>Performance das listas</h2></div>
+  <p class="catnote">Este é o achado estrutural mais importante da auditoria: ele amplifica todos os outros achados de renderização (01) sempre que a conversa é longa.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">LIST-1</span><h3 class="ftitle">Nenhuma virtualização — conversation-list e message-thread renderizam 100% dos itens no DOM</h3></div>
+      <div class="chips">
+        <span class="chip crit">Impacto Crítico</span>
+        <span class="chip risk">Risco médio-alto</span>
+        <div class="prob"><div class="probbar"><i style="width:85%"></i></div>85%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><p><code>package.json</code> não tem nenhuma dependência de virtualização (<code>react-window</code>, <code>react-virtual</code>, <code>@tanstack/react-virtual</code> etc — confirmado por leitura completa do arquivo). <span class="loc">message-thread.tsx:375-379</span> busca o histórico inteiro da conversa sem <code>.limit()</code>/<code>.range()</code>: <code>.eq("conversation_id", conversationId).order("created_at", …)</code>. <span class="loc">message-thread.tsx:1362/1372</span> — <code>group.messages.map(...)</code> renderiza cada mensagem como DOM real, incondicionalmente. <span class="loc">conversation-list.tsx:668</span> — <code>filtered.map(...)</code> idem para a lista de conversas. Cada linha de conversa ainda monta seus próprios listeners nativos <code>touchstart/touchmove/touchend/touchcancel</code> (<span class="loc">conversation-list.tsx:1142-1145</span>) e um <code>requestAnimationFrame</code> no mount (<span class="loc">conversation-list.tsx:966-968</span>) — para uma lista não janelada isso é O(n) listeners de gesto e O(n) chamadas de rAF só para montar a tela.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/inbox/message-thread.tsx:375-379,1362,1372</span> <span class="loc">src/components/inbox/conversation-list.tsx:668,966-968,1142-1145</span></dd>
+        <dt>Como validar</dt>
+        <dd>Abrir uma conversa com centenas de mensagens num iPhone real, medir memória/FPS ao rolar (Safari Web Inspector → Timelines) e comparar <code>document.querySelectorAll('[data-message-id]').length</code> com o total de mensagens da conversa.</dd>
+        <dt>Correção</dt>
+        <dd>Médio-alto risco — virtualizar uma lista de chat com alturas variáveis, agrupamento por data, scroll-to-bottom automático e chegadas em tempo real via realtime é trabalho não trivial, com risco real de regressão de UX (perda de posição de scroll, "pulos"). Não é mudança para fazer sem planejamento dedicado.</dd>
+        <dt>Benefício</dt>
+        <dd>É o único achado que amplifica todos os outros da seção 01 — resolver isso é o que dá o maior salto de fluidez em contas com histórico longo, mas também é o item de maior risco de implementação de toda a auditoria.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">LIST-2</span><h3 class="ftitle">Imagens de mensagem sem loading="lazy" — decodificação eager em toda a thread não virtualizada</h3></div>
+      <div class="chips">
+        <span class="chip med">Impacto Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:70%"></i></div>70%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><span class="loc">src/components/inbox/message-bubble.tsx:127</span> — a tag <code>&lt;img&gt;</code> da mídia da mensagem não define <code>loading="lazy"</code>. Combinado com LIST-1 (thread inteira montada de uma vez), toda imagem de uma conversa longa começa a baixar/decodificar imediatamente ao abrir a thread, em vez de só as próximas do viewport.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/inbox/message-bubble.tsx:127</span></dd>
+        <dt>Como validar</dt>
+        <dd>Abrir uma conversa com várias imagens e observar a aba Network do Safari Web Inspector no momento da abertura — todas as imagens disparam requisição de uma vez.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — adicionar <code>loading="lazy"</code> é uma mudança de uma linha, independente da decisão de virtualizar.</dd>
+        <dt>Benefício</dt>
+        <dd>Reduz picos de rede/memória de decodificação de imagem ao abrir threads com muita mídia, mesmo antes de qualquer trabalho de virtualização.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">✓ Confirmado como não sendo problema</div>
+    <ul>
+      <li><span class="loc">contacts/page.tsx</span> renderiza a lista de contatos com <code>PAGE_SIZE = 25</code> e paginação real no servidor (<code>.range(from, to)</code>, RPCs com <code>p_limit</code>/<code>p_offset</code>) — o DOM por página fica limitado a ~25 linhas independente do total de contatos. Não é um problema de virtualização.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 3. CSS E LAYOUT ============ -->
+<section class="cat" id="s3">
+  <div class="cathead"><span class="catnum">03</span><h2>CSS e layout</h2></div>
+  <p class="catnote">A base de CSS já resolveu, de forma documentada e testada em dispositivo, a maior parte das armadilhas clássicas do WebKit iOS. Os achados abaixo são os pontos residuais.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">CSS-2</span><h3 class="ftitle">backdrop-blur-sm embutido em MessageActions, montado (não desmontado) em toda mensagem</h3></div>
+      <div class="chips">
+        <span class="chip high">Impacto Alto</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:80%"></i></div>80%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><span class="loc">src/components/inbox/message-actions.tsx:157</span> — <code>"...bg-popover/95 px-1 shadow-md backdrop-blur-sm transition-opacity..."</code>, aplicado à barra de ações (responder/reagir/encaminhar/apagar) de cada <code>MessageBubble</code>. Só <code>opacity</code> controla a visibilidade — o elemento nunca é desmontado — então cada mensagem carrega um <code>backdrop-filter</code> ativo no DOM o tempo todo. <code>backdrop-filter</code> é uma das propriedades mais caras para o compositor do WebKit em iOS, pois exige captura separada de tudo que está atrás do elemento.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/inbox/message-actions.tsx:157</span></dd>
+        <dt>Como validar</dt>
+        <dd>Safari Web Inspector → Timelines → Rendering, abrir uma conversa longa e observar o tempo de composição/GPU; ou remover temporariamente <code>backdrop-blur-sm</code> numa build local e comparar.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — trocar por <code>bg-popover</code> sólido (sem blur) ou aplicar o blur só ao elemento ativo via montagem condicional em vez de <code>opacity</code>.</dd>
+        <dt>Benefício</dt>
+        <dd>Reduz pressão de GPU/memória que hoje escala linearmente com o tamanho da conversa — ganho direto combinado com LIST-1.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">CSS-1</span><h3 class="ftitle">syncPanelWidth escreve width (propriedade de layout) a cada touchmove e a cada frame da mola de soltura</h3></div>
+      <div class="chips">
+        <span class="chip med">Impacto Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:70%"></i></div>70%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd>
+        <pre><code>// conversation-list.tsx:882-886
+const syncPanelWidth = useCallback((x: number) =&gt; {
+  const panel = leftPanelRef.current;
+  if (!panel) return;
+  panel.style.width = `${Math.min(Math.max(x, 0), SWIPE_LEFT_WIDTH)}px`;
+}, []);</code></pre>
+        <p>Chamado de <code>dragTransform</code> (linhas 896-898, a cada <code>touchmove</code>) e do loop de rAF de <code>settleSpring</code> (linhas 944-955, a cada frame da animação de soltura). Enquanto o próprio conteúdo do painel (<code>contentRef</code>) já anima corretamente só via <code>translate3d</code> (compositor puro), este é o único ponto do gesto de swipe que escreve uma propriedade de layout (<code>width</code>) em vez de <code>transform</code> — força reflow síncrono a cada amostra de toque e a cada tick da mola, empilhado sobre o custo de composição do transform.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/inbox/conversation-list.tsx:882-886,896-898,944-955</span></dd>
+        <dt>Como validar</dt>
+        <dd>Safari Web Inspector → Timelines, gravar um swipe-reveal (arrastar e soltar) num iPhone real — procurar barras roxas de "Layout" intercaladas com cada frame de animação enquanto a largura é escrita.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — trocar por <code>clip-path: inset()</code> ou um <code>transform: scaleX()</code> com <code>transform-origin</code> ajustado resolve sem mudar o comportamento visual.</dd>
+        <dt>Benefício</dt>
+        <dd>Suaviza especificamente o gesto de revelar ações por swipe na lista de conversas — o gesto mais usado do inbox depois de abrir uma conversa.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">CSS-4</span><h3 class="ftitle">Auto-grow do textarea do composer força reflow síncrono a cada tecla</h3></div>
+      <div class="chips">
+        <span class="chip low">Impacto Baixo</span>
+        <span class="chip risk">Risco médio</span>
+        <div class="prob"><div class="probbar"><i style="width:60%"></i></div>60%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd>
+        <pre><code>// message-composer.tsx:367-373
+const adjustHeight = useCallback(() =&gt; {
+  const el = textareaRef.current;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
+}, []);</code></pre>
+        <p>Chamado em todo <code>handleChange</code> (linhas 392-401), ou seja, a cada tecla digitada. Escrever <code>style.height</code> e em seguida ler <code>scrollHeight</code> força um reflow síncrono do layout — padrão praticamente inevitável sem <code>field-sizing: content</code> (ainda sem suporte confiável no Safari na maioria das versões em uso) ou um <code>&lt;div&gt;</code> espelho.</p></dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/inbox/message-composer.tsx:367-373,392-401</span></dd>
+        <dt>Como validar</dt>
+        <dd>Performance timeline do Safari enquanto se digita uma mensagem longa — cada tecla deve mostrar um pequeno bloco de "Layout".</dd>
+        <dt>Correção</dt>
+        <dd>Risco médio — a alternativa de "div espelho" tem seu próprio custo de manutenção, e <code>field-sizing</code> ainda não é confiável entre browsers.</dd>
+        <dt>Benefício</dt>
+        <dd>Marginal isoladamente (elemento único e pequeno), mas ocorre em 100% do tempo de digitação — vale medir antes de investir.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">✓ Já resolvido corretamente</div>
+    <ul>
+      <li><code>100vh</code> aparece em um único lugar do repositório inteiro (<span class="loc">src/app/hevc-test/page.tsx</span>, página de teste fora do fluxo principal) — todo o resto usa <code>dvh</code> + a variável <code>--app-height</code> calculada em JS.</li>
+      <li><code>overscroll-behavior-y: none</code> + <code>overflow: hidden</code> em <code>html</code>/<code>body</code> já implementados com justificativa documentada no próprio código (histórico de depuração em dispositivo real) para travar o rubber-band/scroll-chaining do iOS no modo standalone.</li>
+      <li>Nenhum <code>filter</code>, <code>drop-shadow</code> ou <code>gradient</code> pesado encontrado em nenhum ponto do app.</li>
+      <li>Todos os gestos manuais (<code>use-drawer-gesture.ts</code>, <code>use-pull-to-refresh.ts</code>, swipe-to-reveal, drag-to-lock do composer, FLIP transitions) escrevem <code>transform</code>/<code>opacity</code> diretamente via ref, sem intercalar leitura de layout (<code>getBoundingClientRect</code>) com escrita — nenhum layout thrashing encontrado nos gestos de toque além de CSS-1.</li>
+      <li><code>env(safe-area-inset-*)</code> presente e correto em 7 pontos reais (header, sidebar, message-composer), pareado com <code>viewportFit: "cover"</code> no layout.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 4. ANIMAÇÕES ============ -->
+<section class="cat" id="s4">
+  <div class="cathead"><span class="catnum">04</span><h2>Animações</h2></div>
+  <p class="catnote">Não há biblioteca de animação no projeto — tudo é CSS nativo ou rAF manual, o que já remove uma classe inteira de risco. O único ponto onde uma propriedade cara é animada em sincronia direta com o toque é o Kanban.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">ANIM-1</span><h3 class="ftitle">box-shadow animado junto com transform durante o drag de card no Kanban</h3></div>
+      <div class="chips">
+        <span class="chip med">Impacto Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:70%"></i></div>70%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd>Em <span class="loc">src/components/pipelines/pipeline-board.tsx</span>, o <code>DragOverlay</code> e o <code>@keyframes deal-lift</code> (próximo às linhas 420-439/517-529) animam <code>transform</code> (correto, só compositor) junto com <code>box-shadow</code> — de <code>0 1px 2px rgba(0,0,0,0.08)</code> para <code>0 12px 24px -4px rgba(0,0,0,0.35)</code>. <code>box-shadow</code> não é propriedade de compositor no WebKit: é repintada a cada frame durante o gesto de arrastar em touch.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/pipelines/pipeline-board.tsx (bloco @keyframes deal-lift)</span></dd>
+        <dt>Como validar</dt>
+        <dd>Arrastar um card no Kanban num iPhone real com Web Inspector → Timelines ligado; observar picos de "Layout"/"Paint" durante o drag.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — trocar a transição de <code>box-shadow</code> por duas camadas pré-renderizadas com cross-fade de <code>opacity</code>, ou remover a animação de sombra.</dd>
+        <dt>Benefício</dt>
+        <dd>Suaviza especificamente o momento de "pegar" o card no Kanban em touch — hoje é o único ponto do app com esse padrão.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">✓ Já resolvido corretamente</div>
+    <ul>
+      <li>Nenhuma ocorrência de Framer Motion (ou qualquer lib de animação) em todo o repositório — toda animação é CSS/keyframes nativo ou rAF manual.</li>
+      <li><code>.flip-modal-popup</code> (transição de elemento compartilhado, <span class="loc">globals.css:358-415</span>) anima só <code>transform</code>/<code>opacity</code>, pré-promove com <code>will-change</code> antes de a animação começar (evita o soluço de promoção no primeiro frame), com escopo limitado à existência do popup.</li>
+      <li><code>use-flip-transition.ts</code> é guardado por identidade de nó DOM (não por id/key), engenharia explícita para evitar um bug de soluço documentado que ocorria ao remedir durante a animação.</li>
+      <li><code>will-change</code> usado em apenas 2 lugares no repositório, ambos com escopo correto.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 5. MEMÓRIA ============ -->
+<section class="cat" id="s5">
+  <div class="cathead"><span class="catnum">05</span><h2>Memória</h2></div>
+  <p class="catnote">Esta é a categoria mais bem cuidada do projeto. O único achado é cosmético e incluído por completude.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">MEM-1</span><h3 class="ftitle">Três setTimeout curtos sem cancelamento explícito no unmount</h3></div>
+      <div class="chips">
+        <span class="chip low">Impacto Baixo</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:20%"></i></div>20%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><code>setTimeout</code> de 50-280ms em <code>use-app-height.ts</code>, <code>use-drawer-gesture.ts</code> e <code>use-pull-to-refresh.ts</code> não são cancelados explicitamente no cleanup do <code>useEffect</code>. Efeito prático é próximo de nulo: todos escrevem em <code>ref.current</code> com guarda de nulidade, então um disparo pós-unmount simplesmente não faz nada.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/hooks/use-app-height.ts</span> <span class="loc">src/hooks/use-drawer-gesture.ts</span> <span class="loc">src/hooks/use-pull-to-refresh.ts</span></dd>
+        <dt>Como validar</dt>
+        <dd>Não considerado necessário dado o baixo risco prático — incluído apenas por completude da varredura.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — <code>clearTimeout</code> no cleanup, mudança trivial.</dd>
+        <dt>Benefício</dt>
+        <dd>Nenhum ganho de performance perceptível — apenas higiene de código.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">✓ Já resolvido corretamente</div>
+    <ul>
+      <li>Varredura completa de <code>setInterval</code>/<code>setTimeout</code>/<code>addEventListener</code>/canais Supabase em todo o <code>src/</code>: praticamente 100% com cleanup correto — destaque para <span class="loc">presence-heartbeat.tsx:70-102</span>, tratado como exemplar pelos três investigadores.</li>
+      <li>Nenhum canal Supabase realtime (<code>.channel()</code>/<code>.subscribe()</code>) encontrado sem o correspondente <code>.unsubscribe()</code>/<code>removeChannel</code> no cleanup.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 6. REQUESTS ============ -->
+<section class="cat" id="s6">
+  <div class="cathead"><span class="catnum">06</span><h2>Requests</h2></div>
+  <p class="catnote">Achados pontuais e de baixo risco, concentrados em telas de campanhas/envios — não no inbox.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">REQ-1</span><h3 class="ftitle">Polling de envios não pausa com a aba em segundo plano, ao contrário de campaigns/page.tsx</h3></div>
+      <div class="chips">
+        <span class="chip low">Impacto Baixo-Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:60%"></i></div>60%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><span class="loc">campaigns/page.tsx:132-155</span> pausa o polling de 5s via listener de <code>visibilitychange</code> (comentário do próprio código: "so we don't beat on Supabase"). <span class="loc">envios-section.tsx:25</span> e <span class="loc">campaigns/envios/[id]/page.tsx:23</span> também fazem polling de 5s, mas sem esse guard.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/campaigns/envios-section.tsx:25</span> <span class="loc">src/app/(dashboard)/campaigns/envios/[id]/page.tsx:23</span></dd>
+        <dt>Como validar</dt>
+        <dd>Comparar os três arquivos lado a lado; confirmar ausência do listener <code>visibilitychange</code> nos dois que faltam.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — replicar o mesmo guard já usado em <code>campaigns/page.tsx</code>.</dd>
+        <dt>Benefício</dt>
+        <dd>Consistência de bateria/dados em conexão móvel — impacto pequeno, pois só ocorre enquanto há um envio em andamento.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">REQ-2</span><h3 class="ftitle">Queries sequenciais em campaigns/[id]/page.tsx que poderiam rodar em paralelo</h3></div>
+      <div class="chips">
+        <span class="chip low">Impacto Baixo</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:75%"></i></div>75%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><code>fetchData</code> (<span class="loc">campaigns/[id]/page.tsx:179-213</span>) aguarda a query de <code>broadcasts</code> (<code>.eq('id', campaignId).single()</code>) antes de buscar <code>broadcast_recipients</code> — mas a segunda query só depende de <code>campaignId</code>, já conhecido antes da primeira chamada. <code>Promise.all</code> resolveria.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/app/(dashboard)/campaigns/[id]/page.tsx:179-213</span></dd>
+        <dt>Como validar</dt>
+        <dd>Aba Network do Safari Web Inspector ao abrir a tela de detalhe de campanha — as duas requisições aparecem em série em vez de simultâneas.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco.</dd>
+        <dt>Benefício</dt>
+        <dd>Reduz o tempo até a tela ficar pronta em conexão celular lenta — uma tela específica, sem repetição via polling.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 7. BUNDLE ============ -->
+<section class="cat" id="s7">
+  <div class="cathead"><span class="catnum">07</span><h2>Bundle</h2></div>
+  <p class="catnote">Automações e Fluxos já se beneficiam do code-splitting automático por rota do Next.js. O ponto real de atenção é a tela de Configurações.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">BUNDLE-1</span><h3 class="ftitle">/settings importa estaticamente todos os 12 painéis, incluindo recharts via ai-usage.tsx</h3></div>
+      <div class="chips">
+        <span class="chip med">Impacto Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:85%"></i></div>85%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><span class="loc">src/app/(dashboard)/settings/page.tsx:6-21</span> importa <code>ProfileForm</code>, <code>SecurityPanel</code>, ..., <code>AiAgentsPanel</code> (que puxa <code>ai-usage.tsx</code> → <code>tremor/bar-chart.tsx</code> → <code>recharts</code>) no topo do módulo. O objeto <code>panel: Record&lt;SettingsSection, ReactNode&gt;</code> (linhas 75-88) constrói os 12 elementos e só renderiza um via <code>panel[section]</code> — mas React só executa o corpo do componente montado; o <code>import</code> estático já inclui o código de todos os 12 painéis no bundle da rota, mesmo que o usuário só abra "Perfil". Repositório inteiro sem uma única ocorrência de <code>next/dynamic</code> ou <code>React.lazy</code> (grep completo em <code>src/</code>).</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/app/(dashboard)/settings/page.tsx:6-21,75-88</span></dd>
+        <dt>Como validar</dt>
+        <dd><code>next build</code> com <code>@next/bundle-analyzer</code> (ou <code>next build --profile</code>), comparando o tamanho do chunk de <code>/settings</code> antes/depois de dividir os painéis com <code>next/dynamic</code>.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — envolver cada painel em <code>next/dynamic(() =&gt; import(...), { ssr: false })</code> é um padrão mecânico, sem mudança de comportamento visível.</dd>
+        <dt>Benefício</dt>
+        <dd>Reduz o JS baixado/parseado ao abrir Configurações no celular — tela acessada com frequência, inclusive em conexão móvel.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">BUNDLE-3</span><h3 class="ftitle">googleapis mantido fora do bundle de cliente só por convenção manual, sem enforcement</h3></div>
+      <div class="chips">
+        <span class="chip low">Impacto Baixo (risco latente)</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:100%"></i></div>confirmado</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><span class="loc">src/components/dashboard/agenda-week.tsx:9-14</span> importa deliberadamente <code>getMyCalendarConnection</code> de um módulo-folha em vez do barrel <code>@/lib/calendar</code>, com comentário explicando que o barrel reexporta <code>GoogleCalendarProvider</code>, que puxa <code>googleapis</code> (biblioteca Node-only e pesada). Correto hoje, mas depende de todo contribuidor futuro lembrar de não importar o barrel a partir de um client component — não há regra de lint nem pacote <code>server-only</code> aplicando isso.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/dashboard/agenda-week.tsx:9-14</span></dd>
+        <dt>Como validar</dt>
+        <dd>Não é um bug hoje — para validar o risco, tentar importar <code>@/lib/calendar</code> a partir de um novo client component e checar se o build cresce/falha.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — adicionar <code>import "server-only"</code> no módulo que reexporta <code>GoogleCalendarProvider</code> transformaria o erro de "regressão silenciosa" em erro de build explícito.</dd>
+        <dt>Benefício</dt>
+        <dd>Não é ganho de performance imediato — é prevenção de uma regressão de bundle que hoje só é evitada por disciplina manual.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">✓ Confirmado como não sendo problema</div>
+    <ul>
+      <li><code>automation-builder.tsx</code> (1752 linhas) só é importado pelas rotas <code>automations/new</code> e <code>automations/[id]/edit</code>; <code>flow-canvas.tsx</code> (<code>@xyflow/react</code> + <code>@dagrejs/dagre</code>) só pelas rotas <code>/flows/[id]</code>. O code-splitting automático por rota do App Router já mantém esse peso fora de páginas não relacionadas, como o inbox.</li>
+      <li><code>src/lib/flows/engine.ts</code> (1123 linhas) é importado só pela rota de webhook e por uma lib de validação — nunca por um client component. Corretamente excluído do bundle de cliente.</li>
+      <li>ffmpeg.wasm (~31MB) só é importado dinamicamente dentro de <code>getFFmpeg()</code> em <code>transcode-mov.ts</code> — mas esse caminho está morto: zero call sites de <code>convertMovToMp4</code> em todo o <code>src/</code>. O caminho ativo é <code>transcode-mov-webcodecs.ts</code>, via <code>mediabunny</code>/WebCodecs, adotado porque o ffmpeg.wasm "travava indefinidamente" num iPhone 14 Pro Max real (comentário no próprio código, validado em dispositivo). Vale remover o arquivo morto do deploy por limpeza — não é um problema de performance em runtime, já que nunca é chamado.</li>
+      <li><code>lucide-react</code> é importado por nome (<code>import { X, Y } from "lucide-react"</code>) em 58 arquivos — não é risco de tree-shaking com o build ESM moderno do pacote.</li>
+      <li><code>src/app/hevc-test/</code> é uma rota de protótipo não referenciada em nenhum lugar do app (comentário próprio: "Temporary by design... meant to be removed once validated") — não afeta o bundle de outras rotas graças ao splitting por rota, mas é peso morto/superfície de ataque em produção. Item de limpeza, não de performance.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 8. SAFARI/iOS ============ -->
+<section class="cat" id="s8">
+  <div class="cathead"><span class="catnum">08</span><h2>Compatibilidade Safari iOS</h2></div>
+  <p class="catnote">Esta é a categoria mais madura do projeto — praticamente todas as armadilhas clássicas do WebKit já foram resolvidas e documentadas com histórico de depuração real em dispositivo. Um único desvio de padrão foi encontrado.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">SAFARI-1</span><h3 class="ftitle">automation-builder usa fixed inset-0 em vez do padrão --app-height já validado no resto do app</h3></div>
+      <div class="chips">
+        <span class="chip med">Impacto Médio</span>
+        <span class="chip risk">Risco baixo</span>
+        <div class="prob"><div class="probbar"><i style="width:50%"></i></div>50%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><span class="loc">src/components/automations/automation-builder.tsx:714</span> — <code>&lt;div className="fixed inset-0 flex flex-col bg-background"&gt;</code> como container raiz do editor. Diferente de <span class="loc">dashboard-shell.tsx:136</span> e <span class="loc">media-lightbox.tsx:183</span>, que usam <code>h-[var(--app-height,100dvh)]</code> dentro de um fluxo normal (não <code>fixed</code>) — padrão construído especificamente para lidar com a instabilidade do <code>innerHeight</code>/teclado no Safari standalone (ver <code>use-app-height.ts</code>, com histórico de depuração real em iPhone documentado em comentários no próprio código). A probabilidade de 50% reflete que o desvio de padrão está confirmado, mas o impacto prático (se o teclado realmente corta a UI nessa tela) não foi validado em dispositivo.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/components/automations/automation-builder.tsx:714</span></dd>
+        <dt>Como validar</dt>
+        <dd>Abrir "Automações" → criar/editar uma automação num iPhone em modo PWA standalone, focar o campo de nome no topo, e observar se o teclado corta ou desloca a barra superior.</dd>
+        <dt>Correção</dt>
+        <dd>Baixo risco — alinhar ao padrão já existente no resto do app.</dd>
+        <dt>Benefício</dt>
+        <dd>Consistência — evita que esta tela específica reintroduza um bug de teclado já resolvido em todo o resto do app.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">✓ Já resolvido corretamente</div>
+    <ul>
+      <li><b>Viewport/teclado:</b> <code>--app-height</code> calculado com valor de repouso via <code>outerHeight</code> e valor ao vivo via <code>visualViewport.height</code>, ativado em <code>focusin</code>/<code>focusout</code> — documentado como validado contra medições reais conflitantes em dispositivo, não uma suposição (<span class="loc">use-app-height.ts</span>).</li>
+      <li><b>Safe area:</b> <code>env(safe-area-inset-top)</code> (header, sidebar), <code>env(safe-area-inset-bottom)</code> (sidebar, message-composer) presentes em todo ponto com barra fixa/ancorada nas bordas verificado; pareado com <code>viewportFit: "cover"</code> no <code>layout.tsx</code> (necessário para os valores de <code>env()</code> não ficarem zerados).</li>
+      <li><b>Pinch/double-tap zoom:</b> bloqueado no nível do reconhecedor de gestos do WebKit via <code>touch-action: pan-x pan-y</code> (<code>globals.css:289/293</code>), não apenas via viewport-meta (que o WebKit ignora para pinch) — abordagem em camadas corretamente confirmada em dispositivo real.</li>
+      <li><b>Gestos nativos:</b> <code>use-drawer-gesture.ts</code>, <code>use-pull-to-refresh.ts</code> e o swipe-reveal em <code>conversation-list.tsx</code> usam listeners <code>{ passive: true/false }</code> corretamente escopados — <code>touchmove</code> é o único não-passivo, e só depois que o gesto é confirmado como pertencente ao componente (axis-locked), então o scroll nativo nunca é bloqueado para gestos que acabam sendo apenas rolagem.</li>
+      <li><b>Service worker:</b> <code>public/sw.js</code> é deliberadamente minimalista, só para push notification, sem handler de <code>fetch</code>/cache — não pode servir conteúdo obsoleto nem duplicar requisições, por construção.</li>
+      <li><b>Zoom automático em input:</b> tamanho mínimo de 16px imposto em inputs de texto focados (message-composer e o bloco da calculadora em <code>globals.css:543-546</code>) para prevenir o zoom automático do iOS ao focar — aplicado consistentemente em todo ponto verificado.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 9. ARQUITETURA ============ -->
+<section class="cat" id="s9">
+  <div class="cathead"><span class="catnum">09</span><h2>Arquitetura</h2></div>
+  <p class="catnote">O risco arquitetural real está concentrado em dois componentes monolíticos que fazem fetch de dados, lógica de negócio e renderização pesada tudo numa função só — e no fato de que <code>React.memo</code> é usado em apenas 6 arquivos de todo o repositório.</p>
+
+  <div class="finding">
+    <div class="fhead">
+      <div><span class="fid">ARCH-1</span><h3 class="ftitle">contacts/page.tsx e whatsapp-config.tsx são monolíticos: dezenas de useState, zero useMemo</h3></div>
+      <div class="chips">
+        <span class="chip med">Impacto Médio</span>
+        <span class="chip risk">Risco médio</span>
+        <div class="prob"><div class="probbar"><i style="width:55%"></i></div>55%</div>
+      </div>
+    </div>
+    <div class="fbody">
+      <dl>
+        <dt>Evidência</dt>
+        <dd><code>contacts/page.tsx</code> — 1201 linhas, 23 <code>useState</code>, 6 queries Supabase, 0 <code>useMemo</code>, 4 <code>useCallback</code>. <code>whatsapp-config.tsx</code> — 984 linhas, 21 <code>useState</code>, 0 <code>useMemo</code>. Nenhum dos dois extrai sub-componentes memoizados para as seções mais pesadas, então qualquer atualização de um único estado local re-renderiza a árvore inteira do componente. O mecanismo estrutural está confirmado por contagem direta; o custo real depende de quão frequentemente esse estado muda durante o uso — não medido via profiler em dispositivo, daí a probabilidade de 55%.</dd>
+        <dt>Onde ocorre</dt>
+        <dd><span class="loc">src/app/(dashboard)/contacts/page.tsx</span> <span class="loc">src/components/settings/whatsapp-config.tsx</span></dd>
+        <dt>Como validar</dt>
+        <dd>React DevTools Profiler durante uso normal da tela de Contatos (digitar num filtro, abrir um modal) — medir quantos nós fora da área realmente alterada re-renderizam.</dd>
+        <dt>Correção</dt>
+        <dd>Risco médio — decompor um componente de 1200 linhas em sub-componentes memoizados é refatoração real, com superfície para introduzir regressões se feita sem testes de UI cobrindo os fluxos existentes.</dd>
+        <dt>Benefício</dt>
+        <dd>Reduz re-renders em cascata em duas das telas mais usadas do CRM fora do inbox — mas o ganho concreto só fica claro depois de medir com o Profiler.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="positive">
+    <div class="ptitle">Observação estrutural (não é um problema isolado, é contexto para os achados acima)</div>
+    <ul>
+      <li>Uso de <code>React.memo</code> em todo o repositório: apenas 6 arquivos (<code>notifications/page.tsx</code>, <code>action-item-card.tsx</code>, <code>agenda-week.tsx</code>, <code>appointment-card.tsx</code>, <code>pipeline-board.tsx</code>, <code>use-auth.tsx</code>). Isso não é, por si só, um defeito — mas explica por que REACT-1, REACT-3, REACT-4 e ARCH-1 aparecem como um padrão consistente em vez de casos isolados.</li>
+      <li><code>settings/page.tsx</code> (achado BUNDLE-1) é também um sintoma arquitetural: o objeto <code>panel: Record&lt;SettingsSection, ReactNode&gt;</code> constrói os 12 painéis como entradas de objeto sempre que o componente re-renderiza, mesmo escolhendo só um para exibir — a causa raiz do peso de bundle é uma decisão estrutural, não só a falta de <code>next/dynamic</code>.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ TABELA PRIORIZADA ============ -->
+<section class="cat" id="tabela">
+  <div class="cathead"><span class="catnum">→</span><h2>Tabela priorizada</h2></div>
+  <p class="catnote">Ordenada do maior impacto esperado para o menor. Nenhum item foi corrigido — esta ordem é uma recomendação de sequenciamento para quando as correções forem feitas, uma de cada vez.</p>
+
+  <div class="tablewrap">
+    <table class="priority">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Problema</th>
+          <th>Impacto</th>
+          <th>Prob.</th>
+          <th>Risco da correção</th>
+          <th>Ganho esperado</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="rank">1</td><td><b>LIST-1</b> — Sem virtualização (inbox)</td><td><span class="chip crit">Crítico</span></td><td class="prob">85%</td><td>Médio-alto</td><td>Maior ganho estrutural; maior esforço da lista</td></tr>
+        <tr><td class="rank">2</td><td><b>REACT-2</b> — usePresence re-render a cada 15s</td><td><span class="chip high">Alto</span></td><td class="prob">95%</td><td>Baixo</td><td>Alto em conversas longas</td></tr>
+        <tr><td class="rank">3</td><td><b>REACT-1</b> — Bolhas/ações sem memo</td><td><span class="chip high">Alto</span></td><td class="prob">90%</td><td>Baixo</td><td>Alto, baixo custo</td></tr>
+        <tr><td class="rank">4</td><td><b>REACT-3</b> — Context Auth/Theme sem useMemo</td><td><span class="chip high">Alto</span></td><td class="prob">90%</td><td>Baixo</td><td>Alto, afeta o app inteiro</td></tr>
+        <tr><td class="rank">5</td><td><b>CSS-2</b> — backdrop-blur por mensagem</td><td><span class="chip high">Alto</span></td><td class="prob">80%</td><td>Baixo</td><td>Alto, some com LIST-1</td></tr>
+        <tr><td class="rank">6</td><td><b>BUNDLE-1</b> — /settings sem code-splitting</td><td><span class="chip med">Médio</span></td><td class="prob">85%</td><td>Baixo</td><td>Melhora TTI de Configurações</td></tr>
+        <tr><td class="rank">7</td><td><b>LIST-2</b> — Imagens sem loading="lazy"</td><td><span class="chip med">Médio</span></td><td class="prob">70%</td><td>Baixo</td><td>Reduz picos de rede/decodificação</td></tr>
+        <tr><td class="rank">8</td><td><b>CSS-1</b> — width mutado por frame no swipe</td><td><span class="chip med">Médio</span></td><td class="prob">70%</td><td>Baixo</td><td>Suaviza gesto mais usado da lista</td></tr>
+        <tr><td class="rank">9</td><td><b>ANIM-1</b> — box-shadow animado no drag Kanban</td><td><span class="chip med">Médio</span></td><td class="prob">70%</td><td>Baixo</td><td>Específico ao gesto de arrastar</td></tr>
+        <tr><td class="rank">10</td><td><b>SAFARI-1</b> — automation-builder fora do padrão --app-height</td><td><span class="chip med">Médio</span></td><td class="prob">50%</td><td>Baixo</td><td>Depende de exposição real no mobile</td></tr>
+        <tr><td class="rank">11</td><td><b>ARCH-1</b> — contacts/whatsapp-config monolíticos</td><td><span class="chip med">Médio</span></td><td class="prob">55%</td><td>Médio</td><td>Depende de medição com Profiler</td></tr>
+        <tr><td class="rank">12</td><td><b>REQ-1</b> — Polling sem pausa em envios</td><td><span class="chip low">Baixo-médio</span></td><td class="prob">60%</td><td>Baixo</td><td>Pequeno, bateria/dados</td></tr>
+        <tr><td class="rank">13</td><td><b>REACT-4</b> — SortableDealCard sem memo</td><td><span class="chip low">Baixo-médio</span></td><td class="prob">50%</td><td>Baixo</td><td>Incerto, precisa medir</td></tr>
+        <tr><td class="rank">14</td><td><b>REQ-2</b> — Queries sequenciais em campaigns/[id]</td><td><span class="chip low">Baixo</span></td><td class="prob">75%</td><td>Baixo</td><td>Pequeno, uma tela</td></tr>
+        <tr><td class="rank">15</td><td><b>CSS-4</b> — Reflow por tecla no composer</td><td><span class="chip low">Baixo</span></td><td class="prob">60%</td><td>Médio</td><td>Marginal</td></tr>
+        <tr><td class="rank">16</td><td><b>BUNDLE-3</b> — googleapis sem enforcement (risco latente)</td><td><span class="chip low">Baixo</span></td><td class="prob">—</td><td>Baixo</td><td>Previne regressão futura, não é ganho hoje</td></tr>
+        <tr><td class="rank">17</td><td><b>MEM-1</b> — setTimeout sem cancelamento explícito</td><td><span class="chip low">Baixo</span></td><td class="prob">20%</td><td>Baixo</td><td>Higiene, sem ganho perceptível</td></tr>
+        <tr><td class="rank">18</td><td><b>BUNDLE-2</b> — ffmpeg morto / rota hevc-test</td><td><span class="chip low">Baixo</span></td><td class="prob">—</td><td>Baixo</td><td>Limpeza de deploy, não é perf em runtime</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <p><b>Metodologia:</b> nenhum arquivo foi alterado. As evidências vêm de leitura direta do código-fonte — três investigações independentes cobrindo (a) o núcleo do inbox/chat em tempo real, (b) CSS/animações/mecânica PWA específica do Safari, e (c) bundle e arquitetura — com achados cruzados e validados entre si onde havia sobreposição. Itens sem evidência direta suficiente foram marcados como "não confirmado" em vez de assumidos. Esta auditoria cobre as telas de maior tráfego (inbox, configurações, kanban, campanhas); não é uma varredura exaustiva de 100% do repositório.</p>
+</footer>
+
+</div>
