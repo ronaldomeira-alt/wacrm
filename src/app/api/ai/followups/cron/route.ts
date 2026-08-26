@@ -1,17 +1,20 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
-import { generateFollowupSuggestions } from '@/lib/ai/followup-generate'
+import { generateFollowupSuggestions, processDueFollowupSends } from '@/lib/ai/followup-generate'
 import { deleteExpiredIgnoredSuggestions } from '@/lib/ai/suggestions-cleanup'
 
 /**
  * Scans every account with an active AI config for stale conversations
- * and writes pending `followup` suggestions to the Central de IA.
+ * and writes pending `followup` suggestions to the Central de IA, then
+ * dispatches any due Follow-up Inteligente `scheduled_sends` (plans
+ * approved from those suggestions — see processDueFollowupSends).
  * Meant to be hit on a schedule (external pinger — this project has no
  * built-in scheduler; see docs/docker.md), same as
  * `/api/automations/cron` and `/api/flows/cron`. Re-uses
  * `AUTOMATION_CRON_SECRET` so operators only have one secret to manage
- * (same reasoning as the flows cron).
+ * (same reasoning as the flows cron) — the scheduled-send dispatch
+ * piggybacks on this same tick rather than needing its own cron entry.
  */
 export async function GET(request: Request) {
   const expected = process.env.AUTOMATION_CRON_SECRET
@@ -56,10 +59,15 @@ export async function GET(request: Request) {
     }
   }
 
+  const sendsResult = await processDueFollowupSends(admin)
+
   return NextResponse.json({
     accounts_processed: activeConfigs.length,
     created,
     scored,
     deleted_ignored: deletedIgnored,
+    scheduled_sends_processed: sendsResult.processed,
+    scheduled_sends_sent: sendsResult.sent,
+    scheduled_sends_failed: sendsResult.failed,
   })
 }

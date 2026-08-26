@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { createClient } from '@/lib/supabase/server' // Usar o server client para operações de admin
 
 export async function POST(
   request: Request,

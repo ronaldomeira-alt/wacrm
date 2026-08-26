@@ -1,10 +1,10 @@
-﻿import { NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { loadAiConfig } from '@/lib/ai/config'
 import { generateFollowupFreeMessage, selectFollowupTemplate } from '@/lib/ai/followup-message'
 import { logAiUsage } from '@/lib/ai/usage'
-import { type AiUsage } from '@/lib/ai/types'
+import type { FollowupPlan } from '@/lib/ai/followup-types'
 
 function bad(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status })
@@ -19,15 +19,20 @@ interface FollowupPayload {
 /**
  * POST /api/ai/suggestions/[id]/followup/generate  (agent+)
  *
- * Drafts (or regenerates â€” same endpoint, "Regenerar" just calls it
- * again) the follow-up message for one of the two send modes. Never
- * sends anything â€” this only produces text/a template selection for
+ * Drafts (or regenerates — same endpoint, "Regenerar" just calls it
+ * again) the follow-up message for one of three modes. Never sends
+ * anything — this only produces text/a template selection/a plan for
  * the user to review; persisted into the suggestion's `payload.draft`
  * so it survives a page reload before the user acts on it.
  *
  * `mode: 'template'` can come back with `selection: null` when no
- * approved template fits (or none exist) â€” the client falls back to
+ * approved template fits (or none exist) — the client falls back to
  * offering "Copiar para WhatsApp" only, per the block's spec.
+ *
+ * `mode: 'plan'` (Follow-up Inteligente) selects up to two approved
+ * templates — one for an immediate follow-up, one for a second touch
+ * if the first goes unanswered — reusing the same `selectFollowupTemplate`
+ * picker twice with a contextualized reason for the second call.
  */
 export async function POST(
   request: Request,
@@ -42,8 +47,8 @@ export async function POST(
 
     const body = await request.json().catch(() => null)
     const mode = body?.mode
-    if (mode !== 'free' && mode !== 'template') {
-      return bad('mode must be "free" or "template"')
+    if (mode !== 'free' && mode !== 'template' && mode !== 'plan') {
+      return bad('mode must be "free", "template" or "plan"')
     }
 
     const { data: suggestion, error: fetchError } = await supabase
@@ -59,7 +64,7 @@ export async function POST(
 
     const config = await loadAiConfig(supabase, accountId)
     if (!config) {
-      return bad('AI is not configured/active for this account yet â€” set it up in Settings > Agentes de IA', 409)
+      return bad('AI is not configured/active for this account yet — set it up in Settings > Agentes de IA', 409)
     }
 
     const payload = (suggestion.payload ?? {}) as FollowupPayload
@@ -93,45 +98,109 @@ export async function POST(
       return NextResponse.json({ draft })
     }
 
-    // Gerar plano de 2 contatos para modo 'template'
-    const plan: { contact1: any; contact2: any } = { contact1: null, contact2: null };
-    let totalUsage: AiUsage | null = null;
+    if (mode === 'template') {
+      const { selection, usage } = await selectFollowupTemplate(supabase, accountId, config, {
+        contactName,
+        reason: payload.reason ?? null,
+        approachSummary: payload.approach_summary ?? null,
+      })
+      void logAiUsage(supabase, {
+        accountId,
+        conversationId: suggestion.conversation_id,
+        mode: 'followup',
+        provider: config.provider,
+        model: config.model,
+        usage,
+      })
 
-    // Selecionar template para Contato 1
-    const { selection: selection1, usage: usage1 } = await selectFollowupTemplate(supabase, accountId, config, {
-      contactName,
-      reason: payload.reason ?? null,
-      approachSummary: payload.approach_summary ?? null,
+      if (!selection) {
+        return NextResponse.json({ draft: null })
+      }
+
+      const draft = {
+        mode: 'template' as const,
+        template_id: selection.template.id,
+        template_name: selection.template.name,
+        body_text: selection.template.body_text,
+        values: selection.values,
+      }
+      await supabase
+        .from('ai_suggestions')
+        .update({ payload: { ...payload, draft } })
+        .eq('id', id)
+
+      return NextResponse.json({ draft })
+    }
+
+    // mode === 'plan' — Follow-up Inteligente: up to two scheduled,
+    // pre-filled template sends. Picked with the same template
+    // selector used by mode "template"; nothing is sent here.
+    const { selection: selection1, usage: usage1 } = await selectFollowupTemplate(
+      supabase,
+      accountId,
+      config,
+      {
+        contactName,
+        reason: payload.reason ?? null,
+        approachSummary: payload.approach_summary ?? null,
+      },
+    )
+    void logAiUsage(supabase, {
+      accountId,
+      conversationId: suggestion.conversation_id,
+      mode: 'followup',
+      provider: config.provider,
+      model: config.model,
+      usage: usage1,
     })
-    totalUsage = usage1;
-    if (selection1) {
-      plan.contact1 = {
-        template_id: selection1.template.id,
-        template_name: selection1.template.name,
-        body_text: selection1.template.body_text,
-        values: selection1.values,
-      };
-    }
 
-    // Selecionar template para Contato 2 (contextualizado para sequência)
-    const { selection: selection2, usage: usage2 } = await selectFollowupTemplate(supabase, accountId, config, {
-      contactName,
-      reason: `${payload.reason ?? ''} (Segundo contato após não resposta)`,
-      approachSummary: 'Enviar um lembrete gentil e verificar se houve algum problema.',
+    const { selection: selection2, usage: usage2 } = await selectFollowupTemplate(
+      supabase,
+      accountId,
+      config,
+      {
+        contactName,
+        reason: `${payload.reason ?? ''} (segundo contato, após o primeiro não ter sido respondido)`,
+        approachSummary: 'Enviar um lembrete gentil e verificar se houve algum problema.',
+      },
+    )
+    void logAiUsage(supabase, {
+      accountId,
+      conversationId: suggestion.conversation_id,
+      mode: 'followup',
+      provider: config.provider,
+      model: config.model,
+      usage: usage2,
     })
-    if (selection2) {
-      plan.contact2 = {
-        template_id: selection2.template.id,
-        template_name: selection2.template.name,
-        body_text: selection2.template.body_text,
-        values: selection2.values,
-      };
+
+    const plan: FollowupPlan = {
+      contact1: selection1
+        ? {
+            template_id: selection1.template.id,
+            template_name: selection1.template.name,
+            template_language: selection1.template.language ?? 'pt_BR',
+            body_text: selection1.template.body_text,
+            values: selection1.values,
+            scheduleDays: 15,
+          }
+        : null,
+      contact2: selection2
+        ? {
+            template_id: selection2.template.id,
+            template_name: selection2.template.name,
+            template_language: selection2.template.language ?? 'pt_BR',
+            body_text: selection2.template.body_text,
+            values: selection2.values,
+            scheduleDays: 10,
+          }
+        : null,
     }
 
-    const draft = {
-      mode: 'template' as const,
-      plan,
+    if (!plan.contact1 && !plan.contact2) {
+      return NextResponse.json({ draft: null })
     }
+
+    const draft = { mode: 'plan' as const, plan }
     await supabase
       .from('ai_suggestions')
       .update({ payload: { ...payload, draft } })
@@ -142,4 +211,3 @@ export async function POST(
     return toErrorResponse(err)
   }
 }
-

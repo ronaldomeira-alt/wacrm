@@ -1279,6 +1279,26 @@
         "externalExplainer": "WACRM prepares and registers the recipients. The send is done manually via WhatsApp Web, and the result must be reported back to update the history.",
         "prepareExternal": "Prepare campaign"
       }
+    },
+    "followups": {
+      "title": "Intelligent follow-ups",
+      "subtitle": "AI-approved follow-up plans, scheduled to send automatically.",
+      "noPlansFound": "No follow-up plans found.",
+      "sendsTitle": "Scheduled sends",
+      "cancelPlan": "Cancel plan",
+      "cancelSuccess": "Plan cancelled",
+      "cancelError": "Failed to cancel the plan",
+      "status": {
+        "active": "Active",
+        "completed": "Completed",
+        "cancelled": "Cancelled"
+      },
+      "sendStatus": {
+        "pending": "Pending",
+        "sent": "Sent",
+        "cancelled": "Cancelled",
+        "failed": "Failed"
+      }
     }
   },
   "Envios": {
@@ -2440,7 +2460,13 @@
       "templateUsed": "Template",
       "noTemplate": "No approved template fits this follow-up yet. You can still copy a free-text message to send from your own WhatsApp.",
       "goToConversation": "Go to conversation",
-      "actionError": "Could not complete the action"
+      "actionError": "Could not complete the action",
+      "modePlan": "Automatic plan",
+      "modePlanDesc": "Schedules up to 2 template messages to be sent automatically over the next few days.",
+      "planContact1": "1st touch",
+      "planContact2": "2nd touch",
+      "planScheduleDays": "Send in how many days",
+      "approvePlan": "Approve plan"
     },
     "learning": {
       "open": "Open",

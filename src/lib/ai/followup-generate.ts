@@ -13,9 +13,11 @@ import { parseFollowupScoreResult } from './followup-types'
 import type { LeadSummary } from './lead-analysis-types'
 import {
   FOLLOWUP_MAX_CANDIDATES_PER_RUN,
+  FOLLOWUP_MAX_SENDS_PER_RUN,
   FOLLOWUP_MIN_HOURS_SINCE_CONTACT,
   FOLLOWUP_MIN_SCORE,
 } from './followup-config'
+import { engineSendTemplate } from '@/lib/automations/meta-send'
 
 interface CandidateDeal {
   id: string
@@ -184,4 +186,127 @@ export async function generateFollowupSuggestions(
   }
 
   return { created, scored }
+}
+
+interface DueScheduledSend {
+  id: string
+  account_id: string
+  contact_id: string
+  followup_plan_id: string
+  template_name: string
+  template_language: string
+  template_params: { values?: { body?: string[] } } | null
+  followup_plan: { conversation_id: string; status: string } | null
+}
+
+/**
+ * Dispatches every `scheduled_sends` row whose `send_at` is due — the
+ * Follow-up Inteligente plans approved via
+ * /api/ai/suggestions/[id]/followup/complete. Reuses the automation
+ * engine's `engineSendTemplate` (same account/phone-variant handling,
+ * same `messages` insert so the send shows up in the inbox) instead of
+ * a hand-rolled Meta API call. Global across accounts, same shape as
+ * generateFollowupSuggestions — never throws, a bad row just gets
+ * marked `failed` and the run moves on.
+ */
+export async function processDueFollowupSends(
+  db: SupabaseClient,
+): Promise<{ processed: number; sent: number; failed: number }> {
+  const now = new Date().toISOString()
+  const { data: dueSends, error } = await db
+    .from('scheduled_sends')
+    .select(
+      'id, account_id, contact_id, followup_plan_id, template_name, template_language, template_params, followup_plan:followup_plans(conversation_id, status)',
+    )
+    .eq('status', 'pending')
+    .lte('send_at', now)
+    .order('send_at', { ascending: true })
+    .limit(FOLLOWUP_MAX_SENDS_PER_RUN)
+  if (error) {
+    console.error('[followup sends] failed to load due sends:', error)
+    return { processed: 0, sent: 0, failed: 0 }
+  }
+  if (!dueSends || dueSends.length === 0) return { processed: 0, sent: 0, failed: 0 }
+
+  const rows = dueSends as unknown as DueScheduledSend[]
+
+  // whatsapp_config.user_id is the account's config owner — same
+  // "arbitrary but stable" stand-in the webhook uses for inserts that
+  // need a NOT NULL user_id, since a cron tick has no "current user".
+  const ownerByAccount = new Map<string, string | null>()
+  async function ownerUserId(accountId: string): Promise<string | null> {
+    if (ownerByAccount.has(accountId)) return ownerByAccount.get(accountId) ?? null
+    const { data } = await db
+      .from('whatsapp_config')
+      .select('user_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    const id = (data?.user_id as string | undefined) ?? null
+    ownerByAccount.set(accountId, id)
+    return id
+  }
+
+  let sent = 0
+  let failed = 0
+  const touchedPlans = new Set<string>()
+
+  for (const row of rows) {
+    touchedPlans.add(row.followup_plan_id)
+
+    // The plan may have been cancelled (contact replied — see the
+    // webhook's cancelActiveFollowupPlan) or completed after this send
+    // was queued; cancel-on-reply already flips pending sends to
+    // 'cancelled', but this is a defense-in-depth check for the race.
+    if (!row.followup_plan || row.followup_plan.status !== 'active') {
+      await db.from('scheduled_sends').update({ status: 'cancelled' }).eq('id', row.id)
+      continue
+    }
+
+    const userId = await ownerUserId(row.account_id)
+    if (!userId) {
+      await db
+        .from('scheduled_sends')
+        .update({ status: 'failed', error_message: 'WhatsApp not configured for this account' })
+        .eq('id', row.id)
+      failed++
+      continue
+    }
+
+    try {
+      const params = row.template_params?.values?.body ?? []
+      await engineSendTemplate({
+        accountId: row.account_id,
+        userId,
+        conversationId: row.followup_plan.conversation_id,
+        contactId: row.contact_id,
+        templateName: row.template_name,
+        language: row.template_language,
+        params,
+      })
+      await db
+        .from('scheduled_sends')
+        .update({ status: 'sent', processed_at: new Date().toISOString() })
+        .eq('id', row.id)
+      sent++
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[followup sends] send failed for', row.id, message)
+      await db.from('scheduled_sends').update({ status: 'failed', error_message: message }).eq('id', row.id)
+      failed++
+    }
+  }
+
+  // Close out plans that have no pending sends left.
+  for (const planId of touchedPlans) {
+    const { count } = await db
+      .from('scheduled_sends')
+      .select('id', { count: 'exact', head: true })
+      .eq('followup_plan_id', planId)
+      .eq('status', 'pending')
+    if (!count) {
+      await db.from('followup_plans').update({ status: 'completed' }).eq('id', planId).eq('status', 'active')
+    }
+  }
+
+  return { processed: rows.length, sent, failed }
 }

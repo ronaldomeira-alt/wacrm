@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -11,7 +10,11 @@ import { useTranslations } from 'next-intl';
 
 import { toast } from 'sonner';
 
-// Definição de tipo para os planos de follow-up (pode ser movido para um arquivo de tipos)
+// Follow-up Inteligente — lists approved 2-contact plans queued into
+// scheduled_sends and dispatched by the existing follow-up cron
+// (processDueFollowupSends). Row shape here mirrors the embedded
+// select below, not a generated Database type (this project doesn't
+// generate one for the untyped supabase-js client).
 type FollowupPlan = {
   id: string;
   status: 'active' | 'completed' | 'cancelled';
@@ -20,14 +23,25 @@ type FollowupPlan = {
     id: string;
     name: string;
     phone: string;
-  };
+  } | null;
   scheduled_sends: {
     id: string;
     send_at: string;
-    status: 'pending' | 'sent' | 'cancelled';
+    status: 'pending' | 'sent' | 'cancelled' | 'failed';
     template_name: string;
   }[];
 };
+
+function statusBadgeProps(status: FollowupPlan['status']): { variant: 'default' | 'outline' | 'destructive'; className?: string } {
+  switch (status) {
+    case 'completed':
+      return { variant: 'outline', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' };
+    case 'cancelled':
+      return { variant: 'destructive' };
+    default:
+      return { variant: 'default' };
+  }
+}
 
 export function FollowupsInteligentesSection() {
   const t = useTranslations('Campaigns.followups');
@@ -53,25 +67,24 @@ export function FollowupsInteligentesSection() {
   }
 
   async function fetchFollowupPlans() {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('followup_plans')
-      .select(`
-        id,
-        status,
-        created_at,
-        contact:contacts(id, name, phone),
-        scheduled_sends(id, send_at, status, template_name)
-      `)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching followup plans:', error);
-      // toast.error(t('fetchError'));
-    } else {
-      setPlans(data as FollowupPlan[]);
+    try {
+      const { data, error } = await supabase
+        .from('followup_plans')
+        .select(`
+          id,
+          status,
+          created_at,
+          contact:contacts(id, name, phone),
+          scheduled_sends(id, send_at, status, template_name)
+        `)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setPlans((data ?? []) as unknown as FollowupPlan[]);
+    } catch (err) {
+      console.error('Error fetching followup plans:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   useEffect(() => {
@@ -96,41 +109,32 @@ export function FollowupsInteligentesSection() {
     };
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center py-10">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (plans.length === 0) {
-    return (
-      <Card className="text-center py-10">
-        <CardContent>
-          <p className="text-muted-foreground">{t('noPlansFound')}</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const getStatusVariant = (status: FollowupPlan['status']) => {
-    switch (status) {
-      case 'active': return 'default';
-      case 'completed': return 'success';
-      case 'cancelled': return 'destructive';
-      default: return 'secondary';
-    }
-  };
-
   return (
     <div className="space-y-4">
-      {plans.map(plan => (
+      <div>
+        <h2 className="text-2xl font-bold text-foreground">{t('title')}</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">{t('subtitle')}</p>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center items-center py-10">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      ) : plans.length === 0 ? (
+        <Card className="text-center py-10">
+          <CardContent>
+            <p className="text-muted-foreground">{t('noPlansFound')}</p>
+          </CardContent>
+        </Card>
+      ) : (
+        plans.map(plan => {
+          const badge = statusBadgeProps(plan.status);
+          return (
         <Card key={plan.id}>
           <CardHeader>
             <CardTitle className="flex justify-between items-center">
-              <span>{plan.contact.name}</span>
-              <Badge variant={getStatusVariant(plan.status)}>{t(`status.${plan.status}`)}</Badge>
+              <span>{plan.contact?.name ?? '—'}</span>
+              <Badge variant={badge.variant} className={badge.className}>{t(`status.${plan.status}`)}</Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -164,7 +168,9 @@ export function FollowupsInteligentesSection() {
             )}
           </CardContent>
         </Card>
-      ))}
+          );
+        })
+      )}
     </div>
   );
 }

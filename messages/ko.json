@@ -1279,6 +1279,26 @@
         "externalExplainer": "WACRM prepares and registers the recipients. The send is done manually via WhatsApp Web, and the result must be reported back to update the history.",
         "prepareExternal": "Prepare campaign"
       }
+    },
+    "followups": {
+      "title": "지능형 후속 조치",
+      "subtitle": "AI가 승인한 후속 조치 계획, 자동으로 예약 발송됩니다.",
+      "noPlansFound": "예약된 후속 조치 계획이 없습니다.",
+      "sendsTitle": "예약된 발송",
+      "cancelPlan": "계획 취소",
+      "cancelSuccess": "계획이 취소되었습니다",
+      "cancelError": "계획을 취소하지 못했습니다",
+      "status": {
+        "active": "활성",
+        "completed": "완료됨",
+        "cancelled": "취소됨"
+      },
+      "sendStatus": {
+        "pending": "대기 중",
+        "sent": "발송됨",
+        "cancelled": "취소됨",
+        "failed": "실패"
+      }
     }
   },
   "Envios": {
@@ -2440,7 +2460,13 @@
       "templateUsed": "템플릿",
       "noTemplate": "아직 이 후속 조치에 맞는 승인된 템플릿이 없습니다. 그래도 자유 텍스트 메시지를 복사하여 본인의 WhatsApp에서 보낼 수 있습니다.",
       "goToConversation": "대화로 이동",
-      "actionError": "작업을 완료하지 못했습니다"
+      "actionError": "작업을 완료하지 못했습니다",
+      "modePlan": "자동 계획",
+      "modePlanDesc": "앞으로 며칠 동안 자동으로 전송될 템플릿 메시지를 최대 2개까지 예약합니다.",
+      "planContact1": "1차 연락",
+      "planContact2": "2차 연락",
+      "planScheduleDays": "며칠 후에 보낼지",
+      "approvePlan": "계획 승인"
     },
     "learning": {
       "open": "열기",

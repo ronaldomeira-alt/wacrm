@@ -1279,6 +1279,26 @@
         "externalExplainer": "O WACRM prepara e registra os destinatários. O envio será feito manualmente pelo WhatsApp Web, e o resultado deve ser reportado de volta para atualizar o histórico.",
         "prepareExternal": "Preparar campanha"
       }
+    },
+    "followups": {
+      "title": "Follow-ups inteligentes",
+      "subtitle": "Planos de follow-up aprovados pela IA, agendados para envio automático.",
+      "noPlansFound": "Nenhum plano de follow-up encontrado.",
+      "sendsTitle": "Envios agendados",
+      "cancelPlan": "Cancelar plano",
+      "cancelSuccess": "Plano cancelado",
+      "cancelError": "Falha ao cancelar o plano",
+      "status": {
+        "active": "Ativo",
+        "completed": "Concluído",
+        "cancelled": "Cancelado"
+      },
+      "sendStatus": {
+        "pending": "Pendente",
+        "sent": "Enviado",
+        "cancelled": "Cancelado",
+        "failed": "Falhou"
+      }
     }
   },
   "Envios": {
@@ -2440,7 +2460,13 @@
       "templateUsed": "Template",
       "noTemplate": "Nenhum template aprovado compatível com este follow-up ainda. Você ainda pode copiar uma mensagem livre para enviar pelo seu WhatsApp.",
       "goToConversation": "Ir para a conversa",
-      "actionError": "Não foi possível concluir a ação"
+      "actionError": "Não foi possível concluir a ação",
+      "modePlan": "Plano automático",
+      "modePlanDesc": "Agenda até 2 mensagens de template para serem enviadas automaticamente nos próximos dias.",
+      "planContact1": "1º contato",
+      "planContact2": "2º contato",
+      "planScheduleDays": "Enviar em quantos dias",
+      "approvePlan": "Aprovar plano"
     },
     "learning": {
       "open": "Abrir",

@@ -54,3 +54,29 @@ export function parseFollowupScoreResult(raw: string): FollowupScoreResult | nul
     score: Math.max(0, Math.min(100, Math.round(score))),
   };
 }
+
+// ============================================================
+// Follow-up Inteligente — 2-contact scheduled plan. A plan is an
+// approved sequence of up to two pre-filled template sends, queued
+// into `scheduled_sends` and dispatched by the same cron tick that
+// generates follow-up suggestions (processDueFollowupSends).
+// ============================================================
+
+export interface FollowupPlanContact {
+  template_id: string;
+  template_name: string;
+  /** Approved template's language code (e.g. "pt_BR") — carried
+   *  through so the actual send uses the template's real language
+   *  instead of assuming one. */
+  template_language: string;
+  body_text: string;
+  values: { body: string[]; headerText?: string };
+  /** Days after the previous step (or after approval, for contact1)
+   *  to send this message. */
+  scheduleDays: number;
+}
+
+export interface FollowupPlan {
+  contact1: FollowupPlanContact | null;
+  contact2: FollowupPlanContact | null;
+}
