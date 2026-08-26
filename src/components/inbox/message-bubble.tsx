@@ -186,6 +186,37 @@ function MediaImage({
   );
 }
 
+/**
+ * Framed-video counterpart to MediaImage — same edge-to-edge sizing
+ * (`max-h-64 max-w-60 rounded-lg`) so a caption-less video sits in the
+ * bubble exactly like a caption-less photo instead of behind the bubble's
+ * full px-3/py-2 padding. Unlike MediaImage, there's no click-to-lightbox
+ * button wrapper: the native `<video controls>` bar needs the click/seek
+ * surface, and its own bottom-edge control bar is why the timestamp badge
+ * goes top-right (bottom-right — MediaImage's spot — would sit on top of
+ * those native controls) instead of reusing MediaImage's blurred-shade
+ * treatment.
+ */
+function MediaVideo({
+  url,
+  overlay,
+}: {
+  url: string;
+  overlay?: { time: string; status: ReactNode };
+}) {
+  return (
+    <div className="relative block">
+      <video src={url} controls className="max-h-64 max-w-60 rounded-lg" />
+      {overlay && (
+        <span className="pointer-events-none absolute right-2 top-2 z-[1] flex items-center gap-1 rounded-full bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
+          {overlay.time}
+          {overlay.status}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function MessageContent({
   message,
   t,
@@ -413,7 +444,10 @@ function MessageBubbleComponent({
   // content, then a normal timestamp row — unchanged.
   const isFramedPhoto =
     message.content_type === "image" && !!message.media_url && !message.content_text;
-  const isFramedMedia = isFramedPhoto || isFramedLink;
+  // Same reasoning as isFramedPhoto, just for video — see MediaVideo.
+  const isFramedVideo =
+    message.content_type === "video" && !!message.media_url && !message.content_text;
+  const isFramedMedia = isFramedPhoto || isFramedVideo || isFramedLink;
 
   // A document message with a generated PDF preview renders its own
   // self-contained card (thumbnail + footer with an embedded timestamp,
@@ -479,6 +513,14 @@ function MessageBubbleComponent({
             url={message.media_url}
             alt="Shared image"
             t={t}
+            overlay={{
+              time,
+              status: isAgent ? <StatusIcon status={message.status} overlay /> : null,
+            }}
+          />
+        ) : isFramedVideo && message.media_url ? (
+          <MediaVideo
+            url={message.media_url}
             overlay={{
               time,
               status: isAgent ? <StatusIcon status={message.status} overlay /> : null,
