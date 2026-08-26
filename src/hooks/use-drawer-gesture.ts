@@ -39,6 +39,14 @@ interface UseDrawerGestureOptions {
   /** The dark backdrop — its opacity is driven in lockstep with the
    *  panel's open progress. */
   backdropRef: React.RefObject<HTMLElement | null>;
+  /**
+   * Which screen edge the panel lives on and slides in from. Defaults to
+   * "left" (the primary nav drawer this hook was originally written
+   * for). "right" mirrors every rule horizontally — edge-zone check,
+   * drag direction for open vs. close, and the closed resting
+   * transform — for a panel like the mobile Inbox contact-info drawer.
+   */
+  side?: "left" | "right";
 }
 
 interface GestureState {
@@ -74,6 +82,7 @@ export function useDrawerGesture({
   containerRef,
   panelRef,
   backdropRef,
+  side = "left",
 }: UseDrawerGestureOptions) {
   const gestureRef = useRef<GestureState | null>(null);
   const openRef = useRef(open);
@@ -139,8 +148,13 @@ export function useDrawerGesture({
       }
 
       // Drawer is closed — only a touch starting in the edge band can
-      // open it.
-      if (touch.clientX > EDGE_ZONE_PX) return;
+      // open it. Mirrored for a right-side panel: the band hugs the
+      // right edge of the viewport instead of the left.
+      if (side === "left") {
+        if (touch.clientX > EDGE_ZONE_PX) return;
+      } else {
+        if (touch.clientX < window.innerWidth - EDGE_ZONE_PX) return;
+      }
       gestureRef.current = {
         mode: "open",
         startX: touch.clientX,
@@ -163,7 +177,12 @@ export function useDrawerGesture({
       if (!g.decided) {
         if (Math.abs(dx) < DECIDE_AFTER_PX && Math.abs(dy) < DECIDE_AFTER_PX) return;
         const isHorizontal = Math.abs(dx) > Math.abs(dy) * DIRECTION_DOMINANCE;
-        const rightDirectionForMode = g.mode === "open" ? dx > 0 : dx < 0;
+        // Left panel opens on drag-right / closes on drag-left. Right
+        // panel is the mirror image: opens on drag-left ("arrastar da
+        // direita para a esquerda"), closes on drag-right.
+        const wantsPositiveDx =
+          side === "left" ? g.mode === "open" : g.mode === "close";
+        const rightDirectionForMode = wantsPositiveDx ? dx > 0 : dx < 0;
         if (!isHorizontal || !rightDirectionForMode) {
           // Vertical scroll, or dragging the "wrong" way — this was
           // never our gesture. Bail without ever having called
@@ -177,15 +196,27 @@ export function useDrawerGesture({
       // Committed to the drag — stop the page scrolling/bouncing under it.
       e.preventDefault();
 
-      const base = g.mode === "open" ? -g.width : 0;
-      const translateX = Math.max(-g.width, Math.min(0, base + dx));
+      const translateX = clampTranslate(g.mode, g.width, dx);
       applyTransform(translateX, false);
-      const progress = g.width > 0 ? 1 + translateX / g.width : 0;
-      applyBackdrop(progress, false);
+      applyBackdrop(progressFor(g.width, translateX), false);
+    }
+
+    function clampTranslate(mode: "open" | "close", width: number, dx: number): number {
+      const closedTranslateX = side === "left" ? -width : width;
+      const base = mode === "open" ? closedTranslateX : 0;
+      return side === "left"
+        ? Math.max(-width, Math.min(0, base + dx))
+        : Math.max(0, Math.min(width, base + dx));
+    }
+
+    function progressFor(width: number, translateX: number): number {
+      if (width <= 0) return 0;
+      return side === "left" ? 1 + translateX / width : 1 - translateX / width;
     }
 
     function settle(shouldOpen: boolean, width: number) {
-      applyTransform(shouldOpen ? 0 : -width, true);
+      const closedTranslateX = side === "left" ? -width : width;
+      applyTransform(shouldOpen ? 0 : closedTranslateX, true);
       applyBackdrop(shouldOpen ? 1 : 0, true);
       if (shouldOpen !== openRef.current) onOpenChange(shouldOpen);
       // Let the 220ms settle transition finish before releasing control
@@ -202,9 +233,8 @@ export function useDrawerGesture({
       const width = g.width;
       const touch = e.changedTouches[0];
       const dx = touch ? touch.clientX - g.startX : 0;
-      const base = g.mode === "open" ? -width : 0;
-      const translateX = Math.max(-width, Math.min(0, base + dx));
-      const progress = width > 0 ? 1 + translateX / width : 0;
+      const translateX = clampTranslate(g.mode, width, dx);
+      const progress = progressFor(width, translateX);
 
       settle(progress > OPEN_PROGRESS_THRESHOLD, width);
     }
@@ -232,5 +262,5 @@ export function useDrawerGesture({
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchCancel);
     };
-  }, [containerRef, panelRef, backdropRef, onOpenChange]);
+  }, [containerRef, panelRef, backdropRef, onOpenChange, side]);
 }

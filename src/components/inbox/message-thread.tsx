@@ -22,6 +22,8 @@ import {
   Check,
   Clock,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
   PanelRightOpen,
   PanelRightClose,
   Megaphone,
@@ -66,7 +68,9 @@ import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
 import { consumeFollowupDraft, type FollowupDraft } from "@/lib/inbox/followup-draft";
 import { ContactNotesPanel } from "./contact-notes-panel";
+import { ContactSidebar } from "./contact-sidebar";
 import { MediaGallery } from "./media-gallery";
+import { useDrawerGesture } from "@/hooks/use-drawer-gesture";
 import { AppointmentFormDialog } from "@/components/appointments/appointment-form-dialog";
 import { AddToActionCenterDialog } from "@/components/action-items/add-to-action-center-dialog";
 import { FollowupRequirementDialog } from "@/components/action-items/followup-requirement-dialog";
@@ -390,6 +394,49 @@ export function MessageThread({
   const [mediaGalleryOpen, setMediaGalleryOpen] = useState(false);
   const [actionCenterOpen, setActionCenterOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+
+  // Mobile contact-info drawer — reuses the exact same ContactSidebar the
+  // desktop panel renders (below), just presented as a fixed right-edge
+  // overlay via useDrawerGesture (side="right") instead of a flex-width
+  // column. Reset on every conversation switch via the render-time
+  // "adjusting state when a prop changes" pattern (same technique
+  // contact-sidebar.tsx's own optimistic toggles already use) rather than
+  // an effect, so a leftover open drawer never leaks into the next lead.
+  const [mobileContactPanelOpen, setMobileContactPanelOpen] = useState(false);
+  const [mobileContactPanelConvId, setMobileContactPanelConvId] = useState(
+    conversation?.id,
+  );
+  if (conversation?.id !== mobileContactPanelConvId) {
+    setMobileContactPanelConvId(conversation?.id);
+    setMobileContactPanelOpen(false);
+  }
+  const threadRootRef = useRef<HTMLDivElement>(null);
+  const mobileContactPanelRef = useRef<HTMLDivElement>(null);
+  const mobileContactBackdropRef = useRef<HTMLButtonElement>(null);
+  useDrawerGesture({
+    open: mobileContactPanelOpen,
+    onOpenChange: setMobileContactPanelOpen,
+    containerRef: threadRootRef,
+    panelRef: mobileContactPanelRef,
+    backdropRef: mobileContactBackdropRef,
+    side: "right",
+  });
+  // Same lock/Escape behavior as the mobile nav drawer (Sidebar) while
+  // this one is open — belt-and-suspenders alongside the backdrop, which
+  // already blocks every touch from reaching the conversation underneath.
+  useEffect(() => {
+    if (!mobileContactPanelOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileContactPanelOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [mobileContactPanelOpen]);
   // "Mover para" submenu — same hook the sidebar's "Etapa da Pipeline"
   // card uses (contact-sidebar.tsx), so both entry points share one
   // fetch/update implementation and stay in sync with each other.
@@ -1170,7 +1217,7 @@ export function MessageThread({
     // clipped and the hover toolbar overlaps the Tags panel. Letting the
     // root shrink lets the bubbles' break-words / max-w caps apply.
     // Issue #257.
-    <div className={cn("flex min-w-0 flex-1 flex-col", DOODLE_BG_CLASSES)}>
+    <div ref={threadRootRef} className={cn("flex min-w-0 flex-1 flex-col", DOODLE_BG_CLASSES)}>
       {/* Header — solid card surface sits on top of the doodle so the
           name/avatar/dropdowns stay legible. */}
       <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-3 py-3 sm:px-4">
@@ -1255,6 +1302,31 @@ export function MessageThread({
               )}
             </button>
           )}
+
+          {/* Contact-panel toggle — mobile only. Same info the desktop
+              toggle above reveals, but as a drag-openable overlay drawer
+              instead of a permanent column (there's no room for one on a
+              phone screen). Discreet chevron per the ask ("botão discreto
+              com seta"), flipping direction with the drawer's own state —
+              left when closed (swipe/tap this way to bring it in), right
+              when open (tap to send it back). */}
+          <button
+            type="button"
+            onClick={() => setMobileContactPanelOpen((prev) => !prev)}
+            aria-label={mobileContactPanelOpen ? t("hideContact") : t("showContact")}
+            title={mobileContactPanelOpen ? t("hideContact") : t("showContact")}
+            aria-pressed={mobileContactPanelOpen}
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground lg:hidden",
+              mobileContactPanelOpen ? "text-primary" : "text-muted-foreground",
+            )}
+          >
+            {mobileContactPanelOpen ? (
+              <ChevronRight className="h-4 w-4" />
+            ) : (
+              <ChevronLeft className="h-4 w-4" />
+            )}
+          </button>
 
           {/* Single overflow menu — replaces the old refresh button +
               Status dropdown + Assign dropdown (WACRM inbox redesign
@@ -1579,6 +1651,36 @@ export function MessageThread({
         initialSelection={followupTemplateSelection}
         conversationId={conversation?.id ?? null}
       />
+
+      {/* Mobile contact-info drawer — backdrop + sliding panel, same
+          fixed-overlay/backdrop pattern as the mobile nav drawer
+          (Sidebar), mirrored to the right edge (useDrawerGesture,
+          side="right", wired above). Renders the identical ContactSidebar
+          the desktop panel uses (AGENTS task: no new component, no
+          duplicated data) — only its container differs. Desktop-only
+          hidden via `lg:hidden` on both pieces. */}
+      <button
+        ref={mobileContactBackdropRef}
+        type="button"
+        aria-label={t("hideContact")}
+        onClick={() => setMobileContactPanelOpen(false)}
+        className={cn(
+          "fixed inset-0 z-30 bg-background/70 backdrop-blur-sm transition-opacity lg:hidden",
+          mobileContactPanelOpen
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0",
+        )}
+      />
+      <div
+        ref={mobileContactPanelRef}
+        className={cn(
+          "fixed inset-y-0 right-0 z-40 h-full w-70 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+          "transition-transform duration-200 ease-out will-change-transform lg:hidden",
+          mobileContactPanelOpen ? "translate-x-0" : "translate-x-full",
+        )}
+      >
+        <ContactSidebar contact={contact} conversation={conversation} />
+      </div>
     </div>
   );
 }
