@@ -25,6 +25,7 @@ import { useLinkPreview } from "@/hooks/use-link-preview";
 import { extractUrls, linkifyText } from "@/lib/inbox/linkify";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
 import { DocumentPreviewCard } from "./document-preview-card";
+import { AudioMessagePlayer } from "./audio-message-player";
 import { useTranslations } from "next-intl";
 
 interface MessageBubbleProps {
@@ -243,14 +244,17 @@ function MessageContent({
       );
 
     case "audio":
-      return (
-        <div>
-          {message.media_url ? (
-            <audio src={message.media_url} controls className="max-w-60" />
-          ) : (
-            <MediaUnavailable label={t("audio")} t={t} />
-          )}
-        </div>
+      return message.media_url ? (
+        <AudioMessagePlayer
+          url={message.media_url}
+          isAgent={isAgent}
+          time={time}
+          status={status}
+          playLabel={t("audioPlay")}
+          pauseLabel={t("audioPause")}
+        />
+      ) : (
+        <MediaUnavailable label={t("audio")} t={t} />
       );
 
     case "document":
@@ -421,6 +425,12 @@ function MessageBubbleComponent({
   const hasDocumentPreview =
     message.content_type === "document" && !!message.document_thumbnail_url;
 
+  // Voice notes render their own WhatsApp-style player (waveform, speed
+  // control) with an embedded timestamp/status footer — same reasoning as
+  // hasDocumentPreview above, just for the audio case.
+  const hasAudioPlayer =
+    message.content_type === "audio" && !!message.media_url;
+
   const timestamp = (
     <span
       className={cn(
@@ -497,7 +507,7 @@ function MessageBubbleComponent({
               time={time}
               status={isAgent ? <StatusIcon status={message.status} /> : null}
             />
-            {!hasDocumentPreview && (
+            {!hasDocumentPreview && !hasAudioPlayer && (
               <div
                 className={cn(
                   "mt-1 flex items-center gap-1",

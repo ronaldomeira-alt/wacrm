@@ -479,6 +479,8 @@
       "next": "다음",
       "video": "동영상",
       "audio": "오디오",
+      "audioPlay": "오디오 재생",
+      "audioPause": "오디오 일시정지",
       "unavailable": "{label}을(를) 사용할 수 없습니다",
       "document": "문서",
       "locationShared": "위치 공유됨",

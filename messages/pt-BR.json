@@ -479,6 +479,8 @@
       "next": "Próxima",
       "video": "Vídeo",
       "audio": "Áudio",
+      "audioPlay": "Reproduzir áudio",
+      "audioPause": "Pausar áudio",
       "unavailable": "{label} indisponível",
       "document": "Documento",
       "locationShared": "Localização compartilhada",
