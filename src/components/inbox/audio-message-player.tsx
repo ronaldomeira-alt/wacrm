@@ -97,6 +97,23 @@ export function AudioMessagePlayer({
     };
   }, [src]);
 
+  // `timeupdate` fires as infrequently as 4x/sec (worse on Safari/iOS PWA),
+  // which reads as the waveform progress "jumping" between bars instead of
+  // sliding. Polling the same `audio.currentTime` every animation frame
+  // while playing gives the same real playback position, just sampled
+  // smoothly — no separate animation/timer that could drift out of sync.
+  useEffect(() => {
+    if (!isPlaying) return;
+    let rafId: number;
+    const tick = () => {
+      const audio = audioRef.current;
+      if (audio) setCurrentTime(audio.currentTime);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying]);
+
   const togglePlay = () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -165,25 +182,47 @@ export function AudioMessagePlayer({
         )}
       </button>
 
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
+      {/* Fixed-height band so the waveform can be centered by construction
+          (top-1/2 -translate-y-1/2) instead of by stacking it above the
+          info row in a column — that stacking left the waveform's own
+          midpoint ~10px above the bubble's actual vertical center, since
+          only the info row's height pulled the block's center down. Anchoring
+          the info row to the band's bottom edge keeps it clear of the
+          waveform without affecting the waveform's centering. */}
+      <div className="relative h-14 min-w-0 flex-1">
+        {/* Two identical bar layers, same width/positions — the top one is
+            clipped to the play progress instead of recoloring bars one at a
+            time, so the color edge slides continuously (down to the pixel)
+            instead of jumping bar-by-bar. */}
         <div
           ref={waveformRef}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
-          className="flex h-8 w-full cursor-pointer items-center justify-between touch-none"
+          className="absolute inset-x-0 top-1/2 h-5 -translate-y-1/2 cursor-pointer touch-none"
         >
-          {bars.map((barHeight, i) => (
-            <span
-              key={i}
-              className={cn(
-                "w-[2px] shrink-0 rounded-full",
-                i / BAR_COUNT <= progress ? activeBar : mutedBar,
-              )}
-              style={{ height: `${barHeight * 100}%` }}
-            />
-          ))}
+          <div className="absolute inset-0 flex items-center justify-between">
+            {bars.map((barHeight, i) => (
+              <span
+                key={i}
+                className={cn("w-[2px] shrink-0 rounded-full", mutedBar)}
+                style={{ height: `${barHeight * 100}%` }}
+              />
+            ))}
+          </div>
+          <div
+            className="absolute inset-0 flex items-center justify-between transition-[clip-path] duration-100 ease-linear"
+            style={{ clipPath: `inset(0 ${100 - progress * 100}% 0 0)` }}
+          >
+            {bars.map((barHeight, i) => (
+              <span
+                key={i}
+                className={cn("w-[2px] shrink-0 rounded-full", activeBar)}
+                style={{ height: `${barHeight * 100}%` }}
+              />
+            ))}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2">
           <span
             className={cn(
               "text-[10px] tabular-nums",
@@ -192,29 +231,31 @@ export function AudioMessagePlayer({
           >
             {formatTime(hasStarted ? currentTime : duration)}
           </span>
-          {hasStarted && (
-            <button
-              type="button"
-              onClick={cycleSpeed}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {hasStarted && (
+              <button
+                type="button"
+                onClick={cycleSpeed}
+                className={cn(
+                  "rounded-full px-1.5 py-px text-[10px] font-semibold leading-none",
+                  isAgent
+                    ? "bg-primary-foreground/20 text-primary-foreground"
+                    : "bg-primary/10 text-primary",
+                )}
+              >
+                {SPEED_LABELS[SPEEDS[speedIndex]]}
+              </button>
+            )}
+            <span
               className={cn(
-                "rounded-full px-1.5 py-px text-[10px] font-semibold leading-none",
-                isAgent
-                  ? "bg-primary-foreground/20 text-primary-foreground"
-                  : "bg-primary/10 text-primary",
+                "flex items-center gap-1 text-[10px]",
+                isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
               )}
             >
-              {SPEED_LABELS[SPEEDS[speedIndex]]}
-            </button>
-          )}
-          <span
-            className={cn(
-              "ml-auto flex shrink-0 items-center gap-1 text-[10px]",
-              isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
-            )}
-          >
-            {time}
-            {status}
-          </span>
+              {time}
+              {status}
+            </span>
+          </div>
         </div>
       </div>
     </div>
