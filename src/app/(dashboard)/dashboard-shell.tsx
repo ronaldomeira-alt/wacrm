@@ -131,6 +131,17 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
     // inference is exactly what isn't reliable here). Only active in
     // real standalone-PWA use; a no-op on desktop or a regular Safari
     // tab, where the `100dvh` fallback is unchanged from before.
+    //
+    // Deliberately NOT CSS-`transition`ed: tried once (parte 33) to
+    // smooth out `--app-height`'s JS-driven updates, but it made the
+    // motion worse, not better — a CSS transition eases toward whatever
+    // the *latest* JS-set target is from wherever it currently sits, so
+    // each new `visualViewport` resize event mid-keyboard-animation
+    // restarts/retargets it, producing a visibly separate animation
+    // chasing the real keyboard instead of matching it. Snapping
+    // straight to each reported value, however many times it fires,
+    // tracks the keyboard's own live position more faithfully than a
+    // second, independently-timed animation ever can. Reverted.
     <div
       ref={shellRef}
       className="flex h-[var(--app-height,100dvh)] touch-pan-y overflow-hidden bg-background"
