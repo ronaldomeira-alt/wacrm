@@ -1,7 +1,7 @@
 # HANDOFF — Composer + Teclado no iPhone/PWA
 
-**Status:** pausado, sem solução final. Retomar no Mac usando Safari Web Inspector.
-**Branch:** `wip/inbox-keyboard-composer-ios` (não é `main` — de propósito, para não disparar o auto-deploy do Hostinger com código de debug ainda no meio).
+**Status:** pausado, sem solução final. Retomar no Mac usando Safari Web Inspector (Timeline/Performance, não só o DOM — ver atualização de 2026-08-27 abaixo).
+**Branch:** o trabalho original abaixo foi feito em `wip/inbox-keyboard-composer-ios` e depois mergeado em `main` (composer-follow-teclado e a redução de padding do composer já estão em produção). A investigação de 2026-08-27 foi feita direto em `main`, sem nenhum código de debug chegando a ser commitado — só este arquivo.
 
 ## Objetivo original
 
@@ -80,6 +80,41 @@ Para não repetir os mesmos erros:
 3. **Investigar o problema #2 (faixa escura)** inspecionando ao vivo, no momento do teclado aberto: qual elemento realmente ocupa aquela região (computed styles, box model no inspector) — os números já provam que não é falta de altura na cadeia flexbox do composer; ou `visualViewport.height` não reflete o topo real do teclado nesse contexto, ou há uma camada não identificada.
 4. **Remover o overlay de debug e o atributo `data-composer-root`** (ambos claramente marcados como temporários) assim que a causa raiz de ambos os problemas estiver confirmada e corrigida.
 5. Só depois disso: `typecheck` + `lint` + `build`, testar no iPhone, esperar aprovação manual do usuário, e então (só a pedido explícito) fazer merge pra `main` e deploy.
+
+## Atualização 2026-08-27 — sintoma separado: "conversa desce e sobe" momentâneo
+
+Depois do merge pra `main` (composer-follow-teclado funcionando, faixa preta aceita como limitação nativa), surgiu um **terceiro sintoma, distinto dos dois acima**: ao tocar no composer, a área inteira da conversa desce visualmente (até a metade da tela, em relatos do usuário) e volta pra posição correta em frações de segundo — antes mesmo do teclado terminar de subir.
+
+### O que foi tentado e revertido (todas sem nenhum efeito observável)
+
+1. **Adiar `--composer-safe-bottom`/`--app-bg-override` de `onFocusIn` pra `onVvResize`** (teoria: esses dois `setProperty` rodavam ~100ms cedo demais, antes do teclado cobrir a área). Zero diferença — revertido.
+2. **`requestAnimationFrame` forçando `document.scrollingElement.scrollTop = 0` a cada frame** por 400ms após o foco (teoria: o glitch de 354px do achado #3 original ainda existia, só que um `scroll` event sempre entrega pelo menos 1 frame atrasado em relação ao paint). Zero diferença — revertido.
+3. **Correção síncrona do `scrollTop` do container de mensagens** (`message-thread.tsx`), pinando no mesmo tick em que `--app-height` muda, em vez de depender do `ResizeObserver` (que already adia 1 frame via seu próprio `requestAnimationFrame`, de propósito). Precisou expor `data-thread-scroll` + `data-near-bottom` nesse arquivo pra ser lido de `use-app-height.ts`. Zero diferença — revertido.
+
+### Dados reais capturados (overlay temporário, nunca commitado)
+
+Sequência completa, do `focusin` até o `focusout`, com `document.scrollingElement.scrollTop`, `visualViewport.height/.offsetTop` + o evento `scroll` dedicado dele (não só `resize`), e a posição real (`getBoundingClientRect`) do header, do `<main>` e da própria `<textarea>` do composer, logados a cada frame de animação:
+
+```
+f0  t=0     focusin     vvH=932 vvOff=0 appH=932px sY=0 hdrTop=0 hdrBot=100 mainTop=100 mainBot=932
+f4  t=99-132 resize     vvH=519 vvOff=0 appH=519px sY=0 hdrTop=0 hdrBot=100 mainTop=100 mainBot=519  ← único passo, limpo
+f5  t=+1    vv-scroll   (evento disparou, mas vvOff já lido como 0 no mesmo tick)
+f6..f120    raf         100% idêntico a f4, por até 2 segundos seguidos, sem nenhuma variação
+```
+
+**Nenhum sinal jamais se move**: `scrollY`, `visualViewport.offsetTop`, a posição do header, do `<main>`, do composer — tudo constante, a transição inteira é um único frame limpo (932→519), sem glitch, sem passo intermediário.
+
+**Porém**, dois prints tirados exatamente nesse intervalo (um bem no "meio da descida", outro bem mais tarde ainda com o teclado aberto) mostram a própria caixa de debug — `position: fixed; top: 0`, deveria estar sempre colada no topo físico — renderizada bem mais abaixo, com um vazio grande por cima. O **header real** (`Caixa de entrada`, elemento normal de fluxo, não fixed) tinha mostrado exatamente o mesmo padrão no primeiríssimo print do usuário, antes de qualquer instrumentação existir.
+
+### Conclusão (não 100% confirmada sem Web Inspector, mas bem fundamentada)
+
+Contradição real entre "o que o JS mede" (nada se move) e "o que a tela mostra" (desloca bastante) só tem uma explicação plausível: o **compositor do WebKit anima uma captura da tela anterior** enquanto o teclado sobe (técnica padrão em navegadores mobile pra suavizar resize/zoom), e só repinta de verdade quando a animação assenta. Nosso `--app-height` já pulou pro valor final num frame só (confirmado, zero passos intermediários) — mas a imagem que a câmera captura, nesse meio tempo, é uma transformação da OS sobre um snapshot antigo, **fora do alcance de qualquer API JS ou CSS**. Mesma categoria da faixa preta (achado #4 do bloco anterior) — aliás, pode ser a mesma causa raiz por trás dos dois sintomas.
+
+**Não reintroduzir nenhuma das 3 tentativas acima sem dados novos.** Todas foram código correto e bem justificado — o problema é que nenhuma delas ataca a camada onde o glitch realmente vive.
+
+### O que fazer com o Mac
+
+Além do que já estava listado abaixo (duração/curva real da animação do teclado): usar a aba **Timeline/Performance** do Web Inspector especificamente pra ver se há uma camada de compositor separada animando durante o resize — não só inspecionar o DOM/Elements, que é exatamente o que já tentamos simular via overlay e não basta aqui.
 
 ## Ambiente local (não versionado, específico desta máquina)
 
