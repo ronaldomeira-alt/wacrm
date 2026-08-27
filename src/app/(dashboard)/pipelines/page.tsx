@@ -635,7 +635,7 @@ export default function PipelinesPage() {
             }}
             className={
               view === "archived"
-                ? "inline-flex items-center gap-2 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-sm text-primary transition-colors hover:bg-primary/15"
+                ? "inline-flex items-center gap-2 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-sm text-primary-on-soft transition-colors hover:bg-primary/15"
                 : "inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
             }
           >

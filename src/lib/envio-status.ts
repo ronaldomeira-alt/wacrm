@@ -23,7 +23,7 @@ export const loteStatusConfig: Record<EnvioLoteStatus, StatusDisplay> = {
   },
   concluido: {
     label: 'concluido',
-    classes: 'bg-primary/10 text-primary border-primary/20',
+    classes: 'bg-primary/10 text-primary-on-soft border-primary/20',
   },
 };
 
@@ -39,7 +39,7 @@ export const envioLeadStatusConfig: Record<EnvioLeadStatus, StatusDisplay> = {
   },
   enviado: {
     label: 'enviado',
-    classes: 'bg-primary/10 text-primary border-primary/20',
+    classes: 'bg-primary/10 text-primary-on-soft border-primary/20',
   },
   falhou: {
     label: 'falhou',

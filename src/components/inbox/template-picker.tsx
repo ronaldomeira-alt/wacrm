@@ -307,7 +307,7 @@ export function TemplatePicker({
                         <p className="truncate text-sm font-medium text-popover-foreground">
                           {t.name}
                         </p>
-                        <Badge className="border border-primary/30 bg-primary/20 text-[10px] text-primary">
+                        <Badge className="border border-primary/30 bg-primary/20 text-[10px] text-primary-on-soft">
                           {t.category}
                         </Badge>
                         {t.language && (
@@ -412,7 +412,7 @@ export function TemplatePicker({
                   variant="outline"
                   disabled={aiFilling}
                   onClick={generateWithAi}
-                  className="border-primary/40 text-primary hover:bg-primary/10 disabled:opacity-50"
+                  className="border-primary/40 text-primary-on-soft hover:bg-primary/10 disabled:opacity-50"
                 >
                   {aiFilling ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

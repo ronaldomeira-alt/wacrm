@@ -53,7 +53,7 @@ export function ProjectPicker({
                 className={cn(
                   'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
                   selectedProjectId === project.id
-                    ? 'border-primary/40 bg-primary/10 text-primary'
+                    ? 'border-primary/40 bg-primary/10 text-primary-on-soft'
                     : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
               >

@@ -123,7 +123,7 @@ export function ComponentTemplateEditor({
               className={cn(
                 'ml-auto flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors',
                 c.defaultLocked
-                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  ? 'border-primary/40 bg-primary/10 text-primary-on-soft'
                   : 'border-border text-muted-foreground hover:bg-muted',
               )}
             >
@@ -164,7 +164,7 @@ export function ComponentTemplateEditor({
               className={cn(
                 'px-2.5 py-1 text-xs font-medium transition-colors',
                 newKind === kind
-                  ? 'bg-primary/10 text-primary'
+                  ? 'bg-primary/10 text-primary-on-soft'
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground',
               )}
             >

@@ -103,7 +103,7 @@ export function TemplatePickerModal({
                 onClick={() => setCategory(c)}
                 className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                   category === c
-                    ? 'border-primary bg-primary/10 text-primary'
+                    ? 'border-primary bg-primary/10 text-primary-on-soft'
                     : 'border-border bg-card/50 text-muted-foreground hover:text-foreground'
                 }`}
               >

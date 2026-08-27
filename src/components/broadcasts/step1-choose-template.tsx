@@ -180,7 +180,7 @@ export function Step1ChooseTemplate({
         >
           <div
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-              sendChannel === 'api' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+              sendChannel === 'api' ? 'bg-primary/10 text-primary-on-soft' : 'bg-muted text-muted-foreground'
             }`}
           >
             <Rocket className="h-4 w-4" />
@@ -200,7 +200,7 @@ export function Step1ChooseTemplate({
         >
           <div
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-              sendChannel === 'external' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+              sendChannel === 'external' ? 'bg-primary/10 text-primary-on-soft' : 'bg-muted text-muted-foreground'
             }`}
           >
             <Smartphone className="h-4 w-4" />

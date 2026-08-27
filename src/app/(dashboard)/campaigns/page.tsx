@@ -290,7 +290,7 @@ export default function CampaignsPage() {
                 <CardContent className="flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2.5">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary-on-soft">
                         <Megaphone className="h-4 w-4" />
                       </div>
                       <div className="min-w-0">
@@ -307,7 +307,7 @@ export default function CampaignsPage() {
                         className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
                           isExternal
                             ? 'border-amber-500/20 bg-amber-500/10 text-amber-300'
-                            : 'border-primary/20 bg-primary/10 text-primary'
+                            : 'border-primary/20 bg-primary/10 text-primary-on-soft'
                         }`}
                       >
                         {isExternal ? t('channelExternal') : t('channelApi')}

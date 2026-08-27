@@ -705,7 +705,7 @@ function ContactsPageInner() {
             onClick={toggleView}
             className={
               view === 'archived'
-                ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15'
+                ? 'border-primary/40 bg-primary/10 text-primary-on-soft hover:bg-primary/15'
                 : 'border-border text-muted-foreground hover:bg-muted'
             }
           >
@@ -1005,7 +1005,7 @@ function ContactsPageInner() {
               );
             })}
             {scoreActive && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-on-soft">
                 {t('filterSectionScore')}: {scoreMin}–{scoreMax}
                 <button
                   onClick={clearScoreFilter}
@@ -1017,7 +1017,7 @@ function ContactsPageInner() {
               </span>
             )}
             {personalWhatsappActive && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-on-soft">
                 {t('filterSectionWhatsapp')}:{' '}
                 {personalWhatsappFilter === 'yes' ? t('personalWhatsappYes') : t('personalWhatsappNo')}
                 <button

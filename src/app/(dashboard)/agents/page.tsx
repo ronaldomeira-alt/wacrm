@@ -229,7 +229,7 @@ function AgentsPageInner() {
         <button
           type="button"
           onClick={clearContactFilter}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium text-primary"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium text-primary-on-soft"
         >
           {suggestions?.[0]?.contact?.name ?? t('filteredByContact')}
           <X className="h-3 w-3" />

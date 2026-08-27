@@ -81,7 +81,7 @@ export function ArchivedDealsList({
               className={cn(
                 "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
                 activeTagId === null
-                  ? "border-primary/40 bg-primary/10 text-primary"
+                  ? "border-primary/40 bg-primary/10 text-primary-on-soft"
                   : "border-border text-muted-foreground hover:bg-muted",
               )}
             >

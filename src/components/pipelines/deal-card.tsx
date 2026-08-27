@@ -136,7 +136,7 @@ export function DealCard({
           />
         </div>
         {deal.status === "won" && (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary-on-soft">
             <Check className="h-3 w-3" />
             {t("won")}
           </span>
@@ -233,7 +233,7 @@ export function DealCard({
           {assigneeLabel && (
             <span
               title={assigneeLabel}
-              className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary"
+              className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary-on-soft"
             >
               {initials(assigneeLabel)}
             </span>

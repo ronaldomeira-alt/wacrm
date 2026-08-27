@@ -36,7 +36,7 @@ export const aiSuggestionStatusConfig: Record<AiSuggestionStatus, StatusDisplay>
   approved: {
     labelKey: 'approved',
     icon: CheckCircle2,
-    classes: 'bg-primary/20 text-primary border-primary/30',
+    classes: 'bg-primary/20 text-primary-on-soft border-primary/30',
   },
   rejected: {
     labelKey: 'rejected',

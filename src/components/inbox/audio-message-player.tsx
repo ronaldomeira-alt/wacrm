@@ -172,7 +172,7 @@ export function AudioMessagePlayer({
           "order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
           isAgent
             ? "bg-primary-foreground/20 text-primary-foreground"
-            : "bg-primary/15 text-primary",
+            : "bg-primary/15 text-primary-on-soft",
         )}
       >
         {isPlaying ? (

@@ -364,7 +364,7 @@ export default function CampaignDetailPage() {
                 className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
                   isExternal
                     ? 'border-amber-500/20 bg-amber-500/10 text-amber-300'
-                    : 'border-primary/20 bg-primary/10 text-primary'
+                    : 'border-primary/20 bg-primary/10 text-primary-on-soft'
                 }`}
               >
                 {isExternal ? t('channelExternal') : t('channelApi')}
@@ -505,7 +505,7 @@ export default function CampaignDetailPage() {
           value={campaign.sent_count}
           total={campaign.total_recipients}
           icon={<Send className="h-4 w-4" />}
-          color="bg-primary/10 text-primary"
+          color="bg-primary/10 text-primary-on-soft"
         />
         <StatCard
           label={t('stats.delivered')}

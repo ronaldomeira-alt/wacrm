@@ -249,7 +249,7 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
             {pendingSuggestionCount > 0 && (
               <Link
                 href={`/agents?contact=${contact.id}`}
-                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary-on-soft transition-colors hover:bg-primary/10"
               >
                 <BrainCircuit className="h-3 w-3" />
                 {tSidebar("pendingAiSuggestions", { count: pendingSuggestionCount })}

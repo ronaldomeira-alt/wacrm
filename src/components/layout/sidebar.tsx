@@ -49,7 +49,7 @@ const ROLE_CHIP: Record<
     labelKey: "roleAdmin",
     // Primary-tinted: significant but not as scarce as owner.
     className:
-      "border-primary/40 bg-primary/10 text-primary",
+      "border-primary/40 bg-primary/10 text-primary-on-soft",
   },
   agent: {
     icon: UserCog,
@@ -262,7 +262,7 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
                       // Taller on mobile so fingers can hit the row reliably (≥44px).
                       "flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
                       isActive
-                        ? "border-transparent bg-primary/10 text-primary"
+                        ? "border-transparent bg-primary/10 text-primary-on-soft"
                         : item.highlight
                           ? "border-primary/25 bg-primary/[0.04] text-foreground hover:bg-muted hover:text-foreground"
                           : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -313,7 +313,7 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
                     className={cn(
                       "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
                       isActive
-                        ? "bg-primary/10 text-primary"
+                        ? "bg-primary/10 text-primary-on-soft"
                         : "text-muted-foreground hover:bg-muted hover:text-foreground",
                     )}
                   >
@@ -374,7 +374,7 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
                     alt={profile.full_name ?? t("defaultAvatar")}
                   />
                 ) : null}
-                <AvatarFallback className="bg-primary/10 text-sm font-medium text-primary">
+                <AvatarFallback className="bg-primary/10 text-sm font-medium text-primary-on-soft">
                   {profile?.full_name?.charAt(0)?.toUpperCase() ??
                     profile?.email?.charAt(0)?.toUpperCase() ??
                     "U"}

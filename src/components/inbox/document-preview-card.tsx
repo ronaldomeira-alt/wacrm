@@ -141,7 +141,7 @@ export function DocumentPreviewCard({
               "flex-1 rounded-md py-1 text-center",
               isAgent
                 ? "text-primary-foreground hover:bg-primary-foreground/10"
-                : "text-primary hover:bg-primary/10",
+                : "text-primary-on-soft hover:bg-primary/10",
             )}
           >
             {verLabel}
@@ -153,7 +153,7 @@ export function DocumentPreviewCard({
               "flex-1 rounded-md py-1 text-center",
               isAgent
                 ? "text-primary-foreground hover:bg-primary-foreground/10"
-                : "text-primary hover:bg-primary/10",
+                : "text-primary-on-soft hover:bg-primary/10",
             )}
           >
             {baixarLabel}

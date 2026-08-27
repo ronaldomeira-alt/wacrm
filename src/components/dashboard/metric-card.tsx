@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 export type MetricCardTint = 'purple' | 'orange' | 'blue' | 'green' | 'amber'
 
 const TINT_ICON_CLASSES: Record<MetricCardTint, string> = {
-  purple: 'bg-primary/10 text-primary',
+  purple: 'bg-primary/10 text-primary-on-soft',
   orange: 'bg-orange-500/10 text-orange-500',
   blue: 'bg-blue-500/10 text-blue-500',
   green: 'bg-emerald-500/10 text-emerald-500',

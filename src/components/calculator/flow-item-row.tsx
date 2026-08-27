@@ -80,7 +80,7 @@ export function FlowItemRow({
         className={cn(
           'flex size-8 items-center justify-center rounded-lg border transition-colors',
           item.locked
-            ? 'border-primary/40 bg-primary/10 text-primary'
+            ? 'border-primary/40 bg-primary/10 text-primary-on-soft'
             : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
         )}
       >

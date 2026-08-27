@@ -361,7 +361,7 @@ export function Step2SelectAudience({
               <div
                 className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
                   isSelected
-                    ? 'bg-primary/10 text-primary'
+                    ? 'bg-primary/10 text-primary-on-soft'
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
@@ -424,7 +424,7 @@ export function Step2SelectAudience({
                           onClick={() => toggleTag(tag.id)}
                           className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-all ${
                             isSelected
-                              ? 'border-primary/30 bg-primary/10 text-primary'
+                              ? 'border-primary/30 bg-primary/10 text-primary-on-soft'
                               : 'border-border bg-muted text-muted-foreground hover:border-border'
                           }`}
                         >
@@ -540,7 +540,7 @@ export function Step2SelectAudience({
                     onClick={() => onUpdate({ ...audience, segmentId: segment.id })}
                     className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all ${
                       isSelected
-                        ? 'border-primary/30 bg-primary/10 text-primary'
+                        ? 'border-primary/30 bg-primary/10 text-primary-on-soft'
                         : 'border-border bg-muted text-muted-foreground hover:border-border'
                     }`}
                   >
@@ -596,7 +596,7 @@ export function Step2SelectAudience({
                     key={contact.id}
                     onClick={() => toggleSelectedContact(contact)}
                     className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
-                      isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted'
+                      isSelected ? 'bg-primary/10 text-primary-on-soft' : 'text-foreground hover:bg-muted'
                     }`}
                   >
                     <span>{contact.name || contact.phone}</span>
@@ -611,7 +611,7 @@ export function Step2SelectAudience({
               {selectedContacts.map((contact) => (
                 <span
                   key={contact.id}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary-on-soft"
                 >
                   {contact.name || contact.phone}
                   <button onClick={() => toggleSelectedContact(contact)} aria-label={t('selectAudience.removeContact')}>

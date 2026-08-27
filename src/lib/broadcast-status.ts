@@ -43,7 +43,7 @@ export const broadcastStatusConfig: Record<BroadcastStatus, StatusDisplay> = {
   },
   sent: {
     label: "sent",
-    classes: "bg-primary/10 text-primary border-primary/20",
+    classes: "bg-primary/10 text-primary-on-soft border-primary/20",
   },
   failed: {
     label: "failed",
@@ -66,11 +66,11 @@ export const recipientStatusConfig: Record<RecipientStatus, StatusDisplay> = {
   },
   delivered: {
     label: "delivered",
-    classes: "bg-primary/10 text-primary border-primary/20",
+    classes: "bg-primary/10 text-primary-on-soft border-primary/20",
   },
   read: {
     label: "read",
-    classes: "bg-primary/10 text-primary border-primary/20",
+    classes: "bg-primary/10 text-primary-on-soft border-primary/20",
   },
   replied: {
     label: "replied",

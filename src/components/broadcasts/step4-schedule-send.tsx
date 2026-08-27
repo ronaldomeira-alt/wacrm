@@ -142,7 +142,7 @@ export function Step4ScheduleSend({
       <div
         className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
           sendChannel === 'api'
-            ? 'border-primary/20 bg-primary/5 text-primary'
+            ? 'border-primary/20 bg-primary/5 text-primary-on-soft'
             : 'border-amber-500/20 bg-amber-500/5 text-amber-300'
         }`}
       >
