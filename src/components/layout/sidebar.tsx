@@ -83,18 +83,6 @@ interface NavItem {
   href: string;
   labelKey: string;
   icon: typeof LayoutDashboard;
-  /**
-   * When true, the nav row renders a small "Beta" chip after the label.
-   * Purely informational — doesn't affect routing or access.
-   */
-  beta?: boolean;
-  /**
-   * Subtle, permanent visual emphasis (thin primary-tinted outline +
-   * near-transparent fill — the same idiom MetricCard uses for its
-   * "highlighted" tint) for a nav item worth finding at a glance.
-   * Unlike `beta`, this isn't a status flag — it never goes away.
-   */
-  highlight?: boolean;
 }
 
 const navItems: NavItem[] = [
@@ -105,9 +93,9 @@ const navItems: NavItem[] = [
   { href: "/pipelines", labelKey: "pipelines", icon: GitBranch },
   { href: "/campaigns", labelKey: "broadcasts", icon: Megaphone },
   { href: "/automations", labelKey: "automations", icon: Zap },
-  { href: "/flows", labelKey: "flows", icon: Workflow, beta: true },
+  { href: "/flows", labelKey: "flows", icon: Workflow },
   { href: "/agents", labelKey: "aiHub", icon: BrainCircuit },
-  { href: "/calculadora", labelKey: "calculadora", icon: Calculator, highlight: true },
+  { href: "/calculadora", labelKey: "calculadora", icon: Calculator },
 ];
 
 const bottomNavItems = [
@@ -262,22 +250,12 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
                       // Taller on mobile so fingers can hit the row reliably (≥44px).
                       "flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
                       isActive
-                        ? "border-transparent bg-primary/10 text-primary-on-soft"
-                        : item.highlight
-                          ? "border-primary/25 bg-primary/[0.04] text-foreground hover:bg-muted hover:text-foreground"
-                          : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
+                        ? "border-primary/25 bg-primary/10 text-primary-on-soft"
+                        : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground",
                     )}
                   >
                     <item.icon className="h-4 w-4" />
                     <span className="flex-1">{t(item.labelKey as string)}</span>
-                    {item.beta && (
-                      <span
-                        aria-label={t("beta")}
-                        className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-300"
-                      >
-                        {t("beta")}
-                      </span>
-                    )}
                     {showUnreadDot && (
                       <span
                         aria-label={t("unreadConversations", { count: totalUnread })}
