@@ -1141,26 +1141,29 @@ export function MessageComposer({
                   <Paperclip className="h-[21px] w-[21px]" />
                 )}
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-[163px] border-border bg-popover p-[5px]">
+              <DropdownMenuContent
+                align="start"
+                className="min-w-[153px] border-border bg-popover p-[5px] ring-foreground/5 duration-150 zoom-in-96 zoom-out-96"
+              >
                 <DropdownMenuItem
                   onClick={() => imageInputRef.current?.click()}
-                  className="gap-[8px] px-[8px] py-[5px] text-[18px] transition-colors duration-150 ease-out active:bg-primary/15"
+                  className="gap-[12px] px-[8px] py-[4.5px] text-[15.5px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
-                  <ImageIcon className="mr-2.5 size-5" />
+                  <ImageIcon className="mr-2.5 size-[17.5px] text-muted-foreground" strokeWidth={1.75} />
                   {t("photo")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => videoInputRef.current?.click()}
-                  className="gap-[8px] px-[8px] py-[5px] text-[18px] transition-colors duration-150 ease-out active:bg-primary/15"
+                  className="gap-[12px] px-[8px] py-[4.5px] text-[15.5px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
-                  <Video className="mr-2.5 size-5" />
+                  <Video className="mr-2.5 size-[17.5px] text-muted-foreground" strokeWidth={1.75} />
                   {t("video")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => documentInputRef.current?.click()}
-                  className="gap-[8px] px-[8px] py-[5px] text-[18px] transition-colors duration-150 ease-out active:bg-primary/15"
+                  className="gap-[12px] px-[8px] py-[4.5px] text-[15.5px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
-                  <FileText className="mr-2.5 size-5" />
+                  <FileText className="mr-2.5 size-[17.5px] text-muted-foreground" strokeWidth={1.75} />
                   {t("document")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
