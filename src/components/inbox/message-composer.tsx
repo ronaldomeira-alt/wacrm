@@ -1020,7 +1020,7 @@ export function MessageComposer({
     // Safari tab) collapses to 0 while the keyboard is open in a
     // standalone iOS PWA, where the inset otherwise keeps reserving
     // home-indicator space the keyboard has already covered.
-    <div className="border-t border-border bg-card px-3 py-[9px] pb-[calc(9px+var(--composer-safe-bottom,env(safe-area-inset-bottom)))]">
+    <div className="border-t border-border bg-card px-3 py-[6px] pb-[calc(6px+var(--composer-safe-bottom,env(safe-area-inset-bottom)))]">
       {replyTo && (
         <div className="mb-2">
           <ReplyQuote
