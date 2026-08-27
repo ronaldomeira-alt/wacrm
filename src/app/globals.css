@@ -214,17 +214,17 @@ html[data-theme="amber"] {
 }
 
 html[data-theme="rose"] {
-  --primary: oklch(0.645 0.22 16);
-  --primary-foreground: oklch(0.985 0 0);
-  --primary-hover: oklch(0.71 0.2 16);
-  --primary-soft: oklch(0.645 0.22 16 / 0.12);
-  --primary-soft-2: oklch(0.645 0.22 16 / 0.22);
-  --ring: oklch(0.645 0.22 16);
-  --chart-1: oklch(0.645 0.22 16);
-  --chart-2: oklch(0.7 0.18 340);
-  --sidebar-primary: oklch(0.645 0.22 16);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-ring: oklch(0.645 0.22 16);
+  --primary: oklch(0.37 0.105 258);
+  --primary-foreground: oklch(0.967 0 0);
+  --primary-hover: oklch(0.435 0.085 258);
+  --primary-soft: oklch(0.37 0.105 258 / 0.12);
+  --primary-soft-2: oklch(0.37 0.105 258 / 0.22);
+  --ring: oklch(0.37 0.105 258);
+  --chart-1: oklch(0.37 0.105 258);
+  --chart-2: oklch(0.7 0.18 222);
+  --sidebar-primary: oklch(0.37 0.105 258);
+  --sidebar-primary-foreground: oklch(0.967 0 0);
+  --sidebar-ring: oklch(0.37 0.105 258);
 }
 
 @layer base {

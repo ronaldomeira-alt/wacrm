@@ -93,9 +93,9 @@ export const THEMES: ReadonlyArray<ThemeMeta> = [
   },
   {
     id: "rose",
-    name: "Rose",
+    name: "Ronaldo's Color",
     tagline: "Bold and modern — D2C, creator-economy, lifestyle.",
-    swatch: "oklch(0.645 0.22 16)",
+    swatch: "oklch(0.37 0.105 258)",
   },
 ];
 
