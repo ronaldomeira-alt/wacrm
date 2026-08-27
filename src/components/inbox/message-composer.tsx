@@ -1141,26 +1141,26 @@ export function MessageComposer({
                   <Paperclip className="h-[21px] w-[21px]" />
                 )}
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-48 border-border bg-popover p-1.5">
+              <DropdownMenuContent align="start" className="min-w-[163px] border-border bg-popover p-[5px]">
                 <DropdownMenuItem
                   onClick={() => imageInputRef.current?.click()}
-                  className="gap-[9px] px-[9px] py-1.5 text-[21px] transition-colors duration-150 ease-out active:bg-primary/15"
+                  className="gap-[8px] px-[8px] py-[5px] text-[18px] transition-colors duration-150 ease-out active:bg-primary/15"
                 >
-                  <ImageIcon className="mr-3 size-6" />
+                  <ImageIcon className="mr-2.5 size-5" />
                   {t("photo")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => videoInputRef.current?.click()}
-                  className="gap-[9px] px-[9px] py-1.5 text-[21px] transition-colors duration-150 ease-out active:bg-primary/15"
+                  className="gap-[8px] px-[8px] py-[5px] text-[18px] transition-colors duration-150 ease-out active:bg-primary/15"
                 >
-                  <Video className="mr-3 size-6" />
+                  <Video className="mr-2.5 size-5" />
                   {t("video")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => documentInputRef.current?.click()}
-                  className="gap-[9px] px-[9px] py-1.5 text-[21px] transition-colors duration-150 ease-out active:bg-primary/15"
+                  className="gap-[8px] px-[8px] py-[5px] text-[18px] transition-colors duration-150 ease-out active:bg-primary/15"
                 >
-                  <FileText className="mr-3 size-6" />
+                  <FileText className="mr-2.5 size-5" />
                   {t("document")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
