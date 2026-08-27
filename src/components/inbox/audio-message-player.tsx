@@ -184,9 +184,11 @@ export function AudioMessagePlayer({
 
       {/* Speed control lives beside the waveform (not inside its band) so it
           gets its own tap area instead of competing with the bars for space.
-          Sent audio: left of the waveform. Received audio: right of it —
-          same `isAgent` flag the rest of the bubble already uses for
-          left/right alignment, no separate direction logic. */}
+          Mobile: sent audio left of the waveform, received audio right of
+          it — same `isAgent` flag the rest of the bubble already uses for
+          left/right alignment, no separate direction logic. Desktop
+          (lg+) instead pins it to the right of the waveform always,
+          per request — overridden with lg: so mobile is untouched. */}
       {hasStarted && (
         <button
           type="button"
@@ -195,6 +197,7 @@ export function AudioMessagePlayer({
           className={cn(
             "flex h-8 min-w-[2.75rem] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-semibold leading-none text-white",
             isAgent ? "order-2" : "order-3",
+            "lg:order-3",
             isAgent ? "bg-primary-foreground/20" : "bg-primary/10",
           )}
         >
@@ -209,7 +212,7 @@ export function AudioMessagePlayer({
           only the info row's height pulled the block's center down. Anchoring
           the info row to the band's bottom edge keeps it clear of the
           waveform without affecting the waveform's centering. */}
-      <div className={cn("relative h-14 min-w-0 flex-1", isAgent ? "order-3" : "order-2")}>
+      <div className={cn("relative h-14 min-w-0 flex-1", isAgent ? "order-3" : "order-2", "lg:order-2")}>
         {/* Two identical bar layers, same width/positions — the top one is
             clipped to the play progress instead of recoloring bars one at a
             time, so the color edge slides continuously (down to the pixel)
