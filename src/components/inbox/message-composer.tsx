@@ -1133,7 +1133,7 @@ export function MessageComposer({
                       ? undefined
                       : t("attachMedia")
                 }
-                className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
                   <Loader2 className="h-[21px] w-[21px] animate-spin" />
@@ -1141,17 +1141,26 @@ export function MessageComposer({
                   <Paperclip className="h-[21px] w-[21px]" />
                 )}
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="border-border bg-popover">
-                <DropdownMenuItem onClick={() => imageInputRef.current?.click()}>
-                  <ImageIcon className="mr-2 h-4 w-4" />
+              <DropdownMenuContent align="start" className="min-w-48 border-border bg-popover p-1.5">
+                <DropdownMenuItem
+                  onClick={() => imageInputRef.current?.click()}
+                  className="gap-[9px] px-[9px] py-1.5 text-[21px] transition-colors duration-150 ease-out active:bg-primary/15"
+                >
+                  <ImageIcon className="mr-3 size-6" />
                   {t("photo")}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => videoInputRef.current?.click()}>
-                  <Video className="mr-2 h-4 w-4" />
+                <DropdownMenuItem
+                  onClick={() => videoInputRef.current?.click()}
+                  className="gap-[9px] px-[9px] py-1.5 text-[21px] transition-colors duration-150 ease-out active:bg-primary/15"
+                >
+                  <Video className="mr-3 size-6" />
                   {t("video")}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => documentInputRef.current?.click()}>
-                  <FileText className="mr-2 h-4 w-4" />
+                <DropdownMenuItem
+                  onClick={() => documentInputRef.current?.click()}
+                  className="gap-[9px] px-[9px] py-1.5 text-[21px] transition-colors duration-150 ease-out active:bg-primary/15"
+                >
+                  <FileText className="mr-3 size-6" />
                   {t("document")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -1248,7 +1257,7 @@ export function MessageComposer({
               onPointerMove={handleMicPointerMove}
               onPointerUp={handleMicPointerEnd}
               onPointerCancel={handleMicPointerEnd}
-              className="flex h-[47px] w-[47px] shrink-0 touch-none select-none items-center justify-center rounded-md p-0 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-[47px] w-[47px] shrink-0 touch-none select-none items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Mic className="h-[21px] w-[21px]" />
             </button>
