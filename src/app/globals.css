@@ -273,6 +273,15 @@ html[data-theme="rose"] {
      html/body. */
   body {
     @apply bg-background text-foreground overscroll-y-none overflow-hidden;
+    /* `--app-bg-override` (use-app-height.ts): while a text field is
+       focused in standalone PWA mode, this switches to `var(--card)` —
+       the Inbox composer's own background — so whatever sliver of
+       `html`/`body` is still visible below the shell while the
+       keyboard's open (the shell's `--app-height` isn't pixel-perfect
+       against the keyboard on every iOS version) reads as part of the
+       composer instead of a dark gap. Unset the rest of the time, so
+       this falls through to the plain `var(--background)` below. */
+    background-color: var(--app-bg-override, var(--background));
     /* Disables pinch-zoom and double-tap-zoom at the WebKit gesture-
        recognizer level. This is the part that actually matters on iOS
        — in a standalone PWA (WKWebView), pinch-to-zoom is driven by a
@@ -290,6 +299,8 @@ html[data-theme="rose"] {
   }
   html {
     @apply bg-background font-sans overscroll-y-none overflow-hidden;
+    /* See body's own `--app-bg-override` comment above — same reasoning. */
+    background-color: var(--app-bg-override, var(--background));
     touch-action: pan-x pan-y;
   }
 }

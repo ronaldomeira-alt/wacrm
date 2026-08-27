@@ -1015,7 +1015,12 @@ export function MessageComposer({
     // py-[9px] (was py-2/8px, ~15% more): the enlarged Attach/Mic buttons
     // (h-[47px], up from h-9/36px) need a touch more breathing room in the
     // bar itself — bottom mirrors it, on top of the safe-area inset.
-    <div className="border-t border-border bg-card px-3 py-[9px] pb-[calc(9px+env(safe-area-inset-bottom))]">
+    // `--composer-safe-bottom` (falls back to the raw inset wherever
+    // use-app-height.ts's hook is a no-op — desktop, Android, a regular
+    // Safari tab) collapses to 0 while the keyboard is open in a
+    // standalone iOS PWA, where the inset otherwise keeps reserving
+    // home-indicator space the keyboard has already covered.
+    <div className="border-t border-border bg-card px-3 py-[9px] pb-[calc(9px+var(--composer-safe-bottom,env(safe-area-inset-bottom)))]">
       {replyTo && (
         <div className="mb-2">
           <ReplyQuote

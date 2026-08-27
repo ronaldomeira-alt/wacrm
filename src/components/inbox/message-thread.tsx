@@ -708,6 +708,59 @@ export function MessageThread({
     }
   }, [messages]);
 
+  // Whether the user is currently at (near) the bottom of the thread —
+  // read by the keyboard-follow effect below so opening the composer
+  // only pulls the view down when that's where the user already was;
+  // someone scrolled up reading older messages keeps their position.
+  const isNearBottomRef = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const NEAR_BOTTOM_PX = 80;
+    const onScroll = () => {
+      isNearBottomRef.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    };
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [conversationId]);
+
+  // Keep the last message visible as the iOS keyboard opens/closes and
+  // resizes the app shell (--app-height, use-app-height.ts) — which
+  // cascades down through ordinary flexbox to this container's own
+  // rendered height. A `ResizeObserver` on the container itself is what
+  // that resize actually *is*, regardless of what caused it (keyboard,
+  // orientation change, the contact drawer, anything) — more direct and
+  // reliable than inferring it from a `visualViewport` event, whose
+  // firing/ordering relative to the layout reflow isn't guaranteed. No-op
+  // whenever the user wasn't already at the bottom (`isNearBottomRef`).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    // The shell's own height now animates smoothly over ~250ms
+    // (dashboard-shell.tsx's `transition-[height]`) rather than jumping
+    // in one or two steps, so this container's size changes on every
+    // frame of that transition, not just once or twice. Coalescing into
+    // a single rAF-scheduled write per frame (instead of forcing a
+    // synchronous scrollHeight read + scrollTop write on every single
+    // ResizeObserver tick) keeps this from fighting the transition and
+    // causing the very stutter it's meant to avoid.
+    let rafId: number | null = null;
+    const ro = new ResizeObserver(() => {
+      if (!isNearBottomRef.current || rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        el.scrollTop = el.scrollHeight;
+      });
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [conversationId]);
+
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
       if (!conversation) return;
