@@ -169,18 +169,38 @@ export function AudioMessagePlayer({
         onClick={togglePlay}
         aria-label={isPlaying ? pauseLabel : playLabel}
         className={cn(
-          "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+          "order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
           isAgent
             ? "bg-primary-foreground/20 text-primary-foreground"
             : "bg-primary/15 text-primary",
         )}
       >
         {isPlaying ? (
-          <Pause className="h-4 w-4 fill-current" />
+          <Pause className="h-4 w-4 fill-current text-white" />
         ) : (
-          <Play className="ml-0.5 h-4 w-4 fill-current" />
+          <Play className="ml-0.5 h-4 w-4 fill-current text-white" />
         )}
       </button>
+
+      {/* Speed control lives beside the waveform (not inside its band) so it
+          gets its own tap area instead of competing with the bars for space.
+          Sent audio: left of the waveform. Received audio: right of it —
+          same `isAgent` flag the rest of the bubble already uses for
+          left/right alignment, no separate direction logic. */}
+      {hasStarted && (
+        <button
+          type="button"
+          onClick={cycleSpeed}
+          aria-label={SPEED_LABELS[SPEEDS[speedIndex]]}
+          className={cn(
+            "flex h-8 min-w-[2.75rem] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-semibold leading-none text-white",
+            isAgent ? "order-2" : "order-3",
+            isAgent ? "bg-primary-foreground/20" : "bg-primary/10",
+          )}
+        >
+          {SPEED_LABELS[SPEEDS[speedIndex]]}
+        </button>
+      )}
 
       {/* Fixed-height band so the waveform can be centered by construction
           (top-1/2 -translate-y-1/2) instead of by stacking it above the
@@ -189,7 +209,7 @@ export function AudioMessagePlayer({
           only the info row's height pulled the block's center down. Anchoring
           the info row to the band's bottom edge keeps it clear of the
           waveform without affecting the waveform's centering. */}
-      <div className="relative h-14 min-w-0 flex-1">
+      <div className={cn("relative h-14 min-w-0 flex-1", isAgent ? "order-3" : "order-2")}>
         {/* Two identical bar layers, same width/positions — the top one is
             clipped to the play progress instead of recoloring bars one at a
             time, so the color edge slides continuously (down to the pixel)
@@ -210,7 +230,7 @@ export function AudioMessagePlayer({
             ))}
           </div>
           <div
-            className="absolute inset-0 flex items-center justify-between transition-[clip-path] duration-100 ease-linear"
+            className="absolute inset-0 flex items-center justify-between"
             style={{ clipPath: `inset(0 ${100 - progress * 100}% 0 0)` }}
           >
             {bars.map((barHeight, i) => (
@@ -231,31 +251,15 @@ export function AudioMessagePlayer({
           >
             {formatTime(hasStarted ? currentTime : duration)}
           </span>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {hasStarted && (
-              <button
-                type="button"
-                onClick={cycleSpeed}
-                className={cn(
-                  "rounded-full px-1.5 py-px text-[10px] font-semibold leading-none",
-                  isAgent
-                    ? "bg-primary-foreground/20 text-primary-foreground"
-                    : "bg-primary/10 text-primary",
-                )}
-              >
-                {SPEED_LABELS[SPEEDS[speedIndex]]}
-              </button>
+          <span
+            className={cn(
+              "flex shrink-0 items-center gap-1 text-[10px]",
+              isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
             )}
-            <span
-              className={cn(
-                "flex items-center gap-1 text-[10px]",
-                isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
-              )}
-            >
-              {time}
-              {status}
-            </span>
-          </div>
+          >
+            {time}
+            {status}
+          </span>
         </div>
       </div>
     </div>
