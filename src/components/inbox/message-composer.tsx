@@ -183,11 +183,14 @@ const OPUS_ENCODER_PATH = "/opus/encoderWorker.min.js";
 // diagonal drag locks exactly as readily as a straight one.
 const LOCK_THRESHOLD_PX = 80;
 
-// Touch-only long-press gate before a recording is allowed to start —
+// Touch-only arming delay before a recording is allowed to start —
 // desktop mice skip this entirely (see handleMicPointerDown) and start on
-// the first click. Keeps a tap that's just passing through the mic button
-// (e.g. a scroll starting there) from ever arming the recorder.
-const LONG_PRESS_MS = 300;
+// the first click. Set to 0 so a tap arms it on the very next tick, same
+// as WhatsApp on iPhone (an immediate press-and-hold, not a perceptible
+// long-press). Kept as a real timer (rather than calling
+// startRecordingGesture synchronously) so the scroll-cancel check in
+// handleMicPointerMove still has a tick to run.
+const LONG_PRESS_MS = 0;
 
 // Movement (px) during the LONG_PRESS_MS window that cancels the pending
 // long-press — distinct from LOCK_THRESHOLD_PX above, which only applies
