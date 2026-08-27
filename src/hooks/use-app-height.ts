@@ -59,55 +59,6 @@ function isTextInput(el: EventTarget | null): el is HTMLElement {
  *     *same* colour as the composer (`var(--card)`) instead of the
  *     page's own darker background is what actually reads as seamless
  *     regardless of how many pixels are left over. */
-// ================= TEMPORARY DEBUG OVERLAY — REMOVE BEFORE SHIPPING =================
-// On-screen live readout of every viewport/keyboard signal this hook
-// touches, plus the composer's actual rendered position — added purely
-// to diagnose the composer motion/gap bugs on a real iPhone, since no
-// Mac is available for Safari's remote Web Inspector. Self-contained;
-// delete this block and its two call sites below (debug?.log(...)) to
-// remove entirely once the real fix is confirmed.
-function createDebugOverlay() {
-  const el = document.createElement("pre");
-  el.id = "__kb_debug_overlay";
-  Object.assign(el.style, {
-    position: "fixed",
-    top: "0",
-    right: "0",
-    zIndex: "999999",
-    margin: "0",
-    padding: "3px 5px",
-    fontSize: "8px",
-    lineHeight: "1.3",
-    color: "#4ade80",
-    background: "rgba(0,0,0,0.82)",
-    width: "52vw",
-    maxHeight: "16vh",
-    overflowY: "auto",
-    whiteSpace: "pre-wrap",
-    pointerEvents: "none",
-  } satisfies Partial<CSSStyleDeclaration>);
-  document.body.appendChild(el);
-  const lines: string[] = [];
-  let start = performance.now();
-  return {
-    reset() {
-      start = performance.now();
-    },
-    log(label: string) {
-      const vv = window.visualViewport;
-      const composerEl = document.querySelector<HTMLElement>("[data-composer-root]");
-      const rect = composerEl?.getBoundingClientRect();
-      const t = (performance.now() - start).toFixed(0).padStart(4, " ");
-      lines.push(
-        `t=${t} ${label.padEnd(9)} vvH=${vv?.height.toFixed(0)} appH=${document.documentElement.style.getPropertyValue("--app-height")} cB=${rect?.bottom.toFixed(0)} sY=${document.scrollingElement?.scrollTop}`,
-      );
-      if (lines.length > 20) lines.shift();
-      el.textContent = lines.join("\n");
-    },
-  };
-}
-// ================= END TEMPORARY DEBUG OVERLAY =================
-
 export function useAppHeight() {
   useEffect(() => {
     const standalone =
@@ -115,7 +66,6 @@ export function useAppHeight() {
     if (!standalone) return;
 
     const root = document.documentElement;
-    const debug = createDebugOverlay(); // TEMPORARY — see block above
 
     // Confirmed by the previous round's debug data (parte 35): iOS's own
     // "scroll the focused input into view" behavior briefly sets
@@ -141,29 +91,21 @@ export function useAppHeight() {
       // falls through to its fallback — see the doc comment above.
       root.style.removeProperty("--composer-safe-bottom");
       root.style.removeProperty("--app-bg-override");
-      debug.log("resting");
     }
 
-    function setLive(label = "resize") {
+    function setLive() {
       resetScroll();
       const h = window.visualViewport?.height ?? window.innerHeight;
       root.style.setProperty("--app-height", `${h}px`);
-      debug.log(label);
     }
 
-    // Stable wrapper — `setLive` itself takes an optional label, so it
-    // can't be handed to addEventListener directly (that would pass the
-    // Event object as the label argument).
     function onVvResize() {
-      setLive("resize");
+      setLive();
     }
 
     function onFocusIn(e: FocusEvent) {
       if (!isTextInput(e.target)) return;
-      debug.reset();
-      resetScroll();
-      debug.log("focusin");
-      setLive("focusin-set");
+      setLive();
       root.style.setProperty("--composer-safe-bottom", "0px");
       root.style.setProperty("--app-bg-override", "var(--card)");
       window.visualViewport?.addEventListener("resize", onVvResize);
@@ -171,7 +113,6 @@ export function useAppHeight() {
 
     function onFocusOut(e: FocusEvent) {
       if (!isTextInput(e.target)) return;
-      debug.log("focusout");
       window.visualViewport?.removeEventListener("resize", onVvResize);
       // A focusout can be immediately followed by a focusin on the next
       // field (tabbing between inputs) — wait a tick so that case
