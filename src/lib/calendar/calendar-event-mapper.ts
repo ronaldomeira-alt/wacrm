@@ -42,20 +42,56 @@ export interface GoogleEventAppointmentFields {
   scheduled_end_time: string | null;
 }
 
+// This app has exactly one implicit business timezone — every
+// scheduled_date/scheduled_time in `appointments` is already a Brazil
+// wall-clock value with no timezone column of its own (see
+// SERVER_TIME_ZONE's doc comment in google-calendar-provider.ts, the
+// CRM → Google push's equivalent assumption). Deliberately a fixed
+// constant, NOT `event.start.timeZone`/`event.end.timeZone` from the
+// payload: a real specimen (an appointment created before this fix,
+// pushed to Google while a production instance's ambient clock
+// resolved to UTC) shows Google echoing back `dateTime` with the
+// *correct* "-03:00" offset alongside a *stale* `timeZone: "UTC"`
+// label — the two fields had drifted apart. The offset embedded in
+// `dateTime` is what unambiguously pins the absolute instant (that
+// part is never in question); trusting the sibling `timeZone` string
+// on top of it would have re-introduced a 3h error on exactly the
+// corrupted rows this fix needs to repair. Rendering into this fixed
+// zone instead sidesteps that field entirely.
+const BUSINESS_TIME_ZONE = 'America/Sao_Paulo';
+
 /**
- * Formats a `Date` into naive local `YYYY-MM-DD` / `HH:mm:ss` parts
- * using its LOCAL getters — same convention as `toLocalIsoString` in
- * google-calendar-provider.ts (the process's own timezone, aka
- * SERVER_TIME_ZONE there). Duplicated rather than shared: it's three
- * lines, and the two directions (CRM → Google, Google → CRM) are
- * small enough that a shared module would be more ceremony than the
- * code it saves.
+ * Converts an absolute instant into `YYYY-MM-DD` / `HH:mm:ss` wall-
+ * clock parts in `BUSINESS_TIME_ZONE` — deliberately not the process's
+ * own ambient/local getters (`Date#getHours` and friends), which
+ * reflect whatever timezone the *host machine* happens to be
+ * configured with. That's fine for a single long-lived dev box, but
+ * production is not guaranteed to run every request on an instance
+ * whose system clock is set to America/Sao_Paulo — one that resolves
+ * to UTC reads the exact same Date 3h later, which is precisely the
+ * "iPhone events land 3h ahead" bug this fixes: an event timed 23:00
+ * Brazil is the instant 2026-08-29T02:00Z, and a host reading that
+ * instant with its own UTC clock reports "02:00" — the wrong value
+ * that was landing in `appointments`. Using an explicit timezone here
+ * makes the result deterministic regardless of the server's own
+ * ambient configuration.
  */
-function splitLocalDateTime(date: Date): { date: string; time: string } {
-  const pad = (n: number) => String(n).padStart(2, '0');
+function splitInBusinessTimeZone(date: Date): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23', // avoid the well-known Intl footgun where
+    // `hour12: false` alone can render midnight as "24" instead of "00"
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00';
   return {
-    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    time: `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    time: `${get('hour')}:${get('minute')}:${get('second')}`,
   };
 }
 
@@ -94,13 +130,13 @@ export function mapGoogleEventToAppointmentFields(
   }
   if (!start.dateTime) return null;
 
-  const { date: scheduled_date, time: scheduled_time } = splitLocalDateTime(
+  const { date: scheduled_date, time: scheduled_time } = splitInBusinessTimeZone(
     new Date(start.dateTime),
   );
 
   let scheduled_end_time: string | null = null;
   if (event.end?.dateTime) {
-    const endParts = splitLocalDateTime(new Date(event.end.dateTime));
+    const endParts = splitInBusinessTimeZone(new Date(event.end.dateTime));
     // Appointment has no separate end-date column (scheduled_end_time
     // is "same day as scheduled_time" — see the Appointment type's doc
     // comment), so an end that spills onto a later local day is
