@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Plus } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
@@ -17,19 +17,9 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useTranslations } from 'next-intl';
-import type { Appointment, AppointmentType, Contact, Property } from '@/types';
+import type { Appointment } from '@/types';
 import { createAppointment, updateAppointment } from '@/lib/appointments/queries';
-import { createProperty, listProperties } from '@/lib/properties/queries';
 import { localDayKey } from '@/lib/dashboard/date-utils';
-
-const APPOINTMENT_TYPES: AppointmentType[] = [
-  'call',
-  'visit',
-  'meeting',
-  'proposal',
-  'follow_up',
-  'other',
-];
 
 /**
  * Best-effort push to Google Calendar after a create/update. Never
@@ -65,14 +55,13 @@ interface AppointmentFormDialogProps {
   /** Pre-fills the date field — the dashboard always creates for today. */
   defaultDate?: string;
   /**
-   * Pre-fills the client-name field (and, when it resolves to a real
-   * contacts row, the `contact_id` FK) when opened for a known contact —
-   * the Inbox conversation menu's "Criar agendamento" is the first
-   * caller. Ignored when `appointment` is set (editing takes its own
-   * values). `defaultContactId` alone is not enough to seed the visible
-   * input — the field is the free-typed name (see `handleClientNameChange`
-   * below), so callers that know the contact must pass its display name
-   * too.
+   * Attaches a contact to the appointment being created (client_name,
+   * and contact_id when it's a real contacts row) — the Inbox
+   * conversation menu's "Criar agendamento" is the caller. There's no
+   * visible client field in this dialog (see the interface-alignment
+   * task that removed it), so this is the only way a new appointment
+   * ends up linked to a contact; ignored when `appointment` is set
+   * (editing keeps its own existing link, see the reset effect below).
    */
   defaultContactId?: string;
   defaultClientName?: string;
@@ -89,30 +78,27 @@ export function AppointmentFormDialog({
   onSaved,
 }: AppointmentFormDialogProps) {
   const t = useTranslations('Appointments.form');
-  const tAppt = useTranslations('Appointments');
   const supabase = createClient();
   const { user, accountId } = useAuth();
 
-  const contactsListId = useId();
   const [title, setTitle] = useState('');
-  /** Resolved FK — kept in sync with `clientNameInput` (see
-   *  handleClientNameChange) rather than set directly by the field
-   *  itself, so free typing never requires picking a contacts row. */
-  const [contactId, setContactId] = useState('');
-  const [clientNameInput, setClientNameInput] = useState('');
-  const [propertyId, setPropertyId] = useState('');
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
   const [endTime, setEndTime] = useState('');
-  const [type, setType] = useState<AppointmentType>('call');
-  const [description, setDescription] = useState('');
   const [notes, setNotes] = useState('');
 
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [properties, setProperties] = useState<Property[]>([]);
-  const [addingProperty, setAddingProperty] = useState(false);
-  const [newPropertyName, setNewPropertyName] = useState('');
-  const [creatingProperty, setCreatingProperty] = useState(false);
+  // Preserved but not editable here — this dialog only surfaces
+  // Título/Data/Horários/Observações (see the interface-alignment
+  // task). Editing a pre-085 appointment must not silently clear its
+  // existing contact/property/type/description on save, so an edit
+  // carries these straight through unchanged; a new appointment gets
+  // sensible empty defaults (contact linking still works via
+  // defaultContactId/defaultClientName above).
+  const [contactId, setContactId] = useState('');
+  const [clientName, setClientName] = useState('');
+  const [propertyId, setPropertyId] = useState('');
+  const [description, setDescription] = useState<string | null>(null);
+
   const [saving, setSaving] = useState(false);
 
   // Reset on open — a legitimate prop-driven sync, same rationale as
@@ -121,80 +107,28 @@ export function AppointmentFormDialog({
     if (!open) return;
     if (appointment) {
       setTitle(appointment.title);
-      setContactId(appointment.contact_id ?? '');
-      setClientNameInput(
-        appointment.contact?.name || appointment.contact?.phone || appointment.client_name || ''
-      );
-      setPropertyId(appointment.property_id ?? '');
       setDate(appointment.scheduled_date);
       setTime(appointment.scheduled_time?.slice(0, 5) ?? '');
       setEndTime(appointment.scheduled_end_time?.slice(0, 5) ?? '');
-      setType(appointment.type);
-      setDescription(appointment.description ?? '');
       setNotes(appointment.notes ?? '');
+      setContactId(appointment.contact_id ?? '');
+      setClientName(
+        appointment.contact?.name || appointment.contact?.phone || appointment.client_name || '',
+      );
+      setPropertyId(appointment.property_id ?? '');
+      setDescription(appointment.description ?? null);
     } else {
       setTitle('');
-      setContactId(defaultContactId ?? '');
-      setClientNameInput(defaultClientName ?? '');
-      setPropertyId('');
       setDate(defaultDate ?? localDayKey(new Date()));
       setTime('');
       setEndTime('');
-      setType('call');
-      setDescription('');
       setNotes('');
+      setContactId(defaultContactId ?? '');
+      setClientName(defaultClientName ?? '');
+      setPropertyId('');
+      setDescription(null);
     }
-    setAddingProperty(false);
-    setNewPropertyName('');
   }, [open, appointment, defaultDate, defaultContactId, defaultClientName]);
-
-  useEffect(() => {
-    if (!open) return;
-    supabase
-      .from('contacts')
-      .select('*')
-      .order('name')
-      .then(({ data }) => setContacts((data ?? []) as Contact[]));
-    listProperties(supabase).then(setProperties);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  /**
-   * Free typing is the point (large lead volume — see AGENTS task), so
-   * `contactId` is never set by a direct picker. Instead every keystroke
-   * re-checks whether the current text is an exact match (case/space
-   * insensitive) for an existing contact's display name — true whether
-   * the match came from picking the <datalist> suggestion or just
-   * coincidentally typing the same text — and links it. Anything else
-   * clears the link; the typed text itself is always what gets saved
-   * (see handleSave), so no match is never a blocker.
-   */
-  function handleClientNameChange(value: string) {
-    setClientNameInput(value);
-    const needle = value.trim().toLowerCase();
-    const match = needle
-      ? contacts.find((c) => (c.name || c.phone || '').trim().toLowerCase() === needle)
-      : undefined;
-    setContactId(match?.id ?? '');
-  }
-
-  async function handleCreateProperty() {
-    const name = newPropertyName.trim();
-    if (!name || !user || !accountId) return;
-    setCreatingProperty(true);
-    try {
-      const property = await createProperty(supabase, { accountId, userId: user.id, name });
-      setProperties((prev) => [...prev, property].sort((a, b) => a.name.localeCompare(b.name)));
-      setPropertyId(property.id);
-      setAddingProperty(false);
-      setNewPropertyName('');
-    } catch (err) {
-      console.error('Failed to create property:', err);
-      toast.error(t('toastPropertyCreateFailed'));
-    } finally {
-      setCreatingProperty(false);
-    }
-  }
 
   async function handleSave() {
     if (!title.trim()) {
@@ -224,14 +158,14 @@ export function AppointmentFormDialog({
         accountId,
         userId: user.id,
         title: title.trim(),
-        description: description.trim() || null,
+        description,
         notes: notes.trim() || null,
-        type,
+        type: appointment?.type ?? ('other' as const),
         scheduledDate: date,
         scheduledTime: time || null,
         scheduledEndTime: endTime || null,
         contactId: contactId || null,
-        clientName: clientNameInput.trim() || null,
+        clientName: clientName.trim() || null,
         propertyId: propertyId || null,
       };
       let savedId: string;
@@ -281,95 +215,6 @@ export function AppointmentFormDialog({
           </div>
 
           <div className="grid gap-2">
-            <label className="text-sm font-medium text-foreground">{t('contactLabel')}</label>
-            {/* Free typing, not a forced pick — see AGENTS task: with a
-                large lead volume, requiring an existing contacts match
-                for every appointment isn't viable. The datalist still
-                suggests existing contacts as the user types; picking one
-                (or just typing its exact name) links contactId via
-                handleClientNameChange, but it's never required to save. */}
-            <Input
-              list={contactsListId}
-              value={clientNameInput}
-              onChange={(e) => handleClientNameChange(e.target.value)}
-              placeholder={t('contactPlaceholder')}
-              disabled={saving}
-              maxLength={120}
-            />
-            <datalist id={contactsListId}>
-              {contacts.map((c) => (
-                <option key={c.id} value={c.name || c.phone} />
-              ))}
-            </datalist>
-          </div>
-
-          <div className="grid gap-2">
-            <label className="text-sm font-medium text-foreground">{t('propertyLabel')}</label>
-            {addingProperty ? (
-              <div className="flex gap-2">
-                <Input
-                  value={newPropertyName}
-                  onChange={(e) => setNewPropertyName(e.target.value)}
-                  placeholder={t('propertyNamePlaceholder')}
-                  disabled={creatingProperty}
-                  maxLength={120}
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleCreateProperty();
-                    }
-                  }}
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleCreateProperty}
-                  disabled={creatingProperty || !newPropertyName.trim()}
-                >
-                  {creatingProperty ? <Loader2 className="size-4 animate-spin" /> : t('add')}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setAddingProperty(false)}
-                  disabled={creatingProperty}
-                >
-                  {t('cancel')}
-                </Button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <select
-                  value={propertyId}
-                  onChange={(e) => setPropertyId(e.target.value)}
-                  disabled={saving}
-                  className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                >
-                  <option value="">{tAppt('noProperty')}</option>
-                  {properties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setAddingProperty(true)}
-                  disabled={saving}
-                  aria-label={t('newProperty')}
-                  title={t('newProperty')}
-                >
-                  <Plus className="size-4" />
-                </Button>
-              </div>
-            )}
-          </div>
-
-          <div className="grid gap-2">
             <label className="text-sm font-medium text-foreground">{t('dateLabel')}</label>
             <Input
               type="date"
@@ -401,40 +246,13 @@ export function AppointmentFormDialog({
           </div>
 
           <div className="grid gap-2">
-            <label className="text-sm font-medium text-foreground">{t('typeLabel')}</label>
-            <select
-              value={type}
-              onChange={(e) => setType(e.target.value as AppointmentType)}
-              disabled={saving}
-              className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            >
-              {APPOINTMENT_TYPES.map((value) => (
-                <option key={value} value={value}>
-                  {tAppt(`type.${value}`)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="grid gap-2">
-            <label className="text-sm font-medium text-foreground">{t('descriptionLabel')}</label>
-            <Textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder={t('descriptionPlaceholder')}
-              disabled={saving}
-              rows={2}
-            />
-          </div>
-
-          <div className="grid gap-2">
             <label className="text-sm font-medium text-foreground">{t('notesLabel')}</label>
             <Textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder={t('notesPlaceholder')}
               disabled={saving}
-              rows={2}
+              rows={3}
             />
           </div>
         </div>

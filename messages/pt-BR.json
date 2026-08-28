@@ -235,9 +235,6 @@
       "addAppointment": "Adicionar compromisso",
       "emptyDay": "Nada agendado",
       "allDay": "Dia todo",
-      "noContactShort": "Sem cliente",
-      "noPropertyShort": "Sem imóvel",
-      "appointmentDetailsLabel": "Ver detalhes do compromisso",
       "toggleCompleteLabel": "Marcar/desmarcar como concluído",
       "toastCompleteFailed": "Não foi possível atualizar o status do compromisso.",
       "connectGoogleCalendar": "Conectar Google Calendar",
@@ -295,34 +292,15 @@
     "toastDeleteFailed": "Não foi possível excluir o segmento."
   },
   "Appointments": {
-    "noContact": "Sem contato",
-    "noProperty": "Sem imóvel",
-    "type": {
-      "call": "Ligação",
-      "visit": "Visita",
-      "meeting": "Reunião",
-      "proposal": "Proposta",
-      "follow_up": "Follow-up",
-      "other": "Outro"
-    },
     "form": {
       "newTitle": "Novo Compromisso",
       "editTitle": "Editar Compromisso",
       "description": "Agende uma ligação, visita, reunião, proposta ou follow-up.",
       "titleLabel": "Título",
       "titlePlaceholder": "ex.: Retornar para...",
-      "contactLabel": "Cliente",
-      "contactPlaceholder": "Digite o nome do cliente...",
-      "propertyLabel": "Imóvel",
-      "propertyNamePlaceholder": "ex.: Residencial Reserva",
-      "newProperty": "Novo imóvel",
-      "add": "Adicionar",
       "dateLabel": "Data",
       "timeLabel": "Horário de início",
       "endTimeLabel": "Horário de término",
-      "typeLabel": "Tipo",
-      "descriptionLabel": "Descrição",
-      "descriptionPlaceholder": "Observações opcionais...",
       "notesLabel": "Observações",
       "notesPlaceholder": "ex.: Cliente pediu para confirmar por telefone antes...",
       "cancel": "Cancelar",
@@ -335,20 +313,13 @@
       "toastCreated": "Compromisso criado.",
       "toastUpdated": "Compromisso atualizado.",
       "toastSaveFailed": "Não foi possível salvar o compromisso.",
-      "toastPropertyCreateFailed": "Não foi possível criar o imóvel.",
       "toastCalendarSyncFailed": "Compromisso salvo, mas não foi possível sincronizar com o Google Calendar."
     },
     "detail": {
-      "client": "Cliente",
-      "phone": "Telefone",
-      "property": "Imóvel",
       "date": "Data",
       "time": "Horário",
       "allDay": "Dia todo",
-      "descriptionLabel": "Descrição",
       "notesLabel": "Observações",
-      "createdAt": "Criado em",
-      "updatedAt": "Última atualização",
       "edit": "Editar",
       "delete": "Excluir compromisso",
       "deleteTitle": "Excluir compromisso",
@@ -716,10 +687,10 @@
         "custom": "Campos personalizados",
         "deals": "Negócios",
         "tags": "Tags",
-      "noTags": "Nenhuma tag",
-      "noCategory": "Sem categoria",
-      "noDeals": "Nenhum negócio",
-      "addNotePlaceholder": "Adicionar uma nota..."
+        "noTags": "Nenhuma tag",
+        "noCategory": "Sem categoria",
+        "noDeals": "Nenhum negócio",
+        "addNotePlaceholder": "Adicionar uma nota..."
       },
       "actions": {
         "edit": "Editar",
@@ -2001,13 +1972,11 @@
       "deleteLocallyAria": "Excluir template localmente",
       "deleteMetaLocallyTitle": "Excluir da Meta e localmente",
       "deleteLocallyTitle": "Excluir localmente",
-
       "dialogEditTitle": "Editar template de mensagem",
       "dialogNewTitle": "Novo template de mensagem",
       "dialogEditDesc": "Salve suas alterações para reenviar à Meta. O status volta para PENDENTE durante a revisão.",
       "dialogNewDesc": "Crie um template e envie para aprovação da Meta. Depois de aprovado, você pode usá-lo em transmissões e na caixa de entrada.",
       "authWarning": "Templates de AUTENTICAÇÃO têm um corpo fixo + formato de botão OTP que exige um construtor diferente. Por enquanto, crie-os no Meta WhatsApp Manager e use <bold>Sincronizar da Meta</bold> para trazê-los.",
-
       "templateName": "Nome do template",
       "namePlaceholder": "ex: confirmacao_pedido",
       "nameFixed": "O nome fica fixo assim que o template existe na Meta — crie um novo template para alterá-lo.",
@@ -2016,7 +1985,6 @@
       "language": "Idioma",
       "langFixed": "O idioma fica fixo assim que o template existe na Meta.",
       "langHint": "Deve corresponder exatamente ao código na Meta — <code>en_US</code> e <code>en</code> são diferentes.",
-
       "header": "Cabeçalho",
       "headerNone": "Nenhum",
       "headerText": "Texto",
@@ -2026,7 +1994,6 @@
       "headerTextPlaceholder": "Texto do cabeçalho (máx 60 caracteres, {{1}} opcional)",
       "headerSampleAria": "Valor de exemplo para a variável do cabeçalho",
       "headerSamplePlaceholder": "Valor de exemplo para {{1}} (obrigatório para revisão da Meta)",
-
       "uploadImage": "Enviar imagem",
       "uploadHint": "JPEG ou PNG, ≤5 MB",
       "mediaUrlPlaceholder": "https://… (ou cole um link público de {format})",
@@ -2034,17 +2001,14 @@
       "mediaHint": "Deve ser um link HTTPS publicamente acessível. A Meta o busca uma vez durante a revisão, então ele precisa ficar ativo por ~24h.",
       "videoHint": " Recomendado: MP4 / 3GPP, ≤16 MB, ≤60 segundos.",
       "documentHint": " Recomendado: PDF, ≤100 MB.",
-
       "bodyText": "Texto do corpo",
       "bodyPlaceholder": "Olá {{1}}, seu pedido {{2}} está confirmado.",
       "bodyHint": "Use {{1}}, {{2}} para variáveis (devem ser contínuas começando em {{1}}).",
       "sampleValues": "Valores de exemplo (a Meta os usa para revisar seu template)",
       "sampleAria": "Valor de exemplo para a variável do corpo {var}",
       "samplePlaceholder": "Exemplo para {var}",
-
       "footer": "Rodapé (opcional)",
       "footerPlaceholder": "Texto de rodapé opcional (máx 60 caracteres)",
-
       "buttons": "Botões (opcional)",
       "addButton": "Adicionar botão",
       "buttonsLimit": "Até {max} botões. Botões QUICK_REPLY devem vir antes dos botões de URL / telefone / copiar código.",
@@ -2057,19 +2021,16 @@
       "urlSamplePlaceholder": "Valor de exemplo para {{1}} (obrigatório quando a URL tem variável)",
       "phonePlaceholder": "+5511999999999",
       "codePlaceholder": "Código de exemplo (ex: VERAO20)",
-
       "cancel": "Cancelar",
       "saving": "Salvando…",
       "submitting": "Enviando…",
       "saveResubmit": "Salvar e reenviar",
       "submitApproval": "Enviar para aprovação",
-
       "deleteDialogTitle": "Excluir template?",
       "deleteMetaDesc": "\"{name}\" será excluído da Meta e do wacrm. Campanhas ativas que usam este template começarão a falhar no próximo envio. Essa ação não pode ser desfeita.",
       "deleteLocalDesc": "\"{name}\" será excluído do wacrm. Ele nunca foi enviado à Meta, então não é necessária limpeza remota.",
       "deleting": "Excluindo…",
       "delete": "Excluir",
-
       "toastLoadFailed": "Falha ao carregar templates",
       "toastSubmitFailed": "Falha ao enviar",
       "toastSubmitEditSuccess": "Edição enviada — a Meta costuma revisar em até 24 horas.",
@@ -2239,7 +2200,6 @@
       "profileSaved": "Perfil salvo",
       "emailChangeFailed": "Falha ao alterar e-mail: {message}",
       "profileSavedEmailCheck": "Perfil salvo — confira seu e-mail para confirmar a mudança de endereço",
-
       "passwordTitle": "Senha",
       "passwordDesc": "Use pelo menos {min} caracteres. Você continuará conectado neste dispositivo após a alteração.",
       "currentPassword": "Senha atual",
@@ -2253,7 +2213,6 @@
       "currentPasswordIncorrect": "A senha atual está incorreta",
       "passwordUpdateFailed": "Falha ao atualizar senha: {message}",
       "passwordUpdated": "Senha atualizada",
-
       "sessionsTitle": "Sessões ativas",
       "sessionsDesc": "Saia de todos os dispositivos em que você está conectado — incluindo este. Útil se você perdeu um notebook ou compartilhou sua senha.",
       "signOutAll": "Sair de todos os dispositivos",

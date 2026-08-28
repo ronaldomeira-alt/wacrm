@@ -2,12 +2,11 @@
 
 import { memo } from 'react'
 import { useTranslations } from 'next-intl'
-import { Check, Info } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Check } from 'lucide-react'
 import type { Appointment, AppointmentType } from '@/types'
 
 // Left-border accent per appointment type — a quiet extra signal on
-// the card, not one of the 3 required text lines (client/time/property).
+// the card, independent of the two text lines (title/time) it shows.
 const TYPE_BORDER_CLASSES: Record<AppointmentType, string> = {
   call: 'border-l-blue-500',
   visit: 'border-l-violet-500',
@@ -38,18 +37,6 @@ export const AppointmentCard = memo(function AppointmentCard({
   onToggleComplete,
 }: AppointmentCardProps) {
   const t = useTranslations('Dashboard.agenda')
-  // 3rd line is conditional on type: Visita/Proposta are about a
-  // specific listing, so the property name stays. Every other type
-  // (Ligação, Reunião, Follow-up, Outro) shows the appointment's
-  // Título instead — a property name is often empty or irrelevant for
-  // those (e.g. "elaborar aditivo contratual"), and every appointment
-  // always has a título (required field), unlike Descrição.
-  const showsProperty = a.type === 'visit' || a.type === 'proposal'
-  const thirdLineText = showsProperty ? a.property?.name || t('noPropertyShort') : a.title
-  // Native `title` attribute as a plain hover fallback (works with
-  // just the mouse, no JS) alongside the dedicated info icon below,
-  // which also works on tap.
-  const thirdLineTitleAttr = showsProperty ? (a.property?.name ?? undefined) : a.title
   const isCompleted = a.status === 'completed'
 
   function handleActivate(originRect: DOMRect) {
@@ -57,12 +44,11 @@ export const AppointmentCard = memo(function AppointmentCard({
   }
 
   return (
-    // A `<div role="button">`, not a native `<button>`: the info icon
-    // below is itself a real `<button>` (TooltipTrigger), and nesting
-    // button-in-button is invalid HTML — the browser closes the outer
-    // one the instant it hits the inner one, breaking the card's
-    // layout. onKeyDown mirrors the Enter/Space activation a real
-    // button gets for free.
+    // A `<div role="button">`, not a native `<button>`: the checkbox
+    // below is itself a real `<button>`, and nesting button-in-button
+    // is invalid HTML — the browser closes the outer one the instant
+    // it hits the inner one, breaking the card's layout. onKeyDown
+    // mirrors the Enter/Space activation a real button gets for free.
     <div
       role="button"
       tabIndex={0}
@@ -98,44 +84,16 @@ export const AppointmentCard = memo(function AppointmentCard({
       >
         {isCompleted && <Check className="h-3 w-3 text-black" strokeWidth={2} />}
       </button>
-      <p className={`truncate text-sm font-semibold text-foreground ${isCompleted ? 'line-through' : ''}`}>
-        {a.contact?.name || a.contact?.phone || a.client_name || t('noContactShort')}
+      {/* Title is the card's primary line now (iPhone-calendar-style
+          layout) — up to two lines, wrapping naturally rather than
+          truncating with an ellipsis, so the card grows to fit instead
+          of ever cutting the title off. */}
+      <p className={`text-sm font-semibold text-foreground ${isCompleted ? 'line-through' : ''}`}>
+        {a.title}
       </p>
       <p className="mt-0.5 text-xs tabular-nums text-foreground/80">
         {a.scheduled_time ? a.scheduled_time.slice(0, 5) : t('allDay')}
       </p>
-      <div className="mt-0.5 flex items-center gap-1">
-        <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={thirdLineTitleAttr}>
-          {thirdLineText}
-        </p>
-        <Tooltip>
-          <TooltipTrigger
-            type="button"
-            aria-label={t('appointmentDetailsLabel')}
-            // Stops the click from also bubbling up to the card's own
-            // onClick (which would open the full detail sheet on top
-            // of the tooltip) — this is meant to be a quick peek, not
-            // a navigation.
-            onClick={(e) => e.stopPropagation()}
-            className="shrink-0 text-muted-foreground/60 hover:text-foreground"
-          >
-            <Info className="size-3" />
-          </TooltipTrigger>
-          <TooltipContent className="block max-w-56">
-            {/* TooltipContent's own base class is `inline-flex
-                items-center` (built for a short one-line label) —
-                wrapping in a single flex-col child isolates our
-                multi-paragraph content from that row layout so
-                título/descrição/observações stack instead of sitting
-                side by side. */}
-            <div className="flex flex-col gap-1 text-left">
-              <p className="font-medium">{a.title}</p>
-              {a.description ? <p className="text-background/80">{a.description}</p> : null}
-              {a.notes ? <p className="text-background/80">{a.notes}</p> : null}
-            </div>
-          </TooltipContent>
-        </Tooltip>
-      </div>
     </div>
   )
 })

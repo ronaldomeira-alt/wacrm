@@ -18,7 +18,6 @@ import { AppointmentDetailSheet } from '@/components/appointments/appointment-de
 import { AppointmentCard } from './appointment-card'
 import { Skeleton } from './skeleton'
 import { Button } from '@/components/ui/button'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Appointment, AppointmentStatus } from '@/types'
 import { useTranslations } from 'next-intl'
 
@@ -297,7 +296,6 @@ export function AgendaWeek() {
             ))}
           </div>
         ) : (
-          <TooltipProvider>
           <div className="grid min-w-[1020px] grid-cols-6 gap-3">
             {weekDates.map((dateKey, i) => {
               const dayAppointments = byDay.get(dateKey) ?? []
@@ -348,7 +346,6 @@ export function AgendaWeek() {
               )
             })}
           </div>
-          </TooltipProvider>
         )}
       </div>
 

@@ -42,7 +42,6 @@ export function AppointmentDetailSheet({
   onChanged,
 }: AppointmentDetailSheetProps) {
   const t = useTranslations('Appointments.detail');
-  const tAppt = useTranslations('Appointments');
   const locale = useLocale();
   const supabase = createClient();
 
@@ -124,33 +123,19 @@ export function AppointmentDetailSheet({
           <ExpandingDialogContent originRect={originRect}>
           <DialogHeader>
             <DialogTitle>{appointment.title}</DialogTitle>
-            <DialogDescription>{tAppt(`type.${appointment.type}`)}</DialogDescription>
           </DialogHeader>
 
+          {/* iPhone-calendar-style field set — Título (above), Data,
+              Horários, Observações only. Cliente/Imóvel/Tipo/Descrição
+              are intentionally not shown here (see the interface-
+              alignment task); their data still exists on the row for
+              existing appointments, just not surfaced in this view. */}
           <dl className="space-y-3 text-sm">
-            <DetailRow
-              label={t('client')}
-              value={
-                appointment.contact?.name ||
-                appointment.contact?.phone ||
-                appointment.client_name ||
-                tAppt('noContact')
-              }
-            />
-            {appointment.contact?.phone && (
-              <DetailRow label={t('phone')} value={appointment.contact.phone} />
-            )}
-            <DetailRow label={t('property')} value={appointment.property?.name || tAppt('noProperty')} />
             <DetailRow label={t('date')} value={formatDateLabel(appointment.scheduled_date, locale)} />
             <DetailRow label={t('time')} value={formatTimeRangeLabel(appointment, t('allDay'))} />
-            {appointment.description && (
-              <DetailRow label={t('descriptionLabel')} value={appointment.description} multiline />
-            )}
             {appointment.notes && (
               <DetailRow label={t('notesLabel')} value={appointment.notes} multiline />
             )}
-            <DetailRow label={t('createdAt')} value={formatDateTimeLabel(appointment.created_at, locale)} />
-            <DetailRow label={t('updatedAt')} value={formatDateTimeLabel(appointment.updated_at, locale)} />
           </dl>
 
           <DialogFooter className="gap-2 sm:justify-between">
@@ -237,6 +222,3 @@ function formatDateLabel(dateKey: string, locale: string): string {
   });
 }
 
-function formatDateTimeLabel(iso: string, locale: string): string {
-  return new Date(iso).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
-}
