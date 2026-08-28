@@ -226,23 +226,18 @@ html[data-theme="amber"] {
 }
 
 html[data-theme="rose"] {
-  --primary: oklch(0.37 0.105 258);
-  --primary-foreground: oklch(0.967 0 0);
-  --primary-hover: oklch(0.435 0.085 258);
-  --primary-soft: oklch(0.37 0.105 258 / 0.12);
-  --primary-soft-2: oklch(0.37 0.105 258 / 0.22);
-  /* Ronaldo's Color is dark (L .37) — unlike every other accent here,
-   * its own hue reads poorly at full strength on the same dark
-   * surfaces the soft-tint pattern renders over (sidebar, chips,
-   * badges). Point text/icons in that pattern at the foreground
-   * instead so they stay legible without touching --primary itself. */
-  --primary-on-soft: oklch(0.967 0 0);
-  --ring: oklch(0.37 0.105 258);
-  --chart-1: oklch(0.37 0.105 258);
+  --primary: oklch(0.512 0.138 258);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-hover: oklch(0.578 0.124 258);
+  --primary-soft: oklch(0.512 0.138 258 / 0.12);
+  --primary-soft-2: oklch(0.512 0.138 258 / 0.22);
+  --primary-on-soft: oklch(0.512 0.138 258);
+  --ring: oklch(0.512 0.138 258);
+  --chart-1: oklch(0.512 0.138 258);
   --chart-2: oklch(0.7 0.18 222);
-  --sidebar-primary: oklch(0.37 0.105 258);
-  --sidebar-primary-foreground: oklch(0.967 0 0);
-  --sidebar-ring: oklch(0.37 0.105 258);
+  --sidebar-primary: oklch(0.512 0.138 258);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-ring: oklch(0.512 0.138 258);
 }
 
 @layer base {
