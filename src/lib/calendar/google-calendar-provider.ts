@@ -80,7 +80,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     return new GoogleCalendarProvider(google.calendar({ version: 'v3', auth: oauth2Client }));
   }
 
-  async createEvent(event: CalendarEvent): Promise<{ externalId: string }> {
+  async createEvent(event: CalendarEvent): Promise<{ externalId: string; etag: string | null }> {
     const { data } = await this.calendar.events.insert({
       calendarId: 'primary',
       requestBody: toGoogleEvent(event),
@@ -88,25 +88,26 @@ export class GoogleCalendarProvider implements CalendarProvider {
     if (!data.id) {
       throw new Error('Google Calendar accepted the event but returned no id.');
     }
-    return { externalId: data.id };
+    return { externalId: data.id, etag: data.etag ?? null };
   }
 
-  async updateEvent(externalId: string, event: CalendarEvent): Promise<void> {
+  async updateEvent(externalId: string, event: CalendarEvent): Promise<{ etag: string | null }> {
     // Deliberately doesn't special-case a 404/410 (event deleted on
     // Google's side out-of-band) by recreating: CalendarProvider's
-    // `updateEvent` returns void, so a recreated event's new id would
-    // have nowhere to go without either changing that interface or
-    // having CalendarSyncService re-fetch state after every update.
-    // Simplest correct behavior: propagate the error — sync_status
-    // ends up 'error', same as any other failed update — and let the
-    // next edit's sync attempt (which re-reads external_calendar_id
-    // fresh) surface the same error again rather than silently
-    // piling up duplicate events on Google's side.
-    await this.calendar.events.update({
+    // `updateEvent` returns just the etag, so a recreated event's new
+    // id would have nowhere to go without either changing that
+    // interface or having CalendarSyncService re-fetch state after
+    // every update. Simplest correct behavior: propagate the error —
+    // sync_status ends up 'error', same as any other failed update —
+    // and let the next edit's sync attempt (which re-reads
+    // external_calendar_id fresh) surface the same error again rather
+    // than silently piling up duplicate events on Google's side.
+    const { data } = await this.calendar.events.update({
       calendarId: 'primary',
       eventId: externalId,
       requestBody: toGoogleEvent(event),
     });
+    return { etag: data.etag ?? null };
   }
 
   async deleteEvent(externalId: string): Promise<void> {
@@ -119,13 +120,13 @@ export class GoogleCalendarProvider implements CalendarProvider {
   }
 }
 
-interface StoredConnection {
+export interface StoredConnection {
   access_token_encrypted: string;
   refresh_token_encrypted: string;
   token_expires_at: string;
 }
 
-async function persistRefreshedTokens(
+export async function persistRefreshedTokens(
   db: SupabaseClient,
   userId: string,
   tokens: Auth.Credentials,
@@ -145,6 +146,41 @@ async function persistRefreshedTokens(
     // refreshes again — mildly wasteful, not broken.
     console.error('[GoogleCalendarProvider] failed to persist refreshed tokens:', error);
   }
+}
+
+/**
+ * Builds an authenticated, auto-refreshing OAuth2 client from an
+ * already-loaded `calendar_connections` row. Shared by
+ * `createGoogleCalendarProviderForUser` below and by the inbound
+ * (Google → CRM) sync path — src/lib/calendar/inbound-sync-service.ts
+ * and google-watch.ts — which fetch connection rows in bulk (webhook
+ * lookup by channel_id, cron renewal across all connections) and so
+ * can't route through a single-user query.
+ *
+ * A refreshed token is persisted back to `calendar_connections`
+ * through `db` — pass a client with write access to that table (the
+ * session-scoped SSR client for a single signed-in user, or the
+ * service-role admin client when there's no session, e.g. the webhook
+ * and cron routes).
+ */
+export function buildAuthorizedOAuth2Client(
+  db: SupabaseClient,
+  userId: string,
+  connection: StoredConnection,
+): Auth.OAuth2Client {
+  // redirect_uri is only needed for the authorization-code exchange
+  // (connect/callback routes); refreshing an existing token doesn't
+  // use it, so an empty string is fine here.
+  const oauth2Client = createGoogleOAuth2Client('');
+  oauth2Client.setCredentials({
+    access_token: decrypt(connection.access_token_encrypted),
+    refresh_token: decrypt(connection.refresh_token_encrypted),
+    expiry_date: new Date(connection.token_expires_at).getTime(),
+  });
+  oauth2Client.on('tokens', (tokens) => {
+    void persistRefreshedTokens(db, userId, tokens);
+  });
+  return oauth2Client;
 }
 
 /**
@@ -171,18 +207,6 @@ export async function createGoogleCalendarProviderForUser(
   if (error) throw error;
   if (!data) return null;
 
-  // redirect_uri is only needed for the authorization-code exchange
-  // (connect/callback routes); refreshing an existing token doesn't
-  // use it, so an empty string is fine here.
-  const oauth2Client = createGoogleOAuth2Client('');
-  oauth2Client.setCredentials({
-    access_token: decrypt(data.access_token_encrypted),
-    refresh_token: decrypt(data.refresh_token_encrypted),
-    expiry_date: new Date(data.token_expires_at).getTime(),
-  });
-  oauth2Client.on('tokens', (tokens) => {
-    void persistRefreshedTokens(db, userId, tokens);
-  });
-
+  const oauth2Client = buildAuthorizedOAuth2Client(db, userId, data);
   return GoogleCalendarProvider.fromClient(oauth2Client);
 }

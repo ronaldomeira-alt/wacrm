@@ -8,6 +8,8 @@ import {
   googleCallbackUrl,
   GOOGLE_OAUTH_STATE_COOKIE,
 } from '@/lib/calendar/google-oauth-client';
+import { registerWatchChannel } from '@/lib/calendar/google-watch';
+import { processConnectionChanges } from '@/lib/calendar/inbound-sync-service';
 
 /**
  * GET /api/calendar/google/callback
@@ -82,21 +84,49 @@ export async function GET(request: Request) {
       return clearStateCookie(NextResponse.redirect(dashboardUrl('error')));
     }
 
+    const accessTokenEncrypted = encrypt(tokens.access_token);
+    const refreshTokenEncrypted = encrypt(tokens.refresh_token);
+    const tokenExpiresAt = new Date(tokens.expiry_date).toISOString();
+
     const { error } = await supabase.from('calendar_connections').upsert(
       {
         account_id: accountId,
         user_id: userId,
         provider: 'google_calendar',
         google_email: googleEmail,
-        access_token_encrypted: encrypt(tokens.access_token),
-        refresh_token_encrypted: encrypt(tokens.refresh_token),
-        token_expires_at: new Date(tokens.expiry_date).toISOString(),
+        access_token_encrypted: accessTokenEncrypted,
+        refresh_token_encrypted: refreshTokenEncrypted,
+        token_expires_at: tokenExpiresAt,
+        // Reconnecting (or connecting fresh) always starts a new
+        // incremental-sync window — see processConnectionChanges below.
+        sync_token: null,
       },
       { onConflict: 'user_id' },
     );
     if (error) {
       console.error('[calendar/google/callback] failed to store connection:', error);
       return clearStateCookie(NextResponse.redirect(dashboardUrl('error')));
+    }
+
+    // Start Google → CRM sync: register a push-notification channel
+    // for this calendar and run an initial sync (google-watch.ts /
+    // inbound-sync-service.ts). Best-effort — a failure here shouldn't
+    // block the "connected" outcome; CRM → Google push (the row just
+    // written above) already works regardless, and the next GET
+    // /api/calendar/google/watch-cron tick retries registration for
+    // any connection with no channel yet.
+    try {
+      await registerWatchChannel(supabase, userId, oauth2Client, baseUrl);
+      await processConnectionChanges(supabase, {
+        account_id: accountId,
+        user_id: userId,
+        access_token_encrypted: accessTokenEncrypted,
+        refresh_token_encrypted: refreshTokenEncrypted,
+        token_expires_at: tokenExpiresAt,
+        sync_token: null,
+      });
+    } catch (err) {
+      console.error('[calendar/google/callback] failed to start push sync (non-fatal):', err);
     }
 
     return clearStateCookie(NextResponse.redirect(dashboardUrl('connected')));

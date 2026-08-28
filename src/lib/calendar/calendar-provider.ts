@@ -10,7 +10,7 @@ export interface CalendarProvider {
    *  for GoogleCalendarProvider. Used for logging/future multi-provider
    *  branching, not persisted anywhere yet. */
   readonly id: string;
-  createEvent(event: CalendarEvent): Promise<{ externalId: string }>;
-  updateEvent(externalId: string, event: CalendarEvent): Promise<void>;
+  createEvent(event: CalendarEvent): Promise<{ externalId: string; etag: string | null }>;
+  updateEvent(externalId: string, event: CalendarEvent): Promise<{ etag: string | null }>;
   deleteEvent(externalId: string): Promise<void>;
 }

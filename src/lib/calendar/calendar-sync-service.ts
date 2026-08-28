@@ -26,17 +26,23 @@ export class CalendarSyncService {
     const event = mapAppointmentToCalendarEvent(appointment);
     try {
       let externalId = appointment.external_calendar_id;
+      let etag: string | null;
       if (externalId) {
-        await this.provider.updateEvent(externalId, event);
+        ({ etag } = await this.provider.updateEvent(externalId, event));
       } else {
         const created = await this.provider.createEvent(event);
         externalId = created.externalId;
+        etag = created.etag;
       }
 
       const { error } = await this.db
         .from('appointments')
         .update({
           external_calendar_id: externalId,
+          // Recorded so the inbound (Google → CRM) sync path can tell
+          // its own echo of this exact push apart from a genuine
+          // external edit — see inbound-sync-service.ts's echo guard.
+          external_calendar_etag: etag,
           sync_status: 'synced',
           last_synced_at: new Date().toISOString(),
         })

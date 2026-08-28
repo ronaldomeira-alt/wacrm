@@ -263,6 +263,10 @@ export interface Appointment {
    *  until src/lib/calendar/'s GoogleCalendarProvider is actually
    *  implemented. */
   external_calendar_id: string | null;
+  /** Etag of the Google event as of the last push or pull (migration 084)
+   *  — lets the inbound (Google → CRM) sync path recognize the echo of
+   *  its own CRM → Google push and skip re-applying it. */
+  external_calendar_etag?: string | null;
   sync_status: AppointmentSyncStatus;
   last_synced_at: string | null;
   created_at: string;
