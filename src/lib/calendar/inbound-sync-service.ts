@@ -9,6 +9,20 @@ import { mapGoogleEventToAppointmentFields } from './calendar-event-mapper';
 // appointments. Google's incremental sync then tracks forward from
 // this window on every later call.
 const INITIAL_SYNC_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+// Upper bound on the same initial listing. Without this, `singleEvents:
+// true` expands a yearly-recurring event with no end date (a birthday,
+// for instance) into one row per future occurrence with no cap —
+// observed pulling instances 30 years out on a single sync. A year
+// comfortably covers any real near-term appointment; a recurring
+// instance further out than this is simply never listed by the
+// syncToken this establishes (Google's incremental sync only returns
+// *changes* within the window a token was created with — the window
+// doesn't roll forward on its own as time passes). That instance only
+// starts syncing once something re-establishes the token with a
+// window that includes it (a reconnect, or the sync token going stale
+// and forcing a resync) — an acceptable gap for a booking calendar
+// where appointments aren't made a year+ out.
+const INITIAL_SYNC_LOOKAHEAD_MS = 365 * 24 * 60 * 60 * 1000;
 
 export interface CalendarConnectionForSync extends StoredConnection {
   account_id: string;
@@ -49,6 +63,7 @@ async function syncPages(
     params.syncToken = syncToken;
   } else {
     params.timeMin = new Date(Date.now() - INITIAL_SYNC_LOOKBACK_MS).toISOString();
+    params.timeMax = new Date(Date.now() + INITIAL_SYNC_LOOKAHEAD_MS).toISOString();
   }
 
   let response;
