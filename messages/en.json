@@ -442,7 +442,11 @@
       "sendRecording": "Send voice message",
       "unsupportedVideoType": "This video is in a format WhatsApp doesn't accept (e.g. iPhone .MOV). Send it as MP4 — on iPhone, switch Settings → Camera → Formats → Most Compatible, or pick a video that's already MP4.",
       "unsupportedFileType": "This file type isn't supported.",
-      "fileTooLarge": "File is {sizeMb} MB — the limit for {kind} is {limitMb} MB."
+      "fileTooLarge": "File is {sizeMb} MB — the limit for {kind} is {limitMb} MB.",
+      "documentPreviewLoading": "Loading preview…",
+      "documentPreviewUnavailable": "This PDF couldn't be previewed. You can still send it normally.",
+      "documentPreviewPrevPage": "Previous page",
+      "documentPreviewNextPage": "Next page"
     },
     "bubble": {
       "photo": "Photo",

@@ -83,26 +83,54 @@ export function DocumentPreviewCard({
       )}
     >
       {thumbnailUrl && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={thumbnailUrl} alt="" className="w-full object-cover" />
+        // Fixed, deliberately short band (~35-45% of the card's total
+        // height, not the full first page at its native aspect ratio) —
+        // a quick preview strip, not the card's main event, same
+        // proportions as WhatsApp's own document card. `object-cover` +
+        // `object-top` crops to fill the band edge-to-edge, anchored on
+        // the page's top (its most identifying content) — matches
+        // WhatsApp's own thumbnail behavior exactly, so a portrait page
+        // (the common case for contracts/tables) never shows blank
+        // space on the sides the way `object-contain` would in a band
+        // this short. The bg fallback only shows on a slow image load.
+        <div
+          className={cn(
+            "h-24 w-full overflow-hidden",
+            isAgent ? "bg-primary-foreground/10" : "bg-muted",
+          )}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={thumbnailUrl}
+            alt=""
+            className="h-full w-full object-cover object-top"
+          />
+        </div>
       )}
       <div
         className={cn(
-          "space-y-2 px-3 py-2.5",
+          "space-y-2.5 px-3.5 py-3",
           isAgent ? "bg-primary-foreground/10" : "bg-muted/60",
         )}
       >
-        <div className="flex items-start gap-2">
-          <FileText
+        <div className="flex items-start gap-2.5">
+          <div
             className={cn(
-              "mt-0.5 h-4 w-4 shrink-0",
-              isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
+              "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md",
+              isAgent ? "bg-primary-foreground/15" : "bg-red-500/10",
             )}
-          />
+          >
+            <FileText
+              className={cn(
+                "h-5 w-5",
+                isAgent ? "text-primary-foreground" : "text-red-600",
+              )}
+            />
+          </div>
           <div className="min-w-0 flex-1">
             <p
               className={cn(
-                "truncate text-sm font-medium",
+                "line-clamp-2 text-base leading-snug font-semibold",
                 isAgent ? "text-primary-foreground" : "text-foreground",
               )}
             >
@@ -110,16 +138,18 @@ export function DocumentPreviewCard({
             </p>
             <p
               className={cn(
-                "truncate text-xs",
-                isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
+                "truncate text-sm",
+                isAgent ? "text-primary-foreground/80" : "text-muted-foreground",
               )}
             >
               {metaParts.join(" • ")}
             </p>
           </div>
+        </div>
+        <div className="flex items-center justify-end gap-1 text-[10px]">
           <span
             className={cn(
-              "mt-0.5 flex shrink-0 items-center gap-1 text-[10px]",
+              "flex items-center gap-1",
               isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
             )}
           >
@@ -129,7 +159,7 @@ export function DocumentPreviewCard({
         </div>
         <div
           className={cn(
-            "flex items-center gap-2 border-t pt-2 text-xs font-medium",
+            "flex items-center gap-2 border-t pt-2.5 text-sm font-medium",
             isAgent ? "border-primary-foreground/20" : "border-border/60",
           )}
         >

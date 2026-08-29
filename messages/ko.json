@@ -442,7 +442,11 @@
       "sendRecording": "음성 메시지 보내기",
       "unsupportedVideoType": "이 동영상은 WhatsApp에서 지원하지 않는 형식입니다 (예: 아이폰 .MOV). MP4로 보내주세요 — 아이폰에서는 설정 → 카메라 → 포맷 → 높은 호환성으로 변경하거나, 이미 MP4인 동영상을 선택하세요.",
       "unsupportedFileType": "지원되지 않는 파일 형식입니다.",
-      "fileTooLarge": "파일 크기가 {sizeMb}MB입니다 — {kind} 제한은 {limitMb}MB입니다."
+      "fileTooLarge": "파일 크기가 {sizeMb}MB입니다 — {kind} 제한은 {limitMb}MB입니다.",
+      "documentPreviewLoading": "미리보기 불러오는 중…",
+      "documentPreviewUnavailable": "이 PDF는 미리 볼 수 없습니다. 그래도 평소처럼 보낼 수 있습니다.",
+      "documentPreviewPrevPage": "이전 페이지",
+      "documentPreviewNextPage": "다음 페이지"
     },
     "bubble": {
       "photo": "사진",

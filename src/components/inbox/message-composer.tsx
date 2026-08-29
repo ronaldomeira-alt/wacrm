@@ -44,6 +44,7 @@ import {
   convertMovToMp4ViaWebCodecs,
 } from "@/lib/media/transcode-mov-webcodecs";
 import { ReplyQuote } from "./reply-quote";
+import { DocumentFullscreenPreview } from "./document-fullscreen-preview";
 import { useTranslations } from "next-intl";
 import type { QuickReply } from "@/types";
 
@@ -138,6 +139,16 @@ function normalizeForMatch(value: string): string {
 
 function stripLeadingSlash(value: string): string {
   return value.startsWith("/") ? value.slice(1) : value;
+}
+
+// Filename-extension check — mirrors looksLikePdf's fallback branch in
+// generate-document-preview.ts (not imported from there: that module
+// pulls in supabaseAdmin(), a service-role client that has no business
+// in the browser bundle). Only PDFs get the full-screen page-by-page
+// viewer below; any other document kind (docx/xlsx/pptx/txt) keeps
+// today's plain filename card unchanged.
+function isPdfDraft(filename: string): boolean {
+  return filename.toLowerCase().endsWith(".pdf");
 }
 
 /** Finds the "/shortcut" token touching the caret, if any — mirrors
@@ -1445,8 +1456,42 @@ function MediaDraftPreview({
   onSend: () => void;
   t: ReturnType<typeof useTranslations>;
 }) {
+  // A staged PDF opens its full-screen page-by-page viewer automatically
+  // (see DocumentFullscreenPreview) — this card still renders underneath
+  // unchanged, it's just covered until the viewer closes. `draft.path` is
+  // the key (not just `draft.kind`) because a single-file re-pick while
+  // this same component instance is still mounted replaces `draft` in
+  // place (see stageUpload) rather than unmounting/remounting — without
+  // keying on path, the viewer wouldn't reopen for the newly-picked file.
+  //
+  // Reopening on a path change is done as a render-phase state adjustment
+  // (React's documented pattern for "reset state when a prop changes"),
+  // not a `setState`-in-`useEffect` — the latter costs an extra
+  // wasted-render/commit cycle and trips the set-state-in-effect lint
+  // rule.
+  const isPdf = draft.kind === "document" && isPdfDraft(draft.filename);
+  const [pdfPreviewOpen, setPdfPreviewOpen] = useState(isPdf);
+  const [lastPath, setLastPath] = useState(draft.path);
+  if (draft.path !== lastPath) {
+    setLastPath(draft.path);
+    if (isPdf) setPdfPreviewOpen(true);
+  }
+
   return (
     <div className="rounded-xl border border-border bg-muted/40 p-3">
+      {isPdf && (
+        <DocumentFullscreenPreview
+          open={pdfPreviewOpen}
+          url={draft.mediaUrl}
+          filename={draft.filename}
+          caption={draft.caption}
+          busy={busy}
+          readOnly={readOnly}
+          onCaptionChange={onCaptionChange}
+          onConfirm={onSend}
+          onCancel={onDiscard}
+        />
+      )}
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           {draft.kind === "image" && (

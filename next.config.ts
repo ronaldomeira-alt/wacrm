@@ -82,7 +82,20 @@ const nextConfig: NextConfig = {
   // Turbopack's static bundling the same way @napi-rs/canvas did above.
   // Keeping it external (plain require() at runtime) avoids that class
   // of bug entirely.
-  serverExternalPackages: ["pdf-to-img", "pdfjs-dist", "@napi-rs/canvas", "baileys"],
+  //
+  // "pdfjs-dist" is deliberately NOT listed here (it was, until the
+  // pre-send PDF viewer added a client-side use of it — see
+  // document-fullscreen-preview.tsx): pdf-to-img being external already
+  // covers its own nested pdfjs-dist copy via plain Node require()
+  // resolution, so listing it again here bought nothing server-side —
+  // but it did make Turbopack try to treat the *client* bundle's
+  // `new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url)`
+  // worker-asset reference as an external require() target too, which
+  // fails at build time since pdfjs-dist ships ESM-only ("Package
+  // pdfjs-dist can't be external ... require() resolves to a EcmaScript
+  // module"). Removing it here fixes that warning without touching the
+  // server-side PDF-preview path at all.
+  serverExternalPackages: ["pdf-to-img", "@napi-rs/canvas", "baileys"],
 
   /**
    * Cross-origin dev access (Next.js 16).
