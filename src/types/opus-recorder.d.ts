@@ -25,6 +25,9 @@ declare module "opus-recorder" {
     ondataavailable: ((data: Uint8Array) => void) | null;
     start(): Promise<void>;
     stop(): Promise<void>;
+    /** Closes the AudioContext, destroys the encoder worker, and releases
+     *  the mic stream. A new Recorder instance is required afterwards. */
+    close(): Promise<void>;
     /** Browser support probe exposed as a static on the class. */
     static isRecordingSupported(): boolean;
   }

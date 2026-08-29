@@ -735,8 +735,17 @@ export function MessageComposer({
       recorderRef.current = recorder;
       await recorder.start();
     } catch {
-      void recorderRef.current?.stop().catch(() => {});
+      // Same AudioContext leak as stopRecorder() below, just on the
+      // failure path (e.g. start() rejects because the mic permission was
+      // denied) — close() releases it too, chained so it still runs even
+      // if stop() itself rejects.
+      const recorder = recorderRef.current;
       recorderRef.current = null;
+      void recorder
+        ?.stop()
+        .catch(() => {})
+        .then(() => recorder.close())
+        .catch(() => {});
       clearTimer();
       setMicPhase("idle");
       setLocked(false);
@@ -747,6 +756,18 @@ export function MessageComposer({
   // Every "stop the mic" action funnels through here instead of touching
   // recorderRef directly, so it always waits out any in-flight
   // beginCapture() first — see captureReadyRef above for why.
+  //
+  // stop() alone only releases the mic stream — it leaves the
+  // AudioContext (and encoder worker) open. close() is what the
+  // opus-recorder API actually closes both on (README: "close will close
+  // the audioContext, destroy the workers... A new Recorder instance
+  // will be required for additional recordings" — already true here,
+  // beginCapture() always constructs a fresh Recorder). Without this,
+  // every recording leaked an AudioContext that was never released until
+  // the whole PWA process was killed — iOS Safari/WKWebView caps how
+  // many can be alive at once, so after enough recordings in one PWA
+  // session the next one would silently hang (audioContext never
+  // resumes, ondataavailable never fires, upload never starts).
   const stopRecorder = useCallback(async () => {
     try {
       await captureReadyRef.current;
@@ -754,7 +775,16 @@ export function MessageComposer({
       // beginCapture() never actually rejects (it handles its own failure
       // path internally) — guarded anyway so a stop request can't hang.
     }
-    void recorderRef.current?.stop().catch(() => {});
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    try {
+      await recorder.stop();
+    } catch {
+      // stop() rejecting doesn't change that close() below still needs
+      // to run to release the AudioContext.
+    }
+    void recorder.close().catch(() => {});
+    if (recorderRef.current === recorder) recorderRef.current = null;
   }, []);
 
   // ---- Mic pointer gesture ---------------------------------------------
