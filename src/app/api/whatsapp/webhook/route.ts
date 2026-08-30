@@ -789,19 +789,15 @@ async function processMessage(
     message.document?.id &&
     looksLikePdf(message.document.mime_type ?? null, message.document.filename ?? null)
   ) {
-    console.log(`[thumb-trace] ${insertedMessage.id} 0/5 inbound document detected, mediaId=${message.document!.id}`)
     try {
       const mediaInfo = await getMediaUrl({ mediaId: message.document!.id, accessToken })
-      console.log(`[thumb-trace] ${insertedMessage.id} 2/5 getMediaUrl ok, url present=${!!mediaInfo?.url}`)
       const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
-      console.log(`[thumb-trace] ${insertedMessage.id} 2/5 downloadMedia ok, bytes=${buffer.byteLength}`)
       await generateDocumentPreview({
         messageId: insertedMessage.id,
         accountId,
         pdfBuffer: buffer,
       })
     } catch (err) {
-      console.error(`[thumb-trace] ${insertedMessage.id} UNCAUGHT error in inbound preview flow:`, err)
       console.error('[webhook] document preview generation failed:', err)
     }
   }

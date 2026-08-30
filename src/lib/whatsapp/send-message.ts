@@ -522,9 +522,6 @@ export async function sendMessageToConversation(
   // caller of sendMessageToConversation (composer, public v1 API, Flows
   // send_media) gets it from this one place; generateDocumentPreviewFromUrl
   // owns its own try/catch and never throws, so this can't fail the send.
-  console.log(
-    `[thumb-trace] ${messageRecord.id} outbound gate: messageType=${messageType} mediaUrl=${!!mediaUrl} filename=${filename ?? 'null'} looksLikePdf=${looksLikePdf(null, filename ?? null)}`
-  );
   if (messageType === 'document' && mediaUrl && looksLikePdf(null, filename ?? null)) {
     await generateDocumentPreviewFromUrl({
       messageId: messageRecord.id,

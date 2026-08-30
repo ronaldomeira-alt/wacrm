@@ -14,35 +14,37 @@ export interface PdfPreview {
  * on a full-resolution page image.
  *
  * `pdf-to-img` is loaded via a dynamic `import()` inside the try block
- * rather than a static top-level import. `pdf-to-img` pulls in
- * `@napi-rs/canvas`, a native-binding package — on a host where the
- * prebuilt binary for that platform isn't available, loading it throws
- * an uncaught `ReferenceError: DOMMatrix is not defined` (canvas's
- * polyfill setup fails too). A static import makes that throw happen at
- * MODULE LOAD time, which crashed the whole Node process — and because
- * this module is imported (transitively, via generate-document-preview.ts)
- * from both the inbound webhook route and the outbound send path, one
- * broken native dependency took down all of WhatsApp send/receive, not
- * just PDF previews (incident 2026-08-20/21). A dynamic import fails
- * locally to this function instead, so the catch below can do what the
- * docstring above always promised: degrade to no-preview.
+ * rather than a static top-level import, so a broken/missing native
+ * dependency in its chain can't crash the whole Node process at module
+ * load time (incident 2026-08-20/21) — this module is imported
+ * transitively from both the inbound webhook route and the outbound
+ * send path, so that would take down all of WhatsApp send/receive, not
+ * just PDF previews. A dynamic import fails locally to this function
+ * instead, so the catch below can do what the docstring above always
+ * promised: degrade to no-preview.
+ *
+ * `pdf-to-img` renders via `pdfjs-dist`, whose Node build resolves
+ * `@napi-rs/canvas` at runtime to supply `DOMMatrix`/`ImageData`/
+ * `Path2D` (see its own defensive try/catch around that require).
+ * `@napi-rs/canvas` was only ever an *optionalDependency* of pdfjs-dist,
+ * never declared by this project directly — production silently
+ * dropped the whole package (not just a platform binary) wherever the
+ * install step omits optional dependencies, which pdfjs-dist's own
+ * try/catch can't fully paper over: it warns and skips the polyfill,
+ * but something further down unconditionally references the bare
+ * `DOMMatrix` identifier, so the module import throws anyway
+ * (`ReferenceError: DOMMatrix is not defined`, confirmed 2026-08-30 via
+ * production stack trace). Fixed by declaring `@napi-rs/canvas` as a
+ * direct (required) dependency in package.json so it always installs.
  */
 export async function renderPdfPreview(pdfBuffer: Buffer): Promise<PdfPreview | null> {
-  console.log(`[thumb-trace] renderPdfPreview start, bytes=${pdfBuffer.byteLength}`);
   try {
     const { pdf } = await import("pdf-to-img");
-    console.log("[thumb-trace] pdf-to-img module loaded");
     const document = await pdf(pdfBuffer, { scale: 1.5 });
-    console.log(`[thumb-trace] pdf-to-img parsed document, pageCount=${document.length}`);
-    if (document.length < 1) {
-      console.log("[thumb-trace] renderPdfPreview: document.length < 1, returning null");
-      return null;
-    }
+    if (document.length < 1) return null;
     const thumbnail = await document.getPage(1);
-    console.log(`[thumb-trace] renderPdfPreview: got page 1, bytes=${thumbnail.byteLength}`);
     return { pageCount: document.length, thumbnail };
   } catch (error) {
-    console.error("[thumb-trace] renderPdfPreview UNCAUGHT:", error);
     console.error("[documents] PDF preview render failed:", error);
     return null;
   }

@@ -35,17 +35,11 @@ export async function generateDocumentPreview({
   accountId,
   pdfBuffer,
 }: GenerateDocumentPreviewArgs): Promise<void> {
-  console.log(`[thumb-trace] ${messageId} 1/5 generateDocumentPreview start, bytes=${pdfBuffer.byteLength}`);
   try {
     const preview = await renderPdfPreview(pdfBuffer);
-    if (!preview) {
-      console.log(`[thumb-trace] ${messageId} 3/5 renderPdfPreview returned null (no thumbnail) — stopping here`);
-      return;
-    }
-    console.log(`[thumb-trace] ${messageId} 3/5 renderPdfPreview ok, pageCount=${preview.pageCount}, thumbnailBytes=${preview.thumbnail.byteLength}`);
+    if (!preview) return;
 
     const path = `account-${accountId}/doc-thumbs/${messageId}.png`;
-    console.log(`[thumb-trace] ${messageId} 4/5 uploading to chat-media/${path}`);
     const { error: uploadError } = await supabaseAdmin()
       .storage.from("chat-media")
       .upload(path, preview.thumbnail, {
@@ -53,16 +47,13 @@ export async function generateDocumentPreview({
         upsert: true,
       });
     if (uploadError) {
-      console.error(`[thumb-trace] ${messageId} 4/5 upload FAILED:`, uploadError);
       console.error("[documents] thumbnail upload failed:", uploadError);
       return;
     }
-    console.log(`[thumb-trace] ${messageId} 4/5 upload ok`);
 
     const {
       data: { publicUrl },
     } = supabaseAdmin().storage.from("chat-media").getPublicUrl(path);
-    console.log(`[thumb-trace] ${messageId} 5/5 updating message row, publicUrl=${publicUrl}`);
 
     const { error: updateError } = await supabaseAdmin()
       .from("messages")
@@ -73,13 +64,9 @@ export async function generateDocumentPreview({
       })
       .eq("id", messageId);
     if (updateError) {
-      console.error(`[thumb-trace] ${messageId} 5/5 message update FAILED:`, updateError);
       console.error("[documents] message preview update failed:", updateError);
-    } else {
-      console.log(`[thumb-trace] ${messageId} 5/5 message update ok — DONE`);
     }
   } catch (error) {
-    console.error(`[thumb-trace] ${messageId} UNCAUGHT error:`, error);
     console.error("[documents] preview generation failed:", error);
   }
 }
@@ -102,38 +89,22 @@ export async function generateDocumentPreviewFromUrl({
   accountId: string;
   url: string;
 }): Promise<void> {
-  console.log(`[thumb-trace] ${messageId} 0/5 generateDocumentPreviewFromUrl start, url=${url}`);
   try {
-    const deliverable = await isDeliverableUrl(url);
-    console.log(`[thumb-trace] ${messageId} 2/5 isDeliverableUrl=${deliverable}`);
-    if (!deliverable) {
-      console.log(`[thumb-trace] ${messageId} 2/5 stopping: SSRF guard rejected url=${url}`);
-      return;
-    }
+    if (!(await isDeliverableUrl(url))) return;
 
     const response = await fetch(url);
-    console.log(`[thumb-trace] ${messageId} 2/5 fetch status=${response.status} ok=${response.ok}`);
-    if (!response.ok) {
-      console.log(`[thumb-trace] ${messageId} 2/5 stopping: fetch not ok`);
-      return;
-    }
+    if (!response.ok) return;
 
     const contentLength = response.headers.get("content-length");
     if (contentLength && Number(contentLength) > MEDIA_MAX_BYTES_BY_KIND.document) {
-      console.log(`[thumb-trace] ${messageId} 2/5 stopping: content-length ${contentLength} exceeds ${MEDIA_MAX_BYTES_BY_KIND.document}`);
       return;
     }
 
     const pdfBuffer = Buffer.from(await response.arrayBuffer());
-    console.log(`[thumb-trace] ${messageId} 2/5 downloaded bytes=${pdfBuffer.byteLength}`);
-    if (pdfBuffer.byteLength > MEDIA_MAX_BYTES_BY_KIND.document) {
-      console.log(`[thumb-trace] ${messageId} 2/5 stopping: downloaded size exceeds ${MEDIA_MAX_BYTES_BY_KIND.document}`);
-      return;
-    }
+    if (pdfBuffer.byteLength > MEDIA_MAX_BYTES_BY_KIND.document) return;
 
     await generateDocumentPreview({ messageId, accountId, pdfBuffer });
   } catch (error) {
-    console.error(`[thumb-trace] ${messageId} UNCAUGHT error in generateDocumentPreviewFromUrl:`, error);
     console.error("[documents] preview fetch failed:", error);
   }
 }
