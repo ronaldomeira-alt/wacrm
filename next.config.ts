@@ -98,6 +98,49 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["pdf-to-img", "@napi-rs/canvas", "baileys"],
 
   /**
+   * pdfjs-dist runtime assets that Next's file tracing cannot see.
+   *
+   * `output: "standalone"` only ships files `@vercel/nft` can
+   * statically prove are reachable. pdf-to-img's nested pdfjs-dist
+   * loads its worker through a *computed* specifier — on Node it
+   * defaults `GlobalWorkerOptions.workerSrc` to "./pdf.worker.mjs"
+   * and then does `await import(this.workerSrc)` (a variable, and
+   * additionally marked `webpackIgnore`/`vite-ignore`), so nft has
+   * nothing to follow. Result: `.next/standalone` received
+   * `legacy/build/pdf.mjs` but not the `legacy/build/pdf.worker.mjs`
+   * that sits next to it, and production failed with `Setting up
+   * fake worker failed: "Cannot find module .../pdf.worker.mjs"`.
+   * Locally it always worked because `next dev` / `next start`
+   * resolve out of the real, complete node_modules rather than the
+   * traced standalone tree.
+   *
+   * cmaps/ and standard_fonts/ are the same class of miss:
+   * pdf-to-img hands them to `getDocument()` as filesystem paths
+   * built at runtime with `path.join(...)` (its dist/index.js),
+   * which nft cannot trace either. Without standard_fonts a page
+   * using any of the 14 non-embedded standard fonts renders with
+   * the wrong glyphs; without cmaps, CJK text renders blank. wasm/
+   * and iccs/ back pdfjs's JPEG2000 decoder and ICC colour
+   * handling — only some PDFs need them, but they load the same
+   * untraceable way.
+   *
+   * The paths target the *nested* copy on purpose: pdf-to-img pins
+   * `pdfjs-dist@~5.6` while this app depends on `^6.3` for the
+   * client-side viewer, so npm keeps 5.6 under
+   * `pdf-to-img/node_modules/` (pinned in package-lock.json) and
+   * that is the copy the server-side thumbnail path actually loads.
+   */
+  outputFileTracingIncludes: {
+    "/*": [
+      "node_modules/pdf-to-img/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+      "node_modules/pdf-to-img/node_modules/pdfjs-dist/standard_fonts/**/*",
+      "node_modules/pdf-to-img/node_modules/pdfjs-dist/cmaps/**/*",
+      "node_modules/pdf-to-img/node_modules/pdfjs-dist/wasm/**/*",
+      "node_modules/pdf-to-img/node_modules/pdfjs-dist/iccs/**/*",
+    ],
+  },
+
+  /**
    * Cross-origin dev access (Next.js 16).
    *
    * Next 16 blocks requests to dev-only resources (`/_next/*` internals,

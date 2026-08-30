@@ -14,7 +14,7 @@
 | Push notifications | Web Push API padrão (VAPID), biblioteca `web-push`, Service Worker próprio (`public/sw.js`) |
 | Fluxos visuais | `@xyflow/react` + `@dagrejs/dagre` (editor de Flows) |
 | Gráficos | `recharts` (dashboard) |
-| Hospedagem | Hostinger — Node.js Web App com deploy automático via Git (branch `main`) |
+| Hospedagem | Hostinger — Node.js Web App com deploy automático via Git (branch `main`); roda a árvore `output: "standalone"` do Output File Tracing, não o `node_modules` completo |
 | Testes | Vitest |
 
 ## Estrutura do projeto
@@ -97,7 +97,7 @@ wacrm/
 
 - Fork próprio em vez de contribuir direto no upstream, para poder customizar livremente (idioma, segmentação imobiliária) sem esperar aprovação de PR.
 - `tags.category` como texto livre (sem tabela `categories` separada) — mantém a implementação simples e evita uma migração maior do modelo de dados para uma necessidade que hoje é só agrupamento visual + filtro.
-- Deploy no Hostinger via Git (não Docker) — o Docker existe no repo apenas como opção alternativa documentada, não é o caminho usado em produção.
+- Deploy no Hostinger via Git (não Docker) — o Docker existe no repo apenas como opção alternativa documentada, não é o caminho usado em produção. Atenção: mesmo sem Docker, o runtime usa a árvore `standalone` do `@vercel/nft`, então asset carregado dinamicamente precisa entrar em `outputFileTracingIncludes` (ver `DECISOES_TECNICAS.md`).
 
 ## Configuração necessária para rodar localmente
 

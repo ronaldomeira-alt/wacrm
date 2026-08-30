@@ -25,7 +25,12 @@
 
 **Decisão:** o deploy de produção usa o fluxo nativo de "Web App Node.js" do Hostinger, que faz `git pull` + build direto do branch `main`. O suporte a Docker que existe no repo (`docker/Dockerfile`, `docker/docker-compose.yml`) é uma opção alternativa documentada, não o caminho usado em produção.
 **Motivo:** o Hostinger detecta e builda projetos Next.js nativamente sem precisar de container; um `Dockerfile` na raiz do repo estava inclusive confundindo o detector de framework do painel (hipótese testada e mantida como boa prática, embora a causa raiz real do erro de deploy tenha sido outra — ver `CHANGELOG.md`).
-**Como aplicar:** mudanças em variáveis `NEXT_PUBLIC_*` exigem reconfigurar/rebuildar no painel do Hostinger (elas são "queimadas" no build), não só editar `.env.local`.
+**Ressalva importante (não é Docker, mas também não é `node_modules` completo):** "sem Docker" não significa que produção roda `next start` sobre a árvore de dependências inteira. O `next.config.ts` define `output: "standalone"`, e o ambiente de execução da Hostinger usa **a árvore produzida pelo Output File Tracing (`@vercel/nft`)**, não o `node_modules` completo. O tracer só copia o que consegue provar estaticamente que é alcançável — arquivos carregados dinamicamente (especificador computado, `path.join(...)` em runtime, `webpackIgnore`/`vite-ignore`) ficam de fora silenciosamente.
+**Como aplicar:**
+
+- Mudanças em variáveis `NEXT_PUBLIC_*` exigem reconfigurar/rebuildar no painel do Hostinger (elas são "queimadas" no build), não só editar `.env.local`.
+- Ao adicionar uma dependência que carrega assets em runtime, listá-los em `outputFileTracingIncludes` no `next.config.ts`. Precedente: o pdfjs-dist aninhado do `pdf-to-img` faz `await import(this.workerSrc)` com `workerSrc` defaultado para `"./pdf.worker.mjs"` — o build ia pra produção com `pdf.mjs` mas **sem** `pdf.worker.mjs` ao lado, e a geração de thumbnail de PDF falhava com `Setting up fake worker failed: "Cannot find module .../pdf.worker.mjs"`. Mesma coisa para `standard_fonts/`, `cmaps/`, `wasm/` e `iccs/`, cujos caminhos o `pdf-to-img` monta em runtime com `path.join(...)`.
+- Sintoma que identifica essa classe de bug: **funciona em `next dev` e `next start`, falha só em produção com "Cannot find module"**. Localmente ambos resolvem do `node_modules` real e completo; produção não. Diagnóstico direto: `npm run build` e comparar `find .next/standalone/node_modules/<pacote> -type f` com o `node_modules/<pacote>` real.
 
 ## Segredos nunca digitados pelo assistente em formulários web
 
