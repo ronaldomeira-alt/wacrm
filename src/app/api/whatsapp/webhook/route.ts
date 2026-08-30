@@ -778,24 +778,28 @@ async function processMessage(
   // keeps off the critical path (see `maybeActivateCtwaFep`). A message
   // whose preview never lands just keeps the plain document pill the
   // bubble already renders as a fallback.
+  //
+  // Awaited — not fire-and-forget. We're inside the route's `after()`
+  // block (see its comment above, issue #301/#409): `after()` only keeps
+  // the function alive for promises it can see, so a detached `void`
+  // here can get frozen mid-download/render once `after()`'s own
+  // callback returns, same failure mode as those issues one level down.
   if (
     contentType === 'document' &&
     message.document?.id &&
     looksLikePdf(message.document.mime_type ?? null, message.document.filename ?? null)
   ) {
-    void (async () => {
-      try {
-        const mediaInfo = await getMediaUrl({ mediaId: message.document!.id, accessToken })
-        const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
-        await generateDocumentPreview({
-          messageId: insertedMessage.id,
-          accountId,
-          pdfBuffer: buffer,
-        })
-      } catch (err) {
-        console.error('[webhook] document preview generation failed:', err)
-      }
-    })()
+    try {
+      const mediaInfo = await getMediaUrl({ mediaId: message.document!.id, accessToken })
+      const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
+      await generateDocumentPreview({
+        messageId: insertedMessage.id,
+        accountId,
+        pdfBuffer: buffer,
+      })
+    } catch (err) {
+      console.error('[webhook] document preview generation failed:', err)
+    }
   }
 
   // Update conversation

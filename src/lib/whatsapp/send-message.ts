@@ -515,13 +515,15 @@ export async function sendMessageToConversation(
   }
 
   // WhatsApp-style PDF preview (thumbnail + page count + size) for an
-  // outbound document — same best-effort, fire-and-forget treatment as
-  // the inbound webhook side (see generate-document-preview.ts): never
-  // awaited, never throws, so a slow/failed render can't affect this
-  // send's response. Every caller of sendMessageToConversation (composer,
-  // public v1 API, Flows send_media) gets it from this one place.
+  // outbound document. Awaited — not fire-and-forget: this function has
+  // no after()-style keep-alive (see isFirstAgentMessage below), so a
+  // detached `void` here risks being frozen mid-download/render once the
+  // response is sent, same reasoning as that automation dispatch. Every
+  // caller of sendMessageToConversation (composer, public v1 API, Flows
+  // send_media) gets it from this one place; generateDocumentPreviewFromUrl
+  // owns its own try/catch and never throws, so this can't fail the send.
   if (messageType === 'document' && mediaUrl && looksLikePdf(null, filename ?? null)) {
-    void generateDocumentPreviewFromUrl({
+    await generateDocumentPreviewFromUrl({
       messageId: messageRecord.id,
       accountId,
       url: mediaUrl,
