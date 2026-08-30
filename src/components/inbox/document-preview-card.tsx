@@ -130,7 +130,7 @@ export function DocumentPreviewCard({
           <div className="min-w-0 flex-1">
             <p
               className={cn(
-                "line-clamp-2 text-base leading-snug font-semibold",
+                "line-clamp-2 text-sm font-semibold leading-snug",
                 isAgent ? "text-primary-foreground" : "text-foreground",
               )}
             >
@@ -138,7 +138,7 @@ export function DocumentPreviewCard({
             </p>
             <p
               className={cn(
-                "truncate text-sm",
+                "truncate text-xs",
                 isAgent ? "text-primary-foreground/80" : "text-muted-foreground",
               )}
             >
