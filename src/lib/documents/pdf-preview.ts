@@ -28,13 +28,21 @@ export interface PdfPreview {
  * docstring above always promised: degrade to no-preview.
  */
 export async function renderPdfPreview(pdfBuffer: Buffer): Promise<PdfPreview | null> {
+  console.log(`[thumb-trace] renderPdfPreview start, bytes=${pdfBuffer.byteLength}`);
   try {
     const { pdf } = await import("pdf-to-img");
+    console.log("[thumb-trace] pdf-to-img module loaded");
     const document = await pdf(pdfBuffer, { scale: 1.5 });
-    if (document.length < 1) return null;
+    console.log(`[thumb-trace] pdf-to-img parsed document, pageCount=${document.length}`);
+    if (document.length < 1) {
+      console.log("[thumb-trace] renderPdfPreview: document.length < 1, returning null");
+      return null;
+    }
     const thumbnail = await document.getPage(1);
+    console.log(`[thumb-trace] renderPdfPreview: got page 1, bytes=${thumbnail.byteLength}`);
     return { pageCount: document.length, thumbnail };
   } catch (error) {
+    console.error("[thumb-trace] renderPdfPreview UNCAUGHT:", error);
     console.error("[documents] PDF preview render failed:", error);
     return null;
   }
