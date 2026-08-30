@@ -7,6 +7,7 @@ import {
   useEffect,
   useMemo,
   KeyboardEvent,
+  type RefObject,
 } from "react";
 import {
   Send,
@@ -120,6 +121,15 @@ interface MessageComposerProps {
    * caller is responsible for only setting this once per conversation.
    */
   initialText?: string;
+  /**
+   * The thread's own scrollable message-list container — passed straight
+   * through to the pre-send PDF viewer (see DocumentFullscreenPreview) so
+   * it confines itself there instead of covering the full viewport.
+   * Optional so this component doesn't hard-depend on a caller that
+   * supplies it; the viewer falls back to a full-screen dialog when
+   * omitted.
+   */
+  pdfPreviewContainerRef?: RefObject<HTMLDivElement | null>;
 }
 
 function formatDuration(seconds: number): string {
@@ -219,6 +229,7 @@ export function MessageComposer({
   replyTo,
   onClearReply,
   initialText,
+  pdfPreviewContainerRef,
 }: MessageComposerProps) {
   const t = useTranslations("Inbox.composer");
 
@@ -1139,6 +1150,7 @@ export function MessageComposer({
           onDiscard={discardDraft}
           onSend={sendDraft}
           t={t}
+          pdfPreviewContainerRef={pdfPreviewContainerRef}
         />
       ) : (
         // `relative` wrapper keeps the mic button mounted (just made
@@ -1447,6 +1459,7 @@ function MediaDraftPreview({
   onDiscard,
   onSend,
   t,
+  pdfPreviewContainerRef,
 }: {
   draft: MediaDraft;
   busy: boolean;
@@ -1455,6 +1468,7 @@ function MediaDraftPreview({
   onDiscard: () => void;
   onSend: () => void;
   t: ReturnType<typeof useTranslations>;
+  pdfPreviewContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   // A staged PDF opens its full-screen page-by-page viewer automatically
   // (see DocumentFullscreenPreview) — this card still renders underneath
@@ -1484,12 +1498,8 @@ function MediaDraftPreview({
           open={pdfPreviewOpen}
           url={draft.mediaUrl}
           filename={draft.filename}
-          caption={draft.caption}
-          busy={busy}
-          readOnly={readOnly}
-          onCaptionChange={onCaptionChange}
-          onConfirm={onSend}
           onCancel={onDiscard}
+          containerRef={pdfPreviewContainerRef}
         />
       )}
       <div className="flex items-start gap-3">

@@ -43,13 +43,35 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  container,
+  overlayClassName,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
+  /**
+   * Renders the portal (overlay + popup) into this element instead of
+   * `<body>` — e.g. to confine a dialog to a sub-region of the page
+   * (a panel, a container) instead of the full viewport. Accepts
+   * anything the underlying Base UI `DialogPortal`'s own `container`
+   * prop does (an element, a ref, or a ShadowRoot). Optional and
+   * purely additive: every existing call site that omits it keeps
+   * portaling into `<body>` exactly as before.
+   */
+  container?: React.ComponentProps<typeof DialogPortal>["container"]
+  /**
+   * className override for the backdrop (forwarded to `DialogOverlay`).
+   * Needed alongside `container`: `DialogOverlay`'s base classes are
+   * `fixed inset-0`, which — being viewport-relative regardless of
+   * where in the DOM the element sits — would still dim the whole page
+   * even once portaled into a scoped container. Pass e.g.
+   * `"absolute inset-0"` together with `container` to confine the
+   * backdrop too. Omit for the default look.
+   */
+  overlayClassName?: string
 }) {
   return (
-    <DialogPortal>
-      <DialogOverlay />
+    <DialogPortal container={container}>
+      <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
