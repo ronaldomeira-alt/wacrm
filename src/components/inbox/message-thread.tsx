@@ -1672,7 +1672,19 @@ export function MessageThread({
           messagesAreaRef's declaration above for why it has to be this
           non-scrolling wrapper and not scrollRef itself. */}
       <div ref={messagesAreaRef} className="relative flex-1 overflow-hidden">
-        <div ref={scrollRef} className="h-full overflow-y-auto px-4 py-4">
+        <div
+          ref={scrollRef}
+          className="h-full overflow-y-auto px-4 py-4"
+          onPointerDown={() => {
+            if (
+              document.activeElement instanceof HTMLElement &&
+              (document.activeElement.tagName === 'TEXTAREA' ||
+                document.activeElement.tagName === 'INPUT')
+            ) {
+              document.activeElement.blur();
+            }
+          }}
+        >
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <div className="border-primary h-5 w-5 animate-spin rounded-full border-2 border-t-transparent" />

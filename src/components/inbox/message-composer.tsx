@@ -409,6 +409,7 @@ export function MessageComposer({
       setSlashToken(null);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
+        textareaRef.current.focus();
       }
     } finally {
       setSending(false);
@@ -1323,6 +1324,8 @@ export function MessageComposer({
               canAct={!readOnly}
               gateReason="enviar mensagens"
               disabled={!text.trim() || sessionExpired || sending}
+              onPointerDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={handleSend}
               className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
             >
