@@ -256,6 +256,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // profile enriches async. Callers that need to branch on
           // profile data gate on `profileLoading` instead.
           fetchProfile(currentUser.id);
+        } else if (process.env.NODE_ENV === "development") {
+          // Local dev fallback user (Ronaldo Meira / Owner) for testing without login
+          const DEV_USER_ID = "9e4fc8ba-cee9-440b-b3b4-e74b52135293";
+          setUser({
+            id: DEV_USER_ID,
+            email: "ronaldomeiracorretor@gmail.com",
+            app_metadata: {},
+            user_metadata: {},
+            aud: "authenticated",
+            created_at: new Date().toISOString(),
+          } as unknown as User);
+          fetchProfile(DEV_USER_ID);
         } else {
           // No user → no profile to load. Flip profileLoading off so
           // pages that gate on it don't wait forever on the logged-out
@@ -282,6 +294,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (currentUser) {
         if (currentUser.id !== lastFetchedUserIdRef.current) {
           fetchProfile(currentUser.id);
+        }
+      } else if (process.env.NODE_ENV === "development") {
+        const DEV_USER_ID = "9e4fc8ba-cee9-440b-b3b4-e74b52135293";
+        setUser({
+          id: DEV_USER_ID,
+          email: "ronaldomeiracorretor@gmail.com",
+          app_metadata: {},
+          user_metadata: {},
+          aud: "authenticated",
+          created_at: new Date().toISOString(),
+        } as unknown as User);
+        if (DEV_USER_ID !== lastFetchedUserIdRef.current) {
+          fetchProfile(DEV_USER_ID);
         }
       } else {
         lastFetchedUserIdRef.current = null;
