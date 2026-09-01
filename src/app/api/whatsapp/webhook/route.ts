@@ -18,6 +18,7 @@ import {
 } from '@/lib/whatsapp/template-webhook'
 import { captureCtwaReferral, type CtwaReferral } from '@/lib/whatsapp/ctwa-referral'
 import { generateDocumentPreview, looksLikePdf } from '@/lib/documents/generate-document-preview'
+import { logError } from '@/lib/observability/log'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -121,7 +122,7 @@ export async function GET(request: Request) {
       .select('id, verify_token')
 
     if (configError || !configs) {
-      console.error('Error fetching configs for verification:', configError)
+      logError('webhook.verification_config_fetch_failed', configError)
       return NextResponse.json(
         { error: 'Verification failed' },
         { status: 403 }
@@ -172,7 +173,7 @@ export async function GET(request: Request) {
       { status: 403 }
     )
   } catch (error) {
-    console.error('Error in GET webhook:', error)
+    logError('webhook.get_failed', error)
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
@@ -219,7 +220,7 @@ export async function POST(request: Request) {
     try {
       await processWebhook(body)
     } catch (error) {
-      console.error('Error processing webhook:', error)
+      logError('webhook.processing_failed', error)
     }
   })
 
@@ -377,7 +378,7 @@ async function handleStatusUpdate(status: {
     .eq('message_id', status.id)
 
   if (msgErr) {
-    console.error('Error updating message status:', msgErr)
+    logError('webhook.status_update_failed', msgErr)
   }
 
   // Webhook fan-out for this status change happens at the END of this
@@ -765,7 +766,7 @@ async function processMessage(
     .single()
 
   if (msgError) {
-    console.error('Error inserting message:', msgError)
+    logError('webhook.insert_message_failed', msgError)
     return
   }
 
@@ -798,7 +799,7 @@ async function processMessage(
         pdfBuffer: buffer,
       })
     } catch (err) {
-      console.error('[webhook] document preview generation failed:', err)
+      logError('webhook.document_preview_failed', err)
     }
   }
 
@@ -814,7 +815,7 @@ async function processMessage(
     .eq('id', conversation.id)
 
   if (convError) {
-    console.error('Error updating conversation:', convError)
+    logError('webhook.conversation_update_failed', convError)
   }
 
   // Custom feature (not part of the upstream wacrm template): notify
@@ -928,7 +929,7 @@ async function processMessage(
         // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
       },
-    }).catch((err) => console.error('[automations] dispatch failed:', err))
+    }).catch((err) => logError('webhook.automation_dispatch_failed', err))
   }
 
   // AI auto-reply. Runs only for plain-text inbound the deterministic
@@ -1185,7 +1186,7 @@ async function findOrCreateContact(
       const raced = await findExistingContact(supabaseAdmin(), accountId, phone)
       if (raced) return { contact: raced, wasCreated: false }
     }
-    console.error('Error creating contact:', createError)
+    logError('webhook.create_contact_failed', createError)
     return null
   }
 
@@ -1219,7 +1220,7 @@ async function findOrCreateConversation(
     .limit(1)
 
   if (findError) {
-    console.error('Error finding conversation:', findError)
+    logError('webhook.find_conversation_failed', findError)
     return null
   }
 
@@ -1256,7 +1257,7 @@ async function findOrCreateConversation(
         return { conversation: raced[0], created: false }
       }
     }
-    console.error('Error creating conversation:', createError)
+    logError('webhook.create_conversation_failed', createError)
     return null
   }
 

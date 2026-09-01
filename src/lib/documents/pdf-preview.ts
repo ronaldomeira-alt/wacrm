@@ -1,3 +1,5 @@
+import { logError } from "@/lib/observability/log";
+
 export interface PdfPreview {
   pageCount: number;
   /** PNG bytes of page 1, rendered at a size close to what the WhatsApp
@@ -47,7 +49,7 @@ async function ensurePdfCanvasPolyfills(): Promise<void> {
     if (!globalThis.ImageData) globalThis.ImageData = canvas.ImageData as unknown as typeof ImageData;
     if (!globalThis.Path2D) globalThis.Path2D = canvas.Path2D as unknown as typeof Path2D;
   } catch (error) {
-    console.error("[documents] failed to import @napi-rs/canvas directly:", error);
+    logError("documents.canvas_polyfill", error);
   }
 }
 
@@ -78,7 +80,7 @@ export async function renderPdfPreview(pdfBuffer: Buffer): Promise<PdfPreview | 
     const thumbnail = await document.getPage(1);
     return { pageCount: document.length, thumbnail };
   } catch (error) {
-    console.error("[documents] PDF preview render failed:", error);
+    logError("documents.pdf_preview_render", error);
     return null;
   }
 }

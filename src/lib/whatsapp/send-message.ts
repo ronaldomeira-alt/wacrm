@@ -48,6 +48,7 @@ import {
 import type { MessageTemplate } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import { generateDocumentPreviewFromUrl, looksLikePdf } from '@/lib/documents/generate-document-preview';
+import { logError } from '@/lib/observability/log';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -440,8 +441,7 @@ export async function sendMessageToConversation(
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
     if (err instanceof MetaApiError) {
-      console.error('[send-message] Meta send failed for all variants:', {
-        message: err.message,
+      logError('send-message.meta_send_failed', err, {
         httpStatus: err.httpStatus,
         code: err.code,
         errorSubcode: err.errorSubcode,
@@ -449,7 +449,7 @@ export async function sendMessageToConversation(
         fbtraceId: err.fbtraceId,
       });
     } else {
-      console.error('[send-message] Meta send failed for all variants:', message);
+      logError('send-message.meta_send_failed', err);
     }
     throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
   }
@@ -506,7 +506,7 @@ export async function sendMessageToConversation(
     .single();
 
   if (msgError) {
-    console.error('[send-message] error inserting sent message:', msgError);
+    logError('send-message.insert_failed', msgError);
     throw new SendMessageError(
       'db_error',
       `Message sent to Meta but failed to save to DB: ${msgError.message}`,
@@ -544,7 +544,7 @@ export async function sendMessageToConversation(
         message_text: contentText ?? undefined,
         conversation_id: conversationId,
       },
-    }).catch((err) => console.error('[automations] first_agent_message dispatch failed:', err));
+    }).catch((err) => logError('send-message.first_agent_message_dispatch_failed', err));
   }
 
   // Best-effort — an agent reply is a genuine "empresa responde"
@@ -571,7 +571,7 @@ export async function sendMessageToConversation(
         .eq('id', conversationId)
         .is('assigned_agent_id', null);
     } catch (err) {
-      console.error('[send-message] first-responder assignment failed:', err);
+      logError('send-message.first_responder_assignment_failed', err);
     }
   }
 
@@ -603,13 +603,10 @@ export async function sendMessageToConversation(
       .eq('contact_id', contact.id)
       .eq('status', 'active');
     if (pauseErr) {
-      console.error('[flows] pause-on-agent-send failed:', pauseErr.message);
+      logError('send-message.pause_on_agent_send_failed', pauseErr);
     }
   } catch (err) {
-    console.error(
-      '[flows] pause-on-agent-send threw:',
-      err instanceof Error ? err.message : err
-    );
+    logError('send-message.pause_on_agent_send_threw', err);
   }
 
   return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
