@@ -187,6 +187,10 @@ interface MessageRowProps {
   onDelete: (message: Message) => Promise<void> | void;
   onTranscribe: (message: Message) => Promise<void> | void;
   onToggleReaction: (messageId: string, emoji: string) => void;
+  /** Has the agent explicitly asked to see this message's transcript
+   *  (via "Transcrever")? See MessageBubble's own doc for why the
+   *  background-transcribed `transcript_text` isn't shown on its own. */
+  transcriptRevealed: boolean;
 }
 
 /**
@@ -207,6 +211,7 @@ const MessageRow = memo(function MessageRow({
   onDelete,
   onTranscribe,
   onToggleReaction,
+  transcriptRevealed,
 }: MessageRowProps) {
   return (
     <MessageActions
@@ -223,6 +228,7 @@ const MessageRow = memo(function MessageRow({
           reactions={reactions}
           currentUserId={currentUserId}
           onToggleReaction={onToggleReaction}
+          transcriptRevealed={transcriptRevealed}
           cornerAction={cornerAction}
         />
       )}
@@ -414,6 +420,12 @@ export function MessageThread({
   }, [conversation?.id]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
+  // Message ids whose transcript the agent has explicitly revealed via
+  // "Transcrever" — see handleTranscribe below and MessageBubble's own
+  // doc comment for why this can't just be `!!message.transcript_text`.
+  const [revealedTranscriptIds, setRevealedTranscriptIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
   // The 3 dialogs opened from the header's "⋮" menu — Transfer stays a
   // DropdownMenuSub (it's just the old Assign dropdown's content, one
@@ -994,6 +1006,16 @@ export function MessageThread({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to transcribe');
       onUpdateMessage(msg.id, { transcript_text: data.transcript as string });
+      // The text itself may already have existed (background job) — it's
+      // this explicit reveal, not the fetch, that's allowed to show it in
+      // the bubble. Local-only and never cleared, so it survives realtime
+      // updates to this message and persists for the rest of the session.
+      setRevealedTranscriptIds((prev) => {
+        if (prev.has(msg.id)) return prev;
+        const next = new Set(prev);
+        next.add(msg.id);
+        return next;
+      });
     },
     [onUpdateMessage]
   );
@@ -1772,6 +1794,7 @@ export function MessageThread({
                           onDelete={handleDeleteMessage}
                           onTranscribe={handleTranscribe}
                           onToggleReaction={handleReactionToggle}
+                          transcriptRevealed={revealedTranscriptIds.has(msg.id)}
                         />
                       );
                     })}

@@ -42,6 +42,13 @@ interface MessageBubbleProps {
    */
   onToggleReaction?: (messageId: string, emoji: string) => void;
   /**
+   * True once the agent has explicitly revealed this message's
+   * transcript via the "Transcrever" action — see the doc on
+   * `MessageContent`'s own `transcriptRevealed` prop for why this can't
+   * just be inferred from `message.transcript_text` existing.
+   */
+  transcriptRevealed?: boolean;
+  /**
    * The message-actions chevron trigger + dropdown, rendered by
    * `<MessageActions>` but placed here (inside this bubble's own
    * `relative rounded-2xl` box) so it can anchor to that box's actual
@@ -231,12 +238,19 @@ function MessageContent({
   isAgent,
   time,
   status,
+  transcriptRevealed,
 }: {
   message: Message;
   t: ReturnType<typeof useTranslations>;
   isAgent: boolean;
   time: string;
   status: ReactNode;
+  /** True once the agent has explicitly asked to see this customer voice
+   *  note's transcript (the "Transcrever" message action) — the text
+   *  itself is transcribed in the background for AI context regardless
+   *  (see the webhook), so its mere presence on `message.transcript_text`
+   *  is not permission to show it unprompted. */
+  transcriptRevealed?: boolean;
 }) {
   switch (message.content_type) {
     case "text":
@@ -293,14 +307,17 @@ function MessageContent({
             playLabel={t("audioPlay")}
             pauseLabel={t("audioPause")}
           />
-          {/* Transcript is only ever populated for the customer's own
-              audio (see the "Transcrever" message action + the webhook's
-              background job) — `!isAgent` here is belt-and-suspenders,
-              not the real gate, in case that invariant is ever violated
-              upstream. Deliberately styled far quieter than a real
-              caption (italic, muted, prefixed) so it never reads as
-              something the customer actually typed. */}
-          {!isAgent && message.transcript_text && (
+          {/* transcript_text is populated for every customer voice note by
+              the webhook's background job (so the AI has context), but it
+              must only be SHOWN once the agent explicitly asks via the
+              "Transcrever" message action — hence the separate
+              `transcriptRevealed` gate, not just checking the text exists.
+              `!isAgent` here is belt-and-suspenders, not the real gate, in
+              case that invariant is ever violated upstream. Deliberately
+              styled far quieter than a real caption (italic, muted,
+              prefixed) so it never reads as something the customer
+              actually typed. */}
+          {!isAgent && transcriptRevealed && message.transcript_text && (
             <p className="mt-1 select-text whitespace-pre-wrap break-words text-xs italic text-muted-foreground">
               {t("transcriptLabel")} {linkifyText(message.transcript_text)}
             </p>
@@ -428,6 +445,7 @@ function MessageBubbleComponent({
   reactions,
   currentUserId,
   onToggleReaction,
+  transcriptRevealed,
   cornerAction,
 }: MessageBubbleProps) {
   const t = useTranslations("Inbox.bubble");
@@ -571,6 +589,7 @@ function MessageBubbleComponent({
               isAgent={isAgent}
               time={time}
               status={isAgent ? <StatusIcon status={message.status} /> : null}
+              transcriptRevealed={transcriptRevealed}
             />
             {!hasDocumentPreview && !hasAudioPlayer && (
               <div
