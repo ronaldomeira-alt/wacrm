@@ -132,6 +132,18 @@ const nextConfig: NextConfig = {
    * client-side viewer, so npm keeps 5.6 under
    * `pdf-to-img/node_modules/` (pinned in package-lock.json) and
    * that is the copy the server-side thumbnail path actually loads.
+   *
+   * `node_modules/@swc/helpers/esm/**` covers the same class of miss,
+   * introduced by pinning `@swc/helpers` to ^0.5.17 via `overrides`
+   * (see package.json) to fix `npm ci` in CI. nft only traced the
+   * `cjs/` half of the package into `.next/standalone` — `esm/` was
+   * left out entirely — while Next's own bundled code (via
+   * `require-hook.js`) does a plain `require("@swc/helpers/esm/...")`
+   * at runtime, so production crashed on every request with `Cannot
+   * find module '.../@swc/helpers/esm/_interop_require_default.js'`
+   * (incident 2026-09-02, ~1h of downtime). Verified missing by
+   * inspecting `.next/standalone/node_modules/@swc/helpers/` after a
+   * local `npm run build`: only `cjs/` was present.
    */
   outputFileTracingIncludes: {
     "/*": [
@@ -140,6 +152,7 @@ const nextConfig: NextConfig = {
       "node_modules/pdf-to-img/node_modules/pdfjs-dist/cmaps/**/*",
       "node_modules/pdf-to-img/node_modules/pdfjs-dist/wasm/**/*",
       "node_modules/pdf-to-img/node_modules/pdfjs-dist/iccs/**/*",
+      "node_modules/@swc/helpers/esm/**/*",
     ],
   },
 
