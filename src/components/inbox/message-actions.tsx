@@ -1,18 +1,14 @@
 "use client";
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, Copy, CornerUpLeft, FileText, Forward, Loader2, SmilePlus, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, CornerUpLeft, FileText, Forward, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -130,20 +126,28 @@ interface MessageActionsProps {
    * onto the message so the bubble can render it.
    */
   onTranscribe?: (message: Message) => Promise<void> | void;
-  children: ReactNode;
+  /**
+   * Render-prop instead of a plain node: the chevron trigger + dropdown
+   * menu (`cornerAction`) needs to live *inside* `<MessageBubble>`'s own
+   * bubble box (its `relative rounded-2xl` div) so it can be positioned
+   * at that box's actual top-right corner — the bubble hugs its content
+   * width, so anchoring from this wrapper (which spans up to 75% of the
+   * row) would misplace it for any bubble narrower than that cap.
+   */
+  children: (cornerAction: ReactNode) => ReactNode;
 }
 
 /**
- * Hover toolbar + right-click/long-press context menu wrapper around a
- * `<MessageBubble>`. The bubble itself stays a pure presenter — this
- * component owns the action surface so the bubble's render path is
- * unaffected when nothing is open.
+ * Right-click/long-press context menu wrapper around a `<MessageBubble>`.
+ * The bubble itself stays a pure presenter — this component owns the
+ * action surface (state + handlers) and hands the bubble a `cornerAction`
+ * node (chevron trigger + dropdown) to render in its own top-right corner.
  *
- * Two ways in, same menu: hovering (desktop) reveals a small chevron
- * next to the reaction picker; clicking it opens the context menu. A
- * right-click (desktop) or long-press (mobile — the browser fires
- * `contextmenu` for that natively) opens the exact same menu directly,
- * anchored to the bubble, without needing the hover step first.
+ * Two ways in, same menu: a small chevron sits in the bubble's corner at
+ * all times (per WhatsApp/iMessage-style low-key affordance) — clicking/
+ * tapping it opens the menu. A right-click (desktop) or long-press
+ * (mobile — the browser fires `contextmenu` for that natively) opens the
+ * exact same controlled menu directly, without needing the chevron.
  */
 function MessageActionsComponent({
   message,
@@ -156,11 +160,8 @@ function MessageActionsComponent({
 }: MessageActionsProps) {
   const t = useTranslations("Inbox.actions");
 
-  // Touch devices have no hover. Long-press fires `contextmenu`; we capture
-  // it, suppress the native menu, and pin the toolbar row open until the
-  // user interacts elsewhere (mirrors the reaction-picker's own reveal).
-  const [touchOpen, setTouchOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // Long-press fires `contextmenu` on touch devices; we capture it and
+  // open the same controlled menu directly (see handleContextMenu below).
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -389,13 +390,104 @@ function MessageActionsComponent({
 
   const handlePickEmoji = (emoji: string) => {
     onReact(message.id, emoji);
-    setPickerOpen(false);
-    setTouchOpen(false);
+    setMenuOpen(false);
   };
 
-  // Row alignment lives here (not in MessageBubble) so the `group/actions`
-  // hover region matches the bubble's content width — hovering empty space
-  // in the row no longer reveals the toolbar.
+  // The corner trigger + its menu — handed to `children()` so
+  // `<MessageBubble>` can render it inside its own bubble box, anchored to
+  // that box's actual top-right corner (see the `children` prop doc).
+  const cornerAction = (
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      {/* Always present at low opacity — "part of the bubble" rather than
+          a hover-revealed control — brightening on hover/focus and while
+          the menu is open, where it also rotates 180°. `h-8 w-8` keeps a
+          real 32px tap target around the smaller 15px glyph. */}
+      <DropdownMenuTrigger
+        aria-label={t("openMenu")}
+        className={cn(
+          "absolute right-2.5 top-2.5 z-10 flex h-8 w-8 items-center justify-center rounded-full opacity-40 outline-none transition-[opacity,transform] duration-150 ease-out hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-current data-popup-open:rotate-180 data-popup-open:opacity-100",
+          isAgent ? "text-primary-foreground" : "text-muted-foreground",
+        )}
+      >
+        <ChevronDown className="h-[15px] w-[15px]" strokeWidth={2.25} />
+      </DropdownMenuTrigger>
+      {/* Dark, glass-like surface regardless of app theme (Apple
+          Messages/Linear/Arc-style elevated menu) — always anchored so it
+          grows from the chevron, i.e. from the bubble's own top-right
+          corner, never centered or floating away from the message. */}
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="w-56 rounded-2xl border-none bg-zinc-900/95 p-1.5 text-zinc-100 shadow-xl ring-1 ring-white/10 backdrop-blur-md"
+      >
+        <div className="flex items-center justify-between gap-0.5 px-1 pb-1.5">
+          {QUICK_EMOJIS.map((e) => (
+            <button
+              key={e}
+              type="button"
+              onClick={() => handlePickEmoji(e)}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none transition-transform hover:scale-125 hover:bg-white/10"
+              aria-label={t("reactWith", { emoji: e })}
+            >
+              {e}
+            </button>
+          ))}
+        </div>
+        <DropdownMenuSeparator className="-mx-1.5 bg-white/10" />
+        <DropdownMenuItem
+          className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
+          onClick={() => onReply(message)}
+        >
+          <CornerUpLeft className="text-zinc-400" />
+          {t("reply")}
+        </DropdownMenuItem>
+        {canForward && (
+          <DropdownMenuItem
+            className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
+            onClick={() => setForwardOpen(true)}
+          >
+            <Forward className="text-zinc-400" />
+            {t("forward")}
+          </DropdownMenuItem>
+        )}
+        {canCopy && (
+          <DropdownMenuItem
+            className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
+            onClick={handleCopy}
+          >
+            <Copy className="text-zinc-400" />
+            {t("copyText")}
+          </DropdownMenuItem>
+        )}
+        {canTranscribe && (
+          // Amber — same tone already used for dropdown items elsewhere
+          // (e.g. "Pendente" in message-thread.tsx's conversation menu),
+          // not a new color.
+          <DropdownMenuItem
+            className="h-11 rounded-xl px-2.5 text-[13px] text-amber-400 focus:bg-amber-400/10 focus:text-amber-400"
+            onClick={handleTranscribe}
+            disabled={transcribing}
+          >
+            {transcribing ? <Loader2 className="animate-spin" /> : <FileText />}
+            {t("transcribe")}
+          </DropdownMenuItem>
+        )}
+        {/* WhatsApp only lets you delete messages you sent — never
+            the other party's. */}
+        {canDelete && (
+          <DropdownMenuItem
+            className="h-11 rounded-xl px-2.5 text-[13px]"
+            variant="destructive"
+            onClick={() => setDeleteConfirmOpen(true)}
+          >
+            <Trash2 />
+            {t("deleteMessage")}
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
   return (
     <div
       className={cn(
@@ -403,7 +495,6 @@ function MessageActionsComponent({
         isAgent ? "justify-end" : "justify-start",
       )}
       onContextMenu={handleContextMenu}
-      onBlur={() => setTouchOpen(false)}
     >
       {/* `min-w-0` lets this flex child actually respect the 75% cap.
        *  Default `min-width: auto` lets content (a long quote preview,
@@ -418,8 +509,8 @@ function MessageActionsComponent({
        *  deliberately: agents can select/copy a snippet of a message
        *  body, on both desktop (drag + Ctrl/Cmd-C) and mobile (long-
        *  press → native handles + callout). This menu stays reachable
-       *  via desktop right-click and the hover chevron either way. */}
-      <div className="group/actions relative min-w-0 max-w-[75%]">
+       *  via desktop right-click and the corner chevron either way. */}
+      <div className="relative min-w-0 max-w-[75%]">
         {/* Swipe-to-reply indicator — fades/scales in as the bubble is
             dragged right; purely cosmetic, driven imperatively by the
             touch handlers above (opacity/transform only, never a
@@ -437,105 +528,8 @@ function MessageActionsComponent({
           <CornerUpLeft className="h-3.5 w-3.5" />
         </div>
         <div ref={swipeContentRef} className="relative z-[1]">
-          {children}
+          {children(cornerAction)}
         </div>
-      <div
-        data-touch-open={touchOpen || pickerOpen || menuOpen ? "true" : undefined}
-        className={cn(
-          "absolute -top-3 z-10 flex h-7 items-center gap-0.5 rounded-full border border-border bg-popover/95 px-1 shadow-md backdrop-blur-sm transition-opacity",
-          "opacity-0 group-hover/actions:opacity-100 group-focus-within/actions:opacity-100",
-          "data-[touch-open=true]:opacity-100",
-          // Touch/PWA has no hover, and long-press now yields to native
-          // text selection (see the comment on this row's parent div) —
-          // so hover is no longer a reachable reveal path there at all.
-          // Same touch-detection media query pipeline-board.tsx already
-          // uses elsewhere in this codebase; always-on here instead of
-          // hover-gated is the mobile equivalent of the desktop hover
-          // affordance, not a new interaction.
-          "[@media(hover:none)]:opacity-100",
-          isAgent ? "right-3" : "left-3",
-        )}
-      >
-        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-          <PopoverTrigger
-            className="flex h-5 w-5 items-center justify-center rounded-full text-popover-foreground hover:bg-muted hover:text-foreground"
-            aria-label={t("react")}
-          >
-            <SmilePlus className="h-3.5 w-3.5" />
-          </PopoverTrigger>
-          <PopoverContent
-            className="flex w-auto flex-row gap-1 p-1.5"
-            sideOffset={6}
-          >
-            {QUICK_EMOJIS.map((e) => (
-              <button
-                key={e}
-                type="button"
-                onClick={() => handlePickEmoji(e)}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none transition-transform hover:scale-125 hover:bg-muted"
-                aria-label={t("reactWith", { emoji: e })}
-              >
-                {e}
-              </button>
-            ))}
-          </PopoverContent>
-        </Popover>
-
-        {/* Context menu trigger — the small chevron is the discoverable
-            desktop affordance; onContextMenu on the row above (right-
-            click / long-press) opens this same controlled menu without
-            it, jumping straight past the hover step. */}
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-          <DropdownMenuTrigger
-            className="flex h-5 w-5 items-center justify-center rounded-full text-popover-foreground hover:bg-muted hover:text-foreground"
-            aria-label={t("openMenu")}
-          >
-            <ChevronDown className="h-3.5 w-3.5" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align={isAgent ? "end" : "start"}>
-            <DropdownMenuItem onClick={() => onReply(message)}>
-              <CornerUpLeft />
-              {t("reply")}
-            </DropdownMenuItem>
-            {canForward && (
-              <DropdownMenuItem onClick={() => setForwardOpen(true)}>
-                <Forward />
-                {t("forward")}
-              </DropdownMenuItem>
-            )}
-            {canCopy && (
-              <DropdownMenuItem onClick={handleCopy}>
-                <Copy />
-                {t("copyText")}
-              </DropdownMenuItem>
-            )}
-            {canTranscribe && (
-              // Amber — same tone already used for dropdown items elsewhere
-              // (e.g. "Pendente" in message-thread.tsx's conversation menu),
-              // not a new color.
-              <DropdownMenuItem
-                onClick={handleTranscribe}
-                disabled={transcribing}
-                className="text-amber-400 focus:text-amber-400"
-              >
-                {transcribing ? <Loader2 className="animate-spin" /> : <FileText />}
-                {t("transcribe")}
-              </DropdownMenuItem>
-            )}
-            {/* WhatsApp only lets you delete messages you sent — never
-                the other party's. */}
-            {canDelete && (
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={() => setDeleteConfirmOpen(true)}
-              >
-                <Trash2 />
-                {t("deleteMessage")}
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
       </div>
 
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>

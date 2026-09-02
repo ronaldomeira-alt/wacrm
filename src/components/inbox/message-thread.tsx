@@ -216,13 +216,16 @@ const MessageRow = memo(function MessageRow({
       onDelete={onDelete}
       onTranscribe={onTranscribe}
     >
-      <MessageBubble
-        message={message}
-        reply={reply}
-        reactions={reactions}
-        currentUserId={currentUserId}
-        onToggleReaction={onToggleReaction}
-      />
+      {(cornerAction) => (
+        <MessageBubble
+          message={message}
+          reply={reply}
+          reactions={reactions}
+          currentUserId={currentUserId}
+          onToggleReaction={onToggleReaction}
+          cornerAction={cornerAction}
+        />
+      )}
     </MessageActions>
   );
 });

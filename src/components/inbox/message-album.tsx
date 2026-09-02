@@ -264,6 +264,7 @@ function MessageAlbumComponent({
         onDelete={onDelete}
         forwardMessages={messages}
       >
+        {(cornerAction) => (
         <div className="flex flex-col" style={{ alignItems: isAgent ? "flex-end" : "flex-start" }}>
           <div
             className={cn(
@@ -303,6 +304,11 @@ function MessageAlbumComponent({
                 <Check className="h-3 w-3" />
               </div>
             )}
+            {/* Hidden during multi-select — it would sit on top of the
+                selected checkmark badge above, and the selection action
+                bar below already covers reply/forward/delete for that
+                mode. */}
+            {!selected && cornerAction}
           </div>
 
           {/* Selection action bar — reuses the exact same reply/forward/
@@ -358,6 +364,7 @@ function MessageAlbumComponent({
             />
           )}
         </div>
+        )}
       </MessageActions>
 
       <MediaLightbox

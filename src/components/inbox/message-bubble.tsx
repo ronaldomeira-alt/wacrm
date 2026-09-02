@@ -41,6 +41,14 @@ interface MessageBubbleProps {
    * closure — required for `memo()` below to actually skip re-renders.
    */
   onToggleReaction?: (messageId: string, emoji: string) => void;
+  /**
+   * The message-actions chevron trigger + dropdown, rendered by
+   * `<MessageActions>` but placed here (inside this bubble's own
+   * `relative rounded-2xl` box) so it can anchor to that box's actual
+   * top-right corner regardless of how narrow the bubble's content makes
+   * it — see the `children` prop doc on `MessageActionsProps`.
+   */
+  cornerAction?: ReactNode;
 }
 
 function StatusIcon({
@@ -420,6 +428,7 @@ function MessageBubbleComponent({
   reactions,
   currentUserId,
   onToggleReaction,
+  cornerAction,
 }: MessageBubbleProps) {
   const t = useTranslations("Inbox.bubble");
 
@@ -589,6 +598,7 @@ function MessageBubbleComponent({
             )}
           </>
         )}
+        {cornerAction}
       </div>
       {reactions && reactions.length > 0 && onToggleReaction && (
         <MessageReactions
