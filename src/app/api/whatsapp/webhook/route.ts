@@ -816,13 +816,18 @@ async function processMessage(
   // doc comment for why this reuses the embeddings key, not the main
   // chat key, and why it's silently a no-op with no key configured.
   let audioTranscript: string | null = null
-  if (contentType === 'audio' && mediaUrl) {
+  if (contentType === 'audio' && message.audio?.id) {
     try {
+      // media_url stores our own internal proxy path (auth-cookie-gated,
+      // relative), not a fetchable URL — download the real bytes from
+      // Meta directly, same as the PDF preview block above.
+      const mediaInfo = await getMediaUrl({ mediaId: message.audio.id, accessToken })
+      const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
       audioTranscript = await transcribeInboundAudioMessage(
         supabaseAdmin(),
         accountId,
         insertedMessage.id,
-        mediaUrl,
+        buffer,
       )
     } catch (err) {
       logError('webhook.audio_transcription_failed', err)

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
-import { transcribeInboundAudioMessage } from '@/lib/ai/transcribe-audio'
+import { transcribeInboundAudioMessage, resolveWhatsAppAccessToken } from '@/lib/ai/transcribe-audio'
+import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { AiError } from '@/lib/ai/types'
 
@@ -67,6 +68,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'This voice note has no audio to transcribe.' }, { status: 400 })
     }
 
+    // message.media_url is our own internal proxy path
+    // (/api/whatsapp/media/{mediaId} — see verifyAndBuildUrl in
+    // whatsapp/webhook/route.ts), not a fetchable URL: it needs a
+    // browser session cookie, which this server-side route never has.
+    // Pull the mediaId back out of that fixed-shape path and download
+    // the real bytes from Meta directly instead, same as the webhook.
+    const mediaId = message.media_url.split('/').pop()
+    if (!mediaId) {
+      return NextResponse.json({ error: 'This voice note has no audio to transcribe.' }, { status: 400 })
+    }
+    const accessToken = await resolveWhatsAppAccessToken(supabaseAdmin(), accountId)
+    const mediaInfo = await getMediaUrl({ mediaId, accessToken })
+    const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
+
     // Mutation goes through the admin client, same as the webhook's own
     // call to this function — the RLS-scoped lookup above already
     // proved the caller may see this message; the write itself doesn't
@@ -76,7 +91,7 @@ export async function POST(request: Request) {
       supabaseAdmin(),
       accountId,
       messageId,
-      message.media_url,
+      buffer,
     )
     if (!transcript) {
       return NextResponse.json(
