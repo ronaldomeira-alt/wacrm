@@ -365,6 +365,23 @@ function MessageActionsComponent({
   const canTranscribe = !isAgent && message.content_type === "audio";
   const [transcribing, setTranscribing] = useState(false);
 
+  // The corner trigger's own inset/size isn't one universal constant — it's
+  // keyed off content type because different content shapes leave a
+  // different amount of clear room in the bubble's top-right corner:
+  //   - Most content (text, captions, location, template, framed media…)
+  //     has a tall enough bubble that a small top inset alone already
+  //     reads as "a detail of the top corner" — no need to shrink the hit
+  //     target too.
+  //   - Audio is the one shape where content starts almost flush with the
+  //     bubble's top edge (AudioMessagePlayer's waveform band is only
+  //     given a couple pixels of headroom, see its own `mt-*` comment) —
+  //     a smaller trigger, inset a bit further down, is what actually
+  //     clears the waveform instead of sitting on top of it.
+  // One switch here beats duplicating a `cn(...)` ternary at each call
+  // site, and adding another content type later is a one-line addition.
+  const isAudioContent = message.content_type === "audio" && !!message.media_url;
+  const cornerTriggerSizeClass = isAudioContent ? "top-2 h-6 w-6" : "top-1.5 h-8 w-8";
+
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     setMenuOpen(true);
@@ -431,11 +448,15 @@ function MessageActionsComponent({
       <DropdownMenuTrigger
         aria-label={t("openMenu")}
         className={cn(
-          "absolute right-2.5 top-2.5 z-10 flex h-8 w-8 items-center justify-center rounded-full opacity-40 outline-none transition-[opacity,transform] duration-150 ease-out hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-current data-popup-open:rotate-180 data-popup-open:opacity-100",
+          "absolute right-2.5 z-10 flex items-center justify-center rounded-full opacity-40 outline-none transition-[opacity,transform] duration-150 ease-out hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-current data-popup-open:rotate-180 data-popup-open:opacity-100",
+          cornerTriggerSizeClass,
           isAgent ? "text-primary-foreground" : "text-muted-foreground",
         )}
       >
-        <ChevronDown className="h-[15px] w-[15px]" strokeWidth={2.25} />
+        <ChevronDown
+          className={isAudioContent ? "h-3 w-3" : "h-[15px] w-[15px]"}
+          strokeWidth={2.25}
+        />
       </DropdownMenuTrigger>
       {/* Dark, glass-like surface regardless of app theme (Apple
           Messages/Linear/Arc-style elevated menu) — always anchored so it

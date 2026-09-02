@@ -162,7 +162,13 @@ export function AudioMessagePlayer({
   const activeBar = isAgent ? "bg-primary-foreground" : "bg-primary";
 
   return (
-    <div className="flex w-52 items-center gap-2">
+    // `mt-2` — reserves clearance in the bubble's top-right corner for
+    // message-actions.tsx's corner chevron. Without it the waveform band
+    // below starts almost flush with the bubble's own top edge, leaving
+    // no room for even a small trigger without sitting on top of the
+    // bars — same idea as the `pr-8` reserved for wrapped text in
+    // message-bubble.tsx, just on the top edge instead of the right one.
+    <div className="mt-2 flex w-52 items-center gap-2">
       <audio ref={audioRef} src={src ?? undefined} preload="metadata" className="hidden" />
       <button
         type="button"
