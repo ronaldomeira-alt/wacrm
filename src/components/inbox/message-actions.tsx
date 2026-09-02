@@ -502,7 +502,14 @@ function MessageActionsComponent({
               </DropdownMenuItem>
             )}
             {canTranscribe && (
-              <DropdownMenuItem onClick={handleTranscribe} disabled={transcribing}>
+              // Amber — same tone already used for dropdown items elsewhere
+              // (e.g. "Pendente" in message-thread.tsx's conversation menu),
+              // not a new color.
+              <DropdownMenuItem
+                onClick={handleTranscribe}
+                disabled={transcribing}
+                className="text-amber-400 focus:text-amber-400"
+              >
                 {transcribing ? <Loader2 className="animate-spin" /> : <FileText />}
                 {t("transcribe")}
               </DropdownMenuItem>
