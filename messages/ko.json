@@ -488,7 +488,13 @@
       "copied": "복사됨",
       "copyFailed": "복사 실패",
       "transcribe": "텍스트로 변환",
-      "transcribeFailed": "오디오 변환 실패"
+      "transcribeFailed": "오디오 변환 실패",
+      "moreReactions": "반응 더 보기",
+      "chooseReaction": "반응 선택",
+      "searchReaction": "반응 검색...",
+      "loadingEmojis": "이모지 불러오는 중…",
+      "noEmojiFound": "이모지를 찾을 수 없습니다",
+      "back": "뒤로"
     },
     "forward": {
       "title": "메시지 전달",

@@ -570,3 +570,24 @@ html[data-theme="rose"] {
     }
   }
 }
+
+/* frimousse (message-actions.tsx's "more reactions" full emoji picker) is
+   unstyled by design — its docs' own recommended path is targeting these
+   `[frimousse-*]` attribute selectors directly, since they aren't classes
+   Tailwind utilities can reach via `className`. Kept as its own layer
+   (not nested in `base`) so it composes predictably next to the
+   Tailwind classes already put on the same elements in message-actions.tsx. */
+@layer components {
+  [frimousse-emoji] {
+    @apply flex aspect-square w-full cursor-default items-center justify-center rounded-lg text-lg outline-none;
+  }
+  [frimousse-emoji][data-active] {
+    @apply bg-white/10;
+  }
+  [frimousse-category-header] {
+    @apply bg-zinc-900/95 px-1 py-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500;
+  }
+  [frimousse-search] {
+    @apply w-full rounded-lg border-none bg-white/5 px-2.5 py-1.5 text-[13px] text-zinc-100 outline-none placeholder:text-zinc-500;
+  }
+}

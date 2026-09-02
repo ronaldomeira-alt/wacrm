@@ -241,7 +241,7 @@ function MessageContent({
   switch (message.content_type) {
     case "text":
       return (
-        <p className="select-text whitespace-pre-wrap break-words text-sm">
+        <p className="select-text whitespace-pre-wrap break-words pr-8 text-sm">
           {linkifyText(message.content_text)}
         </p>
       );
@@ -255,7 +255,7 @@ function MessageContent({
             <MediaUnavailable label={t("photo")} t={t} />
           )}
           {message.content_text && (
-            <p className="mt-1 select-text whitespace-pre-wrap break-words text-sm">
+            <p className="mt-1 select-text whitespace-pre-wrap break-words pr-8 text-sm">
               {linkifyText(message.content_text)}
             </p>
           )}
@@ -275,7 +275,7 @@ function MessageContent({
             <MediaUnavailable label={t("video")} t={t} />
           )}
           {message.content_text && (
-            <p className="mt-1 select-text whitespace-pre-wrap break-words text-sm">
+            <p className="mt-1 select-text whitespace-pre-wrap break-words pr-8 text-sm">
               {linkifyText(message.content_text)}
             </p>
           )}
@@ -363,7 +363,7 @@ function MessageContent({
             {t("template")}
           </span>
           {message.content_text && (
-            <p className="mt-1 select-text whitespace-pre-wrap break-words text-sm">
+            <p className="mt-1 select-text whitespace-pre-wrap break-words pr-8 text-sm">
               {linkifyText(message.content_text)}
             </p>
           )}
@@ -372,7 +372,7 @@ function MessageContent({
 
     case "location":
       return (
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 pr-8 text-sm">
           <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="select-text">
             {linkifyText(message.content_text || t("locationShared"))}
@@ -400,14 +400,14 @@ function MessageContent({
               <CornerDownLeft className="h-3 w-3" />
               {t("buttonReply")}
             </span>
-            <p className="select-text whitespace-pre-wrap break-words text-sm">
+            <p className="select-text whitespace-pre-wrap break-words pr-8 text-sm">
               {linkifyText(message.content_text || t("interactiveReply"))}
             </p>
           </div>
         );
       }
       return (
-        <p className="select-text whitespace-pre-wrap break-words text-sm">
+        <p className="select-text whitespace-pre-wrap break-words pr-8 text-sm">
           {linkifyText(message.content_text || t("interactiveReply"))}
         </p>
       );
@@ -415,7 +415,7 @@ function MessageContent({
 
     default:
       return (
-        <p className="select-text whitespace-pre-wrap break-words text-sm">
+        <p className="select-text whitespace-pre-wrap break-words pr-8 text-sm">
           {linkifyText(message.content_text || t("unsupported"))}
         </p>
       );

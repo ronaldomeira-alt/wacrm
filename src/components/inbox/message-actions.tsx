@@ -1,7 +1,18 @@
 "use client";
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, Copy, CornerUpLeft, FileText, Forward, Loader2, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  Copy,
+  CornerUpLeft,
+  FileText,
+  Forward,
+  Loader2,
+  MoreHorizontal,
+  Trash2,
+} from "lucide-react";
+import { EmojiPicker } from "frimousse";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -24,9 +35,11 @@ import type { Message } from "@/types";
 import { useTranslations } from "next-intl";
 import { ForwardMessageDialog } from "./forward-message-dialog";
 
-// WhatsApp's own quick-reaction bar starts with these six. Picking the same
-// set keeps the affordance familiar without pulling in a 300KB emoji library.
-const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+// WhatsApp's own quick-reaction bar starts with these. Kept to the 5 most
+// commonly used so a 6th slot is free for "more reactions" (see
+// `emojiPickerOpen` below) — same shape as WhatsApp/Slack/Discord's own
+// quick-bar-plus-full-picker pattern.
+const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢"];
 
 // Content types the "Copiar"/"Apagar"/"Encaminhar" menu items apply to —
 // mirrors the equivalent gates in the composer and, for forward, the
@@ -163,6 +176,13 @@ function MessageActionsComponent({
   // Long-press fires `contextmenu` on touch devices; we capture it and
   // open the same controlled menu directly (see handleContextMenu below).
   const [menuOpen, setMenuOpen] = useState(false);
+  // Swaps the menu's content in place (quick reactions + actions →
+  // search + full emoji grid) instead of opening a second nested
+  // floating layer — a Menu-within-a-Menu popover risks the outer one
+  // treating focus moving into the nested one as an outside interaction
+  // and closing itself. Reset whenever the menu itself closes, so it
+  // always reopens on the default view.
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [forwardOpen, setForwardOpen] = useState(false);
@@ -397,7 +417,13 @@ function MessageActionsComponent({
   // `<MessageBubble>` can render it inside its own bubble box, anchored to
   // that box's actual top-right corner (see the `children` prop doc).
   const cornerAction = (
-    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+    <DropdownMenu
+      open={menuOpen}
+      onOpenChange={(open) => {
+        setMenuOpen(open);
+        if (!open) setEmojiPickerOpen(false);
+      }}
+    >
       {/* Always present at low opacity — "part of the bubble" rather than
           a hover-revealed control — brightening on hover/focus and while
           the menu is open, where it also rotates 180°. `h-8 w-8` keeps a
@@ -414,75 +440,145 @@ function MessageActionsComponent({
       {/* Dark, glass-like surface regardless of app theme (Apple
           Messages/Linear/Arc-style elevated menu) — always anchored so it
           grows from the chevron, i.e. from the bubble's own top-right
-          corner, never centered or floating away from the message. */}
+          corner, never centered or floating away from the message. Wider
+          while the full emoji picker is showing — it needs the room a
+          reaction/action list doesn't. */}
       <DropdownMenuContent
         align="end"
         sideOffset={6}
-        className="w-56 rounded-2xl border-none bg-zinc-900/95 p-1.5 text-zinc-100 shadow-xl ring-1 ring-white/10 backdrop-blur-md"
+        className={cn(
+          "rounded-2xl border-none bg-zinc-900/95 p-1.5 text-zinc-100 shadow-xl ring-1 ring-white/10 backdrop-blur-md",
+          emojiPickerOpen ? "w-72" : "w-56",
+        )}
       >
-        <div className="flex items-center justify-between gap-0.5 px-1 pb-1.5">
-          {QUICK_EMOJIS.map((e) => (
-            <button
-              key={e}
-              type="button"
-              onClick={() => handlePickEmoji(e)}
-              className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none transition-transform hover:scale-125 hover:bg-white/10"
-              aria-label={t("reactWith", { emoji: e })}
+        {emojiPickerOpen ? (
+          <div className="flex flex-col">
+            <div className="mb-1 flex items-center gap-1 px-0.5 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setEmojiPickerOpen(false)}
+                aria-label={t("back")}
+                className="flex h-7 w-7 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+              <span className="text-[13px] font-medium text-zinc-200">
+                {t("chooseReaction")}
+              </span>
+            </div>
+            {/* frimousse — unstyled/composable emoji picker; visual styling
+                lives in globals.css via its `[frimousse-*]` attribute
+                selectors (see the comment there), since those aren't
+                reachable through `className` the way Tailwind utilities
+                are. Selecting an emoji reuses the exact same
+                handlePickEmoji the quick-reaction row below already
+                calls — one single "apply a reaction" path either way. */}
+            <EmojiPicker.Root
+              onEmojiSelect={(emoji) => handlePickEmoji(emoji.emoji)}
+              columns={8}
             >
-              {e}
-            </button>
-          ))}
-        </div>
-        <DropdownMenuSeparator className="-mx-1.5 bg-white/10" />
-        <DropdownMenuItem
-          className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
-          onClick={() => onReply(message)}
-        >
-          <CornerUpLeft className="text-zinc-400" />
-          {t("reply")}
-        </DropdownMenuItem>
-        {canForward && (
-          <DropdownMenuItem
-            className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
-            onClick={() => setForwardOpen(true)}
-          >
-            <Forward className="text-zinc-400" />
-            {t("forward")}
-          </DropdownMenuItem>
-        )}
-        {canCopy && (
-          <DropdownMenuItem
-            className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
-            onClick={handleCopy}
-          >
-            <Copy className="text-zinc-400" />
-            {t("copyText")}
-          </DropdownMenuItem>
-        )}
-        {canTranscribe && (
-          // Amber — same tone already used for dropdown items elsewhere
-          // (e.g. "Pendente" in message-thread.tsx's conversation menu),
-          // not a new color.
-          <DropdownMenuItem
-            className="h-11 rounded-xl px-2.5 text-[13px] text-amber-400 focus:bg-amber-400/10 focus:text-amber-400"
-            onClick={handleTranscribe}
-            disabled={transcribing}
-          >
-            {transcribing ? <Loader2 className="animate-spin" /> : <FileText />}
-            {t("transcribe")}
-          </DropdownMenuItem>
-        )}
-        {/* WhatsApp only lets you delete messages you sent — never
-            the other party's. */}
-        {canDelete && (
-          <DropdownMenuItem
-            className="h-11 rounded-xl px-2.5 text-[13px]"
-            variant="destructive"
-            onClick={() => setDeleteConfirmOpen(true)}
-          >
-            <Trash2 />
-            {t("deleteMessage")}
-          </DropdownMenuItem>
+              <EmojiPicker.Search
+                placeholder={t("searchReaction")}
+                className="mb-1.5"
+                // base-ui's DropdownMenu implements its own "type a
+                // letter to jump to a matching item" behavior on any
+                // keydown that bubbles up to it — including from this
+                // plain-text search input — and calls preventDefault()
+                // unconditionally, so every keystroke was silently
+                // swallowed before React could ever update the input's
+                // value. Stopping propagation here (standard React
+                // event handling, not a base-ui/frimousse workaround)
+                // keeps the keystroke local to the input; frimousse's
+                // own search/grid keyboard handling is attached to this
+                // same element, so it's unaffected.
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+              <EmojiPicker.Viewport className="h-64">
+                <EmojiPicker.Loading className="flex h-full items-center justify-center text-xs text-zinc-500">
+                  {t("loadingEmojis")}
+                </EmojiPicker.Loading>
+                <EmojiPicker.Empty className="flex h-full items-center justify-center text-xs text-zinc-500">
+                  {t("noEmojiFound")}
+                </EmojiPicker.Empty>
+                <EmojiPicker.List />
+              </EmojiPicker.Viewport>
+            </EmojiPicker.Root>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-0.5 px-1 pb-1.5">
+              {QUICK_EMOJIS.map((e) => (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => handlePickEmoji(e)}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none transition-transform hover:scale-125 hover:bg-white/10"
+                  aria-label={t("reactWith", { emoji: e })}
+                >
+                  {e}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setEmojiPickerOpen(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100"
+                aria-label={t("moreReactions")}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </div>
+            <DropdownMenuSeparator className="-mx-1.5 bg-white/10" />
+            <DropdownMenuItem
+              className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
+              onClick={() => onReply(message)}
+            >
+              <CornerUpLeft className="text-zinc-400" />
+              {t("reply")}
+            </DropdownMenuItem>
+            {canForward && (
+              <DropdownMenuItem
+                className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
+                onClick={() => setForwardOpen(true)}
+              >
+                <Forward className="text-zinc-400" />
+                {t("forward")}
+              </DropdownMenuItem>
+            )}
+            {canCopy && (
+              <DropdownMenuItem
+                className="h-11 rounded-xl px-2.5 text-[13px] text-zinc-100 focus:bg-white/10 focus:text-zinc-50"
+                onClick={handleCopy}
+              >
+                <Copy className="text-zinc-400" />
+                {t("copyText")}
+              </DropdownMenuItem>
+            )}
+            {canTranscribe && (
+              // Amber — same tone already used for dropdown items elsewhere
+              // (e.g. "Pendente" in message-thread.tsx's conversation menu),
+              // not a new color.
+              <DropdownMenuItem
+                className="h-11 rounded-xl px-2.5 text-[13px] text-amber-400 focus:bg-amber-400/10 focus:text-amber-400"
+                onClick={handleTranscribe}
+                disabled={transcribing}
+              >
+                {transcribing ? <Loader2 className="animate-spin" /> : <FileText />}
+                {t("transcribe")}
+              </DropdownMenuItem>
+            )}
+            {/* WhatsApp only lets you delete messages you sent — never
+                the other party's. */}
+            {canDelete && (
+              <DropdownMenuItem
+                className="h-11 rounded-xl px-2.5 text-[13px]"
+                variant="destructive"
+                onClick={() => setDeleteConfirmOpen(true)}
+              >
+                <Trash2 />
+                {t("deleteMessage")}
+              </DropdownMenuItem>
+            )}
+          </>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

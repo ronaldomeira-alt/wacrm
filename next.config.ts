@@ -55,7 +55,10 @@ const SECURITY_HEADERS = [
       "font-src 'self' data:",
       // Supabase REST + realtime (WSS). All Meta API calls happen
       // server-side, so graph.facebook.com does not belong here.
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+      // unpkg.com: the "more reactions" full emoji picker (frimousse)
+      // fetches its emoji dataset from Emojibase's CDN client-side,
+      // cached in localStorage afterwards — see message-actions.tsx.
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://unpkg.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

@@ -488,7 +488,13 @@
       "copied": "Copied",
       "copyFailed": "Copy failed",
       "transcribe": "Transcribe",
-      "transcribeFailed": "Failed to transcribe audio"
+      "transcribeFailed": "Failed to transcribe audio",
+      "moreReactions": "More reactions",
+      "chooseReaction": "Choose a reaction",
+      "searchReaction": "Search for a reaction...",
+      "loadingEmojis": "Loading emoji…",
+      "noEmojiFound": "No emoji found",
+      "back": "Back"
     },
     "forward": {
       "title": "Forward message",

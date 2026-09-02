@@ -488,7 +488,13 @@
       "copied": "Copiado",
       "copyFailed": "Falha ao copiar",
       "transcribe": "Transcrever",
-      "transcribeFailed": "Falha ao transcrever o áudio"
+      "transcribeFailed": "Falha ao transcrever o áudio",
+      "moreReactions": "Mais reações",
+      "chooseReaction": "Escolher reação",
+      "searchReaction": "Buscar reação...",
+      "loadingEmojis": "Carregando emojis…",
+      "noEmojiFound": "Nenhum emoji encontrado",
+      "back": "Voltar"
     },
     "forward": {
       "title": "Encaminhar mensagem",
