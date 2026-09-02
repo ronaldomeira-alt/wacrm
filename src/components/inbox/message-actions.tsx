@@ -12,7 +12,7 @@ import {
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
-import { EmojiPicker } from "frimousse";
+import { EmojiPicker, type EmojiPickerListEmojiProps } from "frimousse";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -40,6 +40,72 @@ import { ForwardMessageDialog } from "./forward-message-dialog";
 // `emojiPickerOpen` below) — same shape as WhatsApp/Slack/Discord's own
 // quick-bar-plus-full-picker pattern.
 const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢"];
+
+// Both the quick-reaction row and the full picker (below) render emoji as
+// Apple's own artwork instead of the OS's native emoji font. What the lead
+// actually sees is unaffected either way — WhatsApp renders a reaction
+// using the *recipient's own* device font, not whatever the agent picked
+// it from — this is purely so the CRM itself looks the same (and doesn't
+// fall back to Windows' dated Segoe UI Emoji) regardless of the agent's OS.
+const APPLE_EMOJI_DATASET_VERSION = "15.1.2";
+
+// emoji-datasource-apple's image filenames are the emoji's own Unicode
+// code points as lowercase hex, zero-padded to 4 digits (Unicode's own
+// minimum "U+XXXX" width — a bare "31" for the digit "1" 404s, it has to
+// be "0031"), joined by "-". Whether a variation selector (U+FE0F) is
+// part of that is inconsistent per emoji ("❤️" needs it, "👍" doesn't) —
+// but since both QUICK_EMOJIS above and frimousse's own emoji data are
+// already the standard fully-qualified Unicode form, just encoding each
+// code point as given is correct with no separate lookup table needed.
+// Verified against the CDN for all of QUICK_EMOJIS plus flag/ZWJ-family/
+// skin-tone/keycap sequences.
+function appleEmojiImageUrl(emoji: string): string {
+  const codepoints = [...emoji]
+    .map((char) => char.codePointAt(0)!.toString(16).padStart(4, "0"))
+    .join("-");
+  return `https://cdn.jsdelivr.net/npm/emoji-datasource-apple@${APPLE_EMOJI_DATASET_VERSION}/img/apple/64/${codepoints}.png`;
+}
+
+// Falls back to the native glyph (whatever the OS provides) if a
+// particular emoji has no artwork in the pinned dataset version yet — e.g.
+// a brand-new Unicode emoji frimousse's own (separately updated) data
+// already lists. Never a broken-image icon.
+function AppleEmojiImage({
+  emoji,
+  label,
+  size = 24,
+}: {
+  emoji: string;
+  label?: string;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return <span className="text-lg leading-none">{emoji}</span>;
+  }
+  return (
+    <img
+      src={appleEmojiImageUrl(emoji)}
+      alt={label ?? emoji}
+      width={size}
+      height={size}
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+// frimousse's own emoji cell, swapped for AppleEmojiImage above — `...rest`
+// still carries the `frimousse-emoji`/`data-active` attributes globals.css
+// styles (see the comment on `EmojiPicker.Root` below), so no CSS changes
+// were needed for this swap.
+function PickerEmoji({ emoji, ...rest }: EmojiPickerListEmojiProps) {
+  return (
+    <button {...rest}>
+      <AppleEmojiImage emoji={emoji.emoji} label={emoji.label} />
+    </button>
+  );
+}
 
 // Content types the "Copiar"/"Apagar"/"Encaminhar" menu items apply to —
 // mirrors the equivalent gates in the composer and, for forward, the
@@ -521,7 +587,7 @@ function MessageActionsComponent({
                 <EmojiPicker.Empty className="flex h-full items-center justify-center text-xs text-zinc-500">
                   {t("noEmojiFound")}
                 </EmojiPicker.Empty>
-                <EmojiPicker.List />
+                <EmojiPicker.List components={{ Emoji: PickerEmoji }} />
               </EmojiPicker.Viewport>
             </EmojiPicker.Root>
           </div>
@@ -533,10 +599,10 @@ function MessageActionsComponent({
                   key={e}
                   type="button"
                   onClick={() => handlePickEmoji(e)}
-                  className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none transition-transform hover:scale-125 hover:bg-white/10"
+                  className="flex h-8 w-8 items-center justify-center rounded-full transition-transform hover:scale-125 hover:bg-white/10"
                   aria-label={t("reactWith", { emoji: e })}
                 >
-                  {e}
+                  <AppleEmojiImage emoji={e} />
                 </button>
               ))}
               <button
