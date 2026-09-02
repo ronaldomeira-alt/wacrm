@@ -48,6 +48,7 @@ import { ReplyQuote } from "./reply-quote";
 import { DocumentFullscreenPreview } from "./document-fullscreen-preview";
 import { useTranslations } from "next-intl";
 import type { QuickReply } from "@/types";
+import { useWakeLock } from "@/hooks/use-wake-lock";
 
 /** Media content types an agent can send from the composer. */
 export type ComposerMediaKind = "image" | "video" | "document" | "audio";
@@ -342,6 +343,12 @@ export function MessageComposer({
   // send layout — only the timer (ticking vs frozen) and the lock
   // indicator differ.
   const [micPhase, setMicPhase] = useState<MicPhase>("idle");
+  // Holds the Screen Wake Lock exactly while the mic is actively capturing
+  // — see use-wake-lock.ts. Without it, iOS's own inactivity timer dims
+  // and locks the screen mid-recording (most visibly during a locked/
+  // hands-free take, where the agent may not touch the screen for a
+  // while), which backgrounds the page and cuts the mic.
+  useWakeLock(micPhase === "recording");
   const [locked, setLocked] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const recorderRef = useRef<import("opus-recorder").default | null>(null);
