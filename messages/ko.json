@@ -468,7 +468,8 @@
       "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함",
       "documentView": "보기",
       "documentDownload": "다운로드",
-      "documentPages": "{count}페이지"
+      "documentPages": "{count}페이지",
+      "transcriptLabel": "자동 전사:"
     },
     "actions": {
       "openMenu": "더 보기",
@@ -485,7 +486,9 @@
       "reactWith": "{emoji}(으)로 반응하기",
       "nothingToCopy": "복사할 내용이 없습니다",
       "copied": "복사됨",
-      "copyFailed": "복사 실패"
+      "copyFailed": "복사 실패",
+      "transcribe": "텍스트로 변환",
+      "transcribeFailed": "오디오 변환 실패"
     },
     "forward": {
       "title": "메시지 전달",

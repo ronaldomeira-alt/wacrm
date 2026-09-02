@@ -276,14 +276,28 @@ function MessageContent({
 
     case "audio":
       return message.media_url ? (
-        <AudioMessagePlayer
-          url={message.media_url}
-          isAgent={isAgent}
-          time={time}
-          status={status}
-          playLabel={t("audioPlay")}
-          pauseLabel={t("audioPause")}
-        />
+        <div>
+          <AudioMessagePlayer
+            url={message.media_url}
+            isAgent={isAgent}
+            time={time}
+            status={status}
+            playLabel={t("audioPlay")}
+            pauseLabel={t("audioPause")}
+          />
+          {/* Transcript is only ever populated for the customer's own
+              audio (see the "Transcrever" message action + the webhook's
+              background job) — `!isAgent` here is belt-and-suspenders,
+              not the real gate, in case that invariant is ever violated
+              upstream. Deliberately styled far quieter than a real
+              caption (italic, muted, prefixed) so it never reads as
+              something the customer actually typed. */}
+          {!isAgent && message.transcript_text && (
+            <p className="mt-1 select-text whitespace-pre-wrap break-words text-xs italic text-muted-foreground">
+              {t("transcriptLabel")} {linkifyText(message.transcript_text)}
+            </p>
+          )}
+        </div>
       ) : (
         <MediaUnavailable label={t("audio")} t={t} />
       );

@@ -468,7 +468,8 @@
       "aiBadgeTitle": "Enviado automaticamente pelo assistente de IA",
       "documentView": "Ver",
       "documentDownload": "Baixar",
-      "documentPages": "{count} páginas"
+      "documentPages": "{count} páginas",
+      "transcriptLabel": "Transcrição automática:"
     },
     "actions": {
       "openMenu": "Mais opções",
@@ -485,7 +486,9 @@
       "reactWith": "Reagir com {emoji}",
       "nothingToCopy": "Nada para copiar",
       "copied": "Copiado",
-      "copyFailed": "Falha ao copiar"
+      "copyFailed": "Falha ao copiar",
+      "transcribe": "Transcrever",
+      "transcribeFailed": "Falha ao transcrever o áudio"
     },
     "forward": {
       "title": "Encaminhar mensagem",

@@ -6,6 +6,7 @@ import { logAiUsage } from './usage'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
 import { aiRequestTimeoutMs } from './defaults'
+import { effectiveMessageText } from './message-text'
 import type { AiUsage, ChatMessage } from './types'
 import {
   buildLeadAnalysisSystemPrompt,
@@ -358,9 +359,9 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
 
     let msgQuery = db
       .from('messages')
-      .select('id, sender_type, content_text, created_at')
+      .select('id, sender_type, content_type, content_text, transcript_text, created_at')
       .eq('conversation_id', conversationId)
-      .eq('content_type', 'text')
+      .in('content_type', ['text', 'audio'])
       .order('created_at', { ascending: false })
       .limit(limit)
     // >= (not >) plus an explicit id exclusion below: WhatsApp inbound
@@ -377,20 +378,24 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
     const rows = ((rawMessages ?? []) as {
       id: string
       sender_type: 'customer' | 'agent' | 'bot'
+      content_type: string
       content_text: string | null
+      transcript_text: string | null
       created_at: string
     }[])
       .filter((m) => m.id !== lastMessageId)
       .reverse() // chronological
 
-    const textRows = rows.filter((m) => m.content_text && m.content_text.trim())
+    const textRows = rows
+      .map((m) => ({ m, text: effectiveMessageText(m) }))
+      .filter((r): r is { m: (typeof rows)[number]; text: string } => r.text !== null)
     if (textRows.length === 0) return // nothing new to learn from
 
-    const newMessages: ChatMessage[] = textRows.map((m) => ({
-      role: m.sender_type === 'customer' ? 'user' : 'assistant',
-      content: m.content_text!.trim(),
+    const newMessages: ChatMessage[] = textRows.map((r) => ({
+      role: r.m.sender_type === 'customer' ? 'user' : 'assistant',
+      content: r.text,
     }))
-    const newestMessageId = textRows[textRows.length - 1].id
+    const newestMessageId = textRows[textRows.length - 1].m.id
 
     const [{ data: contact }, { data: existingTags }] = await Promise.all([
       db.from('contacts').select('name, ai_score').eq('id', contactId).maybeSingle(),

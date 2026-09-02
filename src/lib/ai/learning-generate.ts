@@ -12,6 +12,7 @@ import {
   LEARNING_SCAN_MESSAGE_LIMIT,
   meetsLearningConfidenceThreshold,
 } from './learning-config'
+import { effectiveMessageText } from './message-text'
 import type { ChatMessage } from './types'
 
 /** Conversations considered for scanning, biased toward the most
@@ -65,9 +66,9 @@ export async function generateLearningSuggestions(
 
   const { data: msgRows, error: msgError } = await db
     .from('messages')
-    .select('sender_type, content_text, created_at')
+    .select('sender_type, content_type, content_text, transcript_text, created_at')
     .in('conversation_id', conversationIds)
-    .eq('content_type', 'text')
+    .in('content_type', ['text', 'audio'])
     .gt('created_at', since)
     .order('created_at', { ascending: true })
     .limit(LEARNING_SCAN_MESSAGE_LIMIT)
@@ -78,19 +79,23 @@ export async function generateLearningSuggestions(
 
   const rows = (msgRows ?? []) as {
     sender_type: 'customer' | 'agent' | 'bot'
+    content_type: string
     content_text: string | null
+    transcript_text: string | null
     created_at: string
   }[]
-  const textRows = rows.filter((m) => m.content_text && m.content_text.trim())
+  const textRows = rows
+    .map((m) => ({ m, text: effectiveMessageText(m) }))
+    .filter((r): r is { m: (typeof rows)[number]; text: string } => r.text !== null)
   if (textRows.length === 0) {
     // Nothing to learn from, but the window itself was fully checked —
     // advance the cursor so the next run doesn't re-scan empty history.
     await db.from('ai_configs').update({ learning_last_scanned_at: new Date().toISOString() }).eq('account_id', accountId)
     return { created: 0, touched: 0 }
   }
-  const messages: ChatMessage[] = textRows.map((m) => ({
-    role: m.sender_type === 'customer' ? 'user' : 'assistant',
-    content: m.content_text!.trim(),
+  const messages: ChatMessage[] = textRows.map((r) => ({
+    role: r.m.sender_type === 'customer' ? 'user' : 'assistant',
+    content: r.text,
   }))
 
   const [{ data: docRows }, { data: pendingRows }] = await Promise.all([

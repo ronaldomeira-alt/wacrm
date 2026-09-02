@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, Copy, CornerUpLeft, Forward, SmilePlus, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, CornerUpLeft, FileText, Forward, Loader2, SmilePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -121,6 +121,15 @@ interface MessageActionsProps {
    * regular single-message bubble.
    */
   forwardMessages?: Message[];
+  /**
+   * Reveals a customer voice note's transcript. Never invoked for the
+   * agent's own audio — see `canTranscribe` below, which gates the menu
+   * item itself. Resolves once the text is available (already cached on
+   * `message.transcript_text`, or freshly fetched from
+   * /api/ai/transcribe) — the caller is responsible for storing it back
+   * onto the message so the bubble can render it.
+   */
+  onTranscribe?: (message: Message) => Promise<void> | void;
   children: ReactNode;
 }
 
@@ -142,6 +151,7 @@ function MessageActionsComponent({
   onReact,
   onDelete,
   forwardMessages,
+  onTranscribe,
   children,
 }: MessageActionsProps) {
   const t = useTranslations("Inbox.actions");
@@ -326,6 +336,13 @@ function MessageActionsComponent({
   const canCopy = message.content_type === "text";
   const canForward = FORWARDABLE_TYPES.has(message.content_type);
   const canDelete = isAgent && DELETABLE_TYPES.has(message.content_type);
+  // Customer voice notes only — never the agent's own (product decision
+  // 2026-09-01: this is about surfacing the CUSTOMER's stated intent,
+  // not a general-purpose transcription tool). Shown even once already
+  // transcribed — see handleTranscribe, it becomes a free "show it again
+  // under the bubble" tap instead of disappearing.
+  const canTranscribe = !isAgent && message.content_type === "audio";
+  const [transcribing, setTranscribing] = useState(false);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -355,6 +372,18 @@ function MessageActionsComponent({
       toast.success(t("copied"));
     } catch {
       toast.error(t("copyFailed"));
+    }
+  };
+
+  const handleTranscribe = async () => {
+    if (!onTranscribe || transcribing) return;
+    setTranscribing(true);
+    try {
+      await onTranscribe(message);
+    } catch {
+      toast.error(t("transcribeFailed"));
+    } finally {
+      setTranscribing(false);
     }
   };
 
@@ -470,6 +499,12 @@ function MessageActionsComponent({
               <DropdownMenuItem onClick={handleCopy}>
                 <Copy />
                 {t("copyText")}
+              </DropdownMenuItem>
+            )}
+            {canTranscribe && (
+              <DropdownMenuItem onClick={handleTranscribe} disabled={transcribing}>
+                {transcribing ? <Loader2 className="animate-spin" /> : <FileText />}
+                {t("transcribe")}
               </DropdownMenuItem>
             )}
             {/* WhatsApp only lets you delete messages you sent — never

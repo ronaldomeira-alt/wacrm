@@ -175,6 +175,12 @@ export const RATE_LIMITS = {
   /** AI template-variable fill, per account — bounds the whole team's
    *  draws on the shared BYO key, same rationale as aiDraftAccount. */
   aiTemplateFillAccount: { limit: 60, windowMs: 60_000 },
+  /** On-demand "Transcrever" click on a voice note, per user. Most
+   *  voice notes are already transcribed in the background on arrival
+   *  (see webhook route) — this only runs the provider call when that
+   *  hasn't happened yet, so it's a fallback path, not the common one.
+   *  Same one-shot budget as aiTemplateFill. */
+  aiTranscribe: { limit: 20, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't

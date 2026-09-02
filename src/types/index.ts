@@ -515,6 +515,17 @@ export interface Message {
    */
   interactive_reply_id?: string;
   /**
+   * AI transcription of this message's audio — only ever set for
+   * `content_type === 'audio'` sent by the customer (`sender_type ===
+   * 'customer'`), never for the agent's own voice notes. Populated
+   * automatically in the background when the voice note arrives
+   * (whatsapp/webhook/route.ts) or on demand via the "Transcrever"
+   * message action (/api/ai/transcribe) — same column either way.
+   * Internal only: never sent back to the customer. Migration
+   * 20260901220000.
+   */
+  transcript_text?: string | null;
+  /**
    * Structured payload of an OUTBOUND interactive message (reply
    * buttons or list) we sent. Lets the thread re-render the buttons /
    * rows, not just the body text. Only set when `content_type ===

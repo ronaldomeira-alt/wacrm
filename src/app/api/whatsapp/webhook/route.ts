@@ -18,6 +18,7 @@ import {
 } from '@/lib/whatsapp/template-webhook'
 import { captureCtwaReferral, type CtwaReferral } from '@/lib/whatsapp/ctwa-referral'
 import { generateDocumentPreview, looksLikePdf } from '@/lib/documents/generate-document-preview'
+import { transcribeInboundAudioMessage } from '@/lib/ai/transcribe-audio'
 import { logError } from '@/lib/observability/log'
 
 // The `after()` callback in POST runs within this route's max duration.
@@ -803,6 +804,31 @@ async function processMessage(
     }
   }
 
+  // Voice-note transcription — customer audio only, never the agent's own
+  // (this branch only runs inside processMessage's inbound/customer path
+  // to begin with). Same reasoning as the PDF preview block just above:
+  // awaited, not fire-and-forget, because a detached `void` here can get
+  // frozen mid-request once this route's `after()` block returns (see
+  // that block's comment, issue #301/#409). Best-effort — a transcription
+  // failure (no key configured, provider error, oversized file) must
+  // never break inbound message processing; the voice note itself was
+  // already saved above regardless. See transcribeInboundAudioMessage's
+  // doc comment for why this reuses the embeddings key, not the main
+  // chat key, and why it's silently a no-op with no key configured.
+  let audioTranscript: string | null = null
+  if (contentType === 'audio' && mediaUrl) {
+    try {
+      audioTranscript = await transcribeInboundAudioMessage(
+        supabaseAdmin(),
+        accountId,
+        insertedMessage.id,
+        mediaUrl,
+      )
+    } catch (err) {
+      logError('webhook.audio_transcription_failed', err)
+    }
+  }
+
   // Update conversation
   const { error: convError } = await supabaseAdmin()
     .from('conversations')
@@ -954,7 +980,17 @@ async function processMessage(
   // it's classifying the LEAD, not answering the customer.
   // `dispatchInboundToLeadAnalysis` owns its own eligibility gates
   // (AI configured + active, cooldown claim) and never throws.
-  if (!interactiveReplyId && inboundText.trim()) {
+  //
+  // `|| audioTranscript` (not folded into `inboundText` itself, above):
+  // a voice-note-only message has no `inboundText` (audio never sets
+  // contentText — see parseMessageContent), so without this a customer
+  // who only ever sends voice notes would be invisible to lead scoring
+  // even after transcription. Deliberately scoped to lead analysis only
+  // — auto-reply and the keyword/automation triggers above intentionally
+  // still don't fire off a transcript (product decision 2026-09-01:
+  // auto-replying to a possibly-imperfect transcription is a materially
+  // different risk than silently scoring the lead from it).
+  if (!interactiveReplyId && (inboundText.trim() || audioTranscript)) {
     await dispatchInboundToLeadAnalysis({
       accountId,
       conversationId: conversation.id,

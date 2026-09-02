@@ -468,7 +468,8 @@
       "aiBadgeTitle": "Sent automatically by the AI assistant",
       "documentView": "View",
       "documentDownload": "Download",
-      "documentPages": "{count} pages"
+      "documentPages": "{count} pages",
+      "transcriptLabel": "Automatic transcript:"
     },
     "actions": {
       "openMenu": "More options",
@@ -485,7 +486,9 @@
       "reactWith": "React with {emoji}",
       "nothingToCopy": "Nothing to copy",
       "copied": "Copied",
-      "copyFailed": "Copy failed"
+      "copyFailed": "Copy failed",
+      "transcribe": "Transcribe",
+      "transcribeFailed": "Failed to transcribe audio"
     },
     "forward": {
       "title": "Forward message",

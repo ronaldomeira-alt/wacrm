@@ -185,6 +185,7 @@ interface MessageRowProps {
   onReply: (message: Message) => void;
   onReact: (messageId: string, emoji: string) => void;
   onDelete: (message: Message) => Promise<void> | void;
+  onTranscribe: (message: Message) => Promise<void> | void;
   onToggleReaction: (messageId: string, emoji: string) => void;
 }
 
@@ -204,6 +205,7 @@ const MessageRow = memo(function MessageRow({
   onReply,
   onReact,
   onDelete,
+  onTranscribe,
   onToggleReaction,
 }: MessageRowProps) {
   return (
@@ -212,6 +214,7 @@ const MessageRow = memo(function MessageRow({
       onReply={onReply}
       onReact={onReact}
       onDelete={onDelete}
+      onTranscribe={onTranscribe}
     >
       <MessageBubble
         message={message}
@@ -970,6 +973,26 @@ export function MessageThread({
       }
     },
     [onDeleteMessage]
+  );
+
+  // Powers the "Transcrever" message action (message-actions.tsx). Most
+  // customer voice notes are already transcribed by the time an agent
+  // clicks this — the webhook transcribes every inbound one in the
+  // background — so this call usually just reads back the cached text;
+  // see /api/ai/transcribe's own doc comment for the (rarer) fallback
+  // case where it actually runs the provider call here instead.
+  const handleTranscribe = useCallback(
+    async (msg: Message) => {
+      const res = await fetch('/api/ai/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: msg.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to transcribe');
+      onUpdateMessage(msg.id, { transcript_text: data.transcript as string });
+    },
+    [onUpdateMessage]
   );
 
   const handleStatusChange = useCallback(
@@ -1744,6 +1767,7 @@ export function MessageThread({
                           onReply={handleStartReply}
                           onReact={postReaction}
                           onDelete={handleDeleteMessage}
+                          onTranscribe={handleTranscribe}
                           onToggleReaction={handleReactionToggle}
                         />
                       );
