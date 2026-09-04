@@ -446,7 +446,7 @@ function MessageActionsComponent({
   // One switch here beats duplicating a `cn(...)` ternary at each call
   // site, and adding another content type later is a one-line addition.
   const isAudioContent = message.content_type === "audio" && !!message.media_url;
-  const cornerTriggerSizeClass = isAudioContent ? "top-2 h-6 w-6" : "top-1.5 h-8 w-8";
+  const cornerTriggerSizeClass = isAudioContent ? "top-2 h-6 w-6" : "top-1 h-8 w-8";
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -514,7 +514,14 @@ function MessageActionsComponent({
       <DropdownMenuTrigger
         aria-label={t("openMenu")}
         className={cn(
-          "absolute right-2.5 z-10 flex items-center justify-center rounded-full opacity-40 outline-none transition-[opacity,transform] duration-150 ease-out hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-current data-popup-open:rotate-180 data-popup-open:opacity-100",
+          // items-start (not items-center): the trigger's hit area is
+          // taller than a single line of text, so centering the glyph
+          // inside it put the chevron at the same visual height as the
+          // text next to it — read as glued to the sentence instead of
+          // sitting above it in the bubble's corner. Anchoring the glyph
+          // to the box's own top edge keeps it there regardless of how
+          // tall the hit area is.
+          "absolute right-2.5 z-10 flex items-start justify-center rounded-full opacity-40 outline-none transition-[opacity,transform] duration-150 ease-out hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-current data-popup-open:rotate-180 data-popup-open:opacity-100",
           cornerTriggerSizeClass,
           isAgent ? "text-primary-foreground" : "text-muted-foreground",
         )}

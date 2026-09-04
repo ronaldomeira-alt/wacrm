@@ -561,7 +561,18 @@ function MessageBubbleComponent({
       <div
         className={cn(
           "relative rounded-2xl",
-          isFramedMedia ? "overflow-hidden p-[2px]" : "px-3 py-2",
+          isFramedMedia
+            ? "overflow-hidden p-[2px]"
+            : // Extra top clearance (vs. the symmetric px-3 py-2 every
+              // other bubble uses) is what actually separates the corner
+              // chevron from a single-line message instead of them
+              // sharing the same visual row — see message-actions.tsx's
+              // trigger-position comment. Audio keeps the tighter py-2:
+              // AudioMessagePlayer's waveform is already tuned to sit
+              // flush under a smaller, lower chevron (isAudioContent).
+              hasAudioPlayer
+              ? "px-3 py-2"
+              : "px-3 pb-2 pt-3",
           isAgent
             ? "rounded-br-md bg-primary text-primary-foreground"
             : "rounded-bl-md bg-muted text-foreground",
