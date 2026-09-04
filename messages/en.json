@@ -440,6 +440,8 @@
       "discardRecording": "Discard recording",
       "stopRecording": "Stop recording",
       "sendRecording": "Send voice message",
+      "recordingFailed": "Failed to send voice note",
+      "retryRecording": "Retry",
       "unsupportedVideoType": "This video is in a format WhatsApp doesn't accept (e.g. iPhone .MOV). Send it as MP4 — on iPhone, switch Settings → Camera → Formats → Most Compatible, or pick a video that's already MP4.",
       "unsupportedFileType": "This file type isn't supported.",
       "fileTooLarge": "File is {sizeMb} MB — the limit for {kind} is {limitMb} MB.",
@@ -469,7 +471,9 @@
       "documentView": "View",
       "documentDownload": "Download",
       "documentPages": "{count} pages",
-      "transcriptLabel": "Automatic transcript:"
+      "transcriptLabel": "Automatic transcript:",
+      "audioSendFailed": "Failed to send",
+      "audioRetry": "Tap to retry"
     },
     "actions": {
       "openMenu": "More options",

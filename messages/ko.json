@@ -440,6 +440,8 @@
       "discardRecording": "녹음 삭제",
       "stopRecording": "녹음 중지",
       "sendRecording": "음성 메시지 보내기",
+      "recordingFailed": "음성 메모 전송 실패",
+      "retryRecording": "다시 시도",
       "unsupportedVideoType": "이 동영상은 WhatsApp에서 지원하지 않는 형식입니다 (예: 아이폰 .MOV). MP4로 보내주세요 — 아이폰에서는 설정 → 카메라 → 포맷 → 높은 호환성으로 변경하거나, 이미 MP4인 동영상을 선택하세요.",
       "unsupportedFileType": "지원되지 않는 파일 형식입니다.",
       "fileTooLarge": "파일 크기가 {sizeMb}MB입니다 — {kind} 제한은 {limitMb}MB입니다.",
@@ -469,7 +471,9 @@
       "documentView": "보기",
       "documentDownload": "다운로드",
       "documentPages": "{count}페이지",
-      "transcriptLabel": "자동 전사:"
+      "transcriptLabel": "자동 전사:",
+      "audioSendFailed": "전송 실패",
+      "audioRetry": "탭하여 다시 보내기"
     },
     "actions": {
       "openMenu": "더 보기",

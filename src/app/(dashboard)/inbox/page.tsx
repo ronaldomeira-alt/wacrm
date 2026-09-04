@@ -19,6 +19,7 @@ import { BlockLeadDialog } from "@/components/contacts/block-lead-dialog";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { scanAndRetryAllPendingAudio } from "@/lib/inbox/pending-audio-sync";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -756,6 +757,44 @@ function InboxPageInner() {
     },
     []
   );
+
+  /**
+   * App-wide voice-note recovery sweep — resumes any recording stuck in a
+   * definite "failed-upload"/"failed-send" state (see
+   * pending-audio-sync.ts) across EVERY conversation, not just whichever
+   * one happens to be open. Runs once on mount, whenever the browser
+   * regains connectivity, and whenever the tab regains visibility — the
+   * three moments the agent is most likely to have just reopened the PWA
+   * after the exact iOS backgrounding/kill that got a take stuck in the
+   * first place.
+   *
+   * `handleUpdateMessage` is keyed by message id and is a no-op if that
+   * id isn't in the currently-loaded `messages` array, so patching the
+   * matching `local-audio-<id>` bubble here is safe regardless of which
+   * conversation the sweep is currently resolving — it only has a visible
+   * effect when that conversation happens to be the open one.
+   */
+  useEffect(() => {
+    const sweep = () => {
+      void scanAndRetryAllPendingAudio((record, status, mediaUrl) => {
+        const tempId = `local-audio-${record.id}`;
+        if (mediaUrl) handleUpdateMessage(tempId, { media_url: mediaUrl });
+        if (status === "sent" || status === "failed") {
+          handleUpdateMessage(tempId, { status });
+        }
+      });
+    };
+    sweep();
+    window.addEventListener("online", sweep);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") sweep();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", sweep);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [handleUpdateMessage]);
 
   // Local removal for a deleted message — covers both the optimistic
   // removal right after the agent confirms "Apagar mensagem" and the

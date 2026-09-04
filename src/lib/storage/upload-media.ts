@@ -18,6 +18,15 @@ import { createClient } from "@/lib/supabase/client";
 export const MEDIA_MAX_BYTES = 16 * 1024 * 1024;
 
 /**
+ * Supabase Storage bucket holding agent-sent chat attachments (migration
+ * 023). Canonical home for this constant — re-exported from
+ * message-composer.tsx for existing callers, and imported directly by
+ * pending-audio-sync.ts (which message-composer.tsx itself depends on,
+ * so it can't be the other way around without a circular import).
+ */
+export const CHAT_MEDIA_BUCKET = "chat-media";
+
+/**
  * Per-kind upload ceilings that mirror Meta's WhatsApp Cloud API caps so
  * a file that the bucket would accept but Meta would reject is caught
  * client-side BEFORE upload — otherwise it lands in storage as an orphan

@@ -64,6 +64,8 @@ import {
   type SendMediaPayload,
 } from './message-composer';
 import { deleteAccountMedia } from '@/lib/storage/upload-media';
+import { getPendingAudio } from '@/lib/inbox/pending-audio-db';
+import { runPendingAudio, discardPendingAudio } from '@/lib/inbox/pending-audio-sync';
 import { markConversationUnread } from '@/lib/inbox/conversations';
 import { TemplatePicker, type TemplateSendValues } from './template-picker';
 import { AiThreadBanner } from './ai-thread-banner';
@@ -191,6 +193,8 @@ interface MessageRowProps {
    *  (via "Transcrever")? See MessageBubble's own doc for why the
    *  background-transcribed `transcript_text` isn't shown on its own. */
   transcriptRevealed: boolean;
+  /** Resend a voice note that failed to upload/send — see MessageBubble's own doc. */
+  onRetryAudio: (message: Message) => void;
 }
 
 /**
@@ -212,6 +216,7 @@ const MessageRow = memo(function MessageRow({
   onTranscribe,
   onToggleReaction,
   transcriptRevealed,
+  onRetryAudio,
 }: MessageRowProps) {
   return (
     <MessageActions
@@ -230,6 +235,7 @@ const MessageRow = memo(function MessageRow({
           onToggleReaction={onToggleReaction}
           transcriptRevealed={transcriptRevealed}
           cornerAction={cornerAction}
+          onRetryAudio={onRetryAudio}
         />
       )}
     </MessageActions>
@@ -295,6 +301,15 @@ interface MessageThreadProps {
  * `/api/whatsapp/media/`), which is also every case we'd ever attempt
  * this for, since deletion is agent-messages-only.
  */
+// Local-only id prefix for a voice-note bubble that has no DB row yet —
+// handleQueuedAudio creates it optimistically the moment the composer
+// commits to sending, and it never gets superseded by a realtime INSERT
+// the way a normal `temp-*` id does: a message only ever carries this id
+// while pending-audio-sync.ts's upload/send pipeline is still running (or
+// has failed) for it. The suffix is the pending-audio-db.ts record id, so
+// handleRetryAudio / handleDeleteMessage can recover it.
+const LOCAL_AUDIO_PREFIX = 'local-audio-';
+
 function extractStoragePath(
   mediaUrl: string | undefined,
   bucket: string
@@ -959,6 +974,75 @@ export function MessageThread({
     [conversation, onNewMessage, onUpdateMessage, user?.id]
   );
 
+  // A voice note the composer just committed to sending (message-
+  // composer.tsx's onRecordAudio) — `recordId` points at the durable
+  // pending-audio-db.ts record already holding the recorded bytes. Shows
+  // an optimistic bubble immediately (using a local blob: preview of the
+  // recording, swapped for the real URL once uploaded) and hands the
+  // actual upload+send off to pending-audio-sync.ts, which is
+  // timeout-bounded and retried at every network step — see that
+  // module's doc comment for why this can never hang the way the old
+  // inline upload in message-composer.tsx could.
+  const handleQueuedAudio = useCallback(
+    async (recordId: string, replyToId?: string) => {
+      if (!conversation) return;
+      const record = await getPendingAudio(recordId);
+      if (!record) return;
+
+      const tempId = `${LOCAL_AUDIO_PREFIX}${recordId}`;
+      let previewUrl = '';
+      try {
+        previewUrl = URL.createObjectURL(record.blob);
+      } catch {
+        // No local preview available — the bubble just shows nothing
+        // playable until the real mediaUrl lands; upload/send still proceed.
+      }
+      const optimisticMsg: Message = {
+        id: tempId,
+        conversation_id: conversation.id,
+        sender_type: 'agent',
+        sender_id: user?.id,
+        content_type: 'audio',
+        media_url: previewUrl || undefined,
+        status: 'sending',
+        created_at: new Date(record.createdAt).toISOString(),
+        reply_to_message_id: replyToId,
+      };
+      onNewMessage(optimisticMsg);
+
+      const result = await runPendingAudio(recordId, {
+        onMediaUrl: (url) => onUpdateMessage(tempId, { media_url: url }),
+      });
+      onUpdateMessage(tempId, { status: result.ok ? 'sent' : 'failed' });
+      if (!result.ok) {
+        console.error('Failed to send voice note:', result.error);
+        toast.error(`Failed to send: ${result.error}`);
+      }
+    },
+    [conversation, onNewMessage, onUpdateMessage, user?.id]
+  );
+
+  // Retries a voice note bubble already showing `status: 'failed'` — the
+  // recording is still sitting in pending-audio-db.ts (never deleted
+  // until the server actually confirms receipt), so this just re-runs
+  // the same upload/send pipeline against it, no re-recording needed.
+  const handleRetryAudio = useCallback(
+    async (message: Message) => {
+      if (!message.id.startsWith(LOCAL_AUDIO_PREFIX)) return;
+      const recordId = message.id.slice(LOCAL_AUDIO_PREFIX.length);
+      onUpdateMessage(message.id, { status: 'sending' });
+      const result = await runPendingAudio(recordId, {
+        onMediaUrl: (url) => onUpdateMessage(message.id, { media_url: url }),
+      });
+      onUpdateMessage(message.id, { status: result.ok ? 'sent' : 'failed' });
+      if (!result.ok) {
+        console.error('Failed to resend voice note:', result.error);
+        toast.error(`Failed to send: ${result.error}`);
+      }
+    },
+    [onUpdateMessage]
+  );
+
   // WhatsApp-style delete: only ever called on agent-sent messages (the
   // Trash icon in MessageActions is gated on that already). Waits for
   // the DB delete before touching local state — simpler and safer than
@@ -967,6 +1051,17 @@ export function MessageThread({
   // dialog's catch block can surface the toast.
   const handleDeleteMessage = useCallback(
     async (msg: Message) => {
+      // A failed voice note never made it into the `messages` table — it
+      // only exists as this optimistic bubble backed by a
+      // pending-audio-db.ts record — so there's no DB row to delete here,
+      // just the local record (and its Storage object, if the upload had
+      // already succeeded before the send itself failed).
+      if (msg.id.startsWith(LOCAL_AUDIO_PREFIX)) {
+        await discardPendingAudio(msg.id.slice(LOCAL_AUDIO_PREFIX.length));
+        onDeleteMessage(msg.id);
+        return;
+      }
+
       const supabase = createClient();
       const { error } = await supabase
         .from('messages')
@@ -1795,6 +1890,7 @@ export function MessageThread({
                           onTranscribe={handleTranscribe}
                           onToggleReaction={handleReactionToggle}
                           transcriptRevealed={revealedTranscriptIds.has(msg.id)}
+                          onRetryAudio={handleRetryAudio}
                         />
                       );
                     })}
@@ -1825,8 +1921,10 @@ export function MessageThread({
       {/* Composer */}
       <MessageComposer
         sessionExpired={sessionInfo.expired}
+        conversationId={conversation.id}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
+        onRecordAudio={(recordId, replyToId) => void handleQueuedAudio(recordId, replyToId)}
         onOpenTemplates={handleOpenTemplates}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}

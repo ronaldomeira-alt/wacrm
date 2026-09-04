@@ -14,6 +14,7 @@ import {
   ImageOff,
   CornerDownLeft,
   Sparkles,
+  AlertCircle,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
@@ -56,6 +57,15 @@ interface MessageBubbleProps {
    * it — see the `children` prop doc on `MessageActionsProps`.
    */
   cornerAction?: ReactNode;
+  /**
+   * WhatsApp-style resend for a voice note that failed to upload/send
+   * (message-thread.tsx's handleRetryAudio, backed by
+   * pending-audio-sync.ts) — only ever rendered for an agent-sent audio
+   * message whose `status === "failed"`. The recording itself is still
+   * held locally (pending-audio-db.ts) until the server confirms
+   * receipt, so retrying never requires re-recording.
+   */
+  onRetryAudio?: (message: Message) => void;
 }
 
 function StatusIcon({
@@ -239,6 +249,7 @@ function MessageContent({
   time,
   status,
   transcriptRevealed,
+  onRetryAudio,
 }: {
   message: Message;
   t: ReturnType<typeof useTranslations>;
@@ -251,6 +262,7 @@ function MessageContent({
    *  (see the webhook), so its mere presence on `message.transcript_text`
    *  is not permission to show it unprompted. */
   transcriptRevealed?: boolean;
+  onRetryAudio?: (message: Message) => void;
 }) {
   switch (message.content_type) {
     case "text":
@@ -307,6 +319,21 @@ function MessageContent({
             playLabel={t("audioPlay")}
             pauseLabel={t("audioPause")}
           />
+          {/* WhatsApp-style resend affordance — only ever shown for an
+              agent's own voice note that failed to upload/send. The
+              recording is still held locally (pending-audio-db.ts) until
+              the server confirms receipt, so this just re-runs the
+              upload/send pipeline without needing the audio again. */}
+          {isAgent && message.status === "failed" && onRetryAudio && (
+            <button
+              type="button"
+              onClick={() => onRetryAudio(message)}
+              className="mt-1.5 flex items-center gap-1 text-xs font-medium text-red-400 transition-colors hover:text-red-300"
+            >
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              {t("audioSendFailed")} · {t("audioRetry")}
+            </button>
+          )}
           {/* transcript_text is populated for every customer voice note by
               the webhook's background job (so the AI has context), but it
               must only be SHOWN once the agent explicitly asks via the
@@ -447,6 +474,7 @@ function MessageBubbleComponent({
   onToggleReaction,
   transcriptRevealed,
   cornerAction,
+  onRetryAudio,
 }: MessageBubbleProps) {
   const t = useTranslations("Inbox.bubble");
 
@@ -590,6 +618,7 @@ function MessageBubbleComponent({
               time={time}
               status={isAgent ? <StatusIcon status={message.status} /> : null}
               transcriptRevealed={transcriptRevealed}
+              onRetryAudio={onRetryAudio}
             />
             {!hasDocumentPreview && !hasAudioPlayer && (
               <div

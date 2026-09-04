@@ -21,6 +21,7 @@ import {
   Lock,
   X,
   Loader2,
+  AlertCircle,
 } from "lucide-react";
 import { GatedButton } from "@/components/ui/gated-button";
 import {
@@ -39,6 +40,7 @@ import {
   resolveAccountId,
   MEDIA_MAX_BYTES_BY_KIND,
   ALLOWED_MIME_TYPES_BY_KIND,
+  CHAT_MEDIA_BUCKET,
 } from "@/lib/storage/upload-media";
 import {
   isQuickTimeVideo,
@@ -49,12 +51,20 @@ import { DocumentFullscreenPreview } from "./document-fullscreen-preview";
 import { useTranslations } from "next-intl";
 import type { QuickReply } from "@/types";
 import { useWakeLock } from "@/hooks/use-wake-lock";
+import {
+  putPendingAudio,
+  listPendingAudioByConversation,
+  type PendingAudioRecord,
+} from "@/lib/inbox/pending-audio-db";
+import { discardPendingAudio } from "@/lib/inbox/pending-audio-sync";
+import { audioLog, audioLogError } from "@/lib/inbox/pending-audio-log";
 
 /** Media content types an agent can send from the composer. */
 export type ComposerMediaKind = "image" | "video" | "document" | "audio";
 
-/** Supabase Storage bucket holding agent-sent chat attachments (migration 023). */
-export const CHAT_MEDIA_BUCKET = "chat-media";
+/** Re-exported for existing callers (e.g. message-thread.tsx) — canonical
+ *  definition now lives in upload-media.ts, see its own doc comment. */
+export { CHAT_MEDIA_BUCKET };
 
 /** Meta caps media captions at 1024 chars. Enforced here and in the send route. */
 export const MEDIA_CAPTION_MAX = 1024;
@@ -110,8 +120,23 @@ interface MediaDraft {
 
 interface MessageComposerProps {
   sessionExpired: boolean;
+  /** Scopes the pending-voice-note IndexedDB store (a conversation switch
+   *  rehydrates whatever unresolved recording that conversation left
+   *  behind — see the mount effect below). */
+  conversationId: string;
   onSend: (text: string, replyToId?: string) => void;
   onSendMedia: (payload: SendMediaPayload) => void;
+  /**
+   * A voice note has been recorded and the agent committed to sending it
+   * (or it was queued hands-free via lock+send). The composer has
+   * already persisted it to pending-audio-db.ts under `recordId` and
+   * returns to "idle" immediately after calling this — all the actual
+   * upload + WhatsApp-send network work happens in the caller
+   * (message-thread.tsx's handleQueuedAudio, backed by
+   * pending-audio-sync.ts), which is what lets the composer never block
+   * on the network for audio.
+   */
+  onRecordAudio: (recordId: string, replyToId?: string) => void;
   onOpenTemplates: () => void;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
@@ -220,12 +245,20 @@ const LONG_PRESS_MS = 0;
 // catch a real scroll gesture, not natural finger jitter on a stationary hold.
 const TOUCH_MOVE_CANCEL_PX = 8;
 
-type MicPhase = "idle" | "recording" | "paused" | "sending";
+// "sending" is now purely the brief, LOCAL recorder-stop → encoder-flush
+// window (bounded by opus-recorder finishing its last frame — no network
+// involved) — never "waiting on the upload", which is what used to leave
+// this stuck forever on iOS. "failed" covers both a real upload/send
+// failure and a rehydrated take found left over from a previous session
+// (see the mount effect below) whose true outcome is unknown either way.
+type MicPhase = "idle" | "recording" | "paused" | "sending" | "failed";
 
 export function MessageComposer({
   sessionExpired,
+  conversationId,
   onSend,
   onSendMedia,
+  onRecordAudio,
   onOpenTemplates,
   replyTo,
   onClearReply,
@@ -331,17 +364,31 @@ export function MessageComposer({
   //                finger can be lifted without stopping the capture.
   //   paused     → capture has stopped (released without locking, or hit
   //                the max-duration cap) but the agent hasn't decided
-  //                trash vs send yet. Upload may still be in flight —
-  //                `pendingActionRef` queues whichever the agent picks so
-  //                it fires the moment the upload resolves instead of
-  //                needing its own loading UI.
-  //   sending    → agent tapped send while `locked` (recorder was still
-  //                running); stopping it, encoding, and uploading all
-  //                happen before the message actually goes out.
+  //                trash vs send yet. The bytes are already durable (see
+  //                finalizeRecording → pending-audio-db.ts) — nothing is
+  //                uploading yet, so there's no async result to wait on.
+  //   sending    → the recorder is stopping and flushing its last encoded
+  //                frame (opus-recorder), a purely local, sub-second
+  //                step — NOT a network wait. Only reachable via
+  //                handleSendRecording's "recording" branch (tapped send
+  //                on a locked, hands-free take); finalizeRecording flips
+  //                back to "idle" the moment the bytes are ready and
+  //                hands them to `onRecordAudio`.
+  //   failed     → either a real upload/send failure, or a take rehydrated
+  //                on mount that was left over from an interrupted
+  //                previous attempt (see the rehydration effect above).
+  //                Trash discards it; Send retries it — both act on
+  //                `pendingRecordIdRef.current`.
   //
-  // The bar shown for all three non-idle phases is the same trash/timer/
-  // send layout — only the timer (ticking vs frozen) and the lock
-  // indicator differ.
+  // Deliberately NOT modeled here: waiting on the network. The old
+  // version of this state machine had "sending" mean "uploading to
+  // Storage", which is exactly what could hang forever on iOS Safari/
+  // WKWebView — see finalizeRecording's doc comment. All of that network
+  // work now happens outside this component entirely (message-thread.tsx
+  // + pending-audio-sync.ts), so nothing here ever awaits it.
+  //
+  // The bar shown for every non-idle phase is the same trash/timer/send
+  // layout — only the icon/text in the middle and the lock indicator differ.
   const [micPhase, setMicPhase] = useState<MicPhase>("idle");
   // Holds the Screen Wake Lock exactly while the mic is actively capturing
   // — see use-wake-lock.ts. Without it, iOS's own inactivity timer dims
@@ -361,12 +408,17 @@ export function MessageComposer({
   const captureReadyRef = useRef<Promise<void> | null>(null);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Set once the encoded+uploaded file is ready, so a Send/Trash tap that
-  // arrives after upload completes can act immediately.
-  const uploadedAudioRef = useRef<{ mediaUrl: string; path: string } | null>(null);
-  // Set when the agent decides trash/send *before* the upload (still in
-  // flight) resolves — finalizeRecording checks this once it lands.
-  const pendingActionRef = useRef<"discard" | "send" | null>(null);
+  // Id of the pending-audio-db.ts record backing the current "paused" or
+  // "failed" bar — Send/Discard/Retry all act on whichever record this
+  // points at. Null whenever there's nothing recorded-but-undecided.
+  const pendingRecordIdRef = useRef<string | null>(null);
+  // Set (only while still `micPhase === "recording"`) when the agent taps
+  // Send on a locked, hands-free take — finalizeRecording checks this the
+  // moment the encoder actually finishes and queues the send immediately,
+  // instead of the old pattern of waiting on an in-progress upload.
+  const sendOnStopRef = useRef(false);
+  // Failure reason for the rehydrated/failed bar — display-only.
+  const [failedError, setFailedError] = useState<string | undefined>(undefined);
   const micButtonRef = useRef<HTMLButtonElement>(null);
   const lockHintRef = useRef<HTMLDivElement>(null);
   const gestureRef = useRef<{ startY: number } | null>(null);
@@ -382,6 +434,34 @@ export function MessageComposer({
   const readOnly = !canSend;
   // Media (like free-form text) is only allowed inside the 24h window.
   const inputsDisabled = readOnly || sessionExpired;
+
+  // Rehydrate on mount / conversation switch: if this conversation has a
+  // voice note left over from an interrupted previous attempt (upload or
+  // send that never resolved because the PWA was killed or backgrounded
+  // mid-request — the exact class of bug this whole pipeline exists for),
+  // surface it as "failed" so the agent can retry or discard it instead
+  // of it silently sitting invisible in IndexedDB forever. Only the most
+  // recent one is shown here (one mic bar); the app-wide sweep in
+  // inbox/page.tsx still processes every pending record regardless.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const records = await listPendingAudioByConversation(conversationId);
+        if (cancelled || records.length === 0) return;
+        const latest = records.sort((a, b) => b.createdAt - a.createdAt)[0];
+        pendingRecordIdRef.current = latest.id;
+        setFailedError(latest.lastError);
+        setMicPhase("failed");
+        audioLog("recording:rehydrated", { id: latest.id, status: latest.status });
+      } catch (err) {
+        audioLogError("recording:rehydrate-failed", err, { conversationId });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -675,10 +755,23 @@ export function MessageComposer({
     [stageUpload, uploadAndSend],
   );
 
-  // The encoded Ogg/Opus file from opus-recorder. WhatsApp renders Ogg/
-  // Opus as a playable voice note. Uploads it, then resolves whatever the
-  // agent already decided (discard/send) while the upload was in flight,
-  // or — the common case — just parks the result and waits for a tap.
+  // The encoded Ogg/Opus bytes from opus-recorder, the instant the
+  // recorder actually stops. This used to also kick off the Storage
+  // upload right here and `await` it before ever returning — on iOS
+  // Safari/WKWebView a fetch that's in flight when the PWA gets
+  // backgrounded (screen lock, app switch) can be suspended by the OS and
+  // never settle (neither resolve nor reject), which left this promise —
+  // and with it `micPhase === "sending"`'s Trash/Send buttons, both
+  // `disabled={micPhase === "sending"}` — stuck forever. The only escape
+  // was force-quitting the whole PWA. Root cause + full writeup in the
+  // audio-pipeline investigation; the fix is architectural, not a patch:
+  // no network call happens in this component at all anymore. The bytes
+  // are saved to pending-audio-db.ts (IndexedDB) synchronously below,
+  // then handed off to `onRecordAudio` (message-thread.tsx's
+  // handleQueuedAudio, backed by pending-audio-sync.ts) which owns the
+  // actual upload+send — every step of it timeout-bounded and retried —
+  // entirely outside this component's render lifecycle. This function
+  // itself now never awaits the network, so it always returns fast.
   const finalizeRecording = useCallback(
     async (bytes: Uint8Array) => {
       // Uint8Array is a valid BlobPart at runtime; the cast sidesteps the
@@ -686,51 +779,71 @@ export function MessageComposer({
       const file = new File([bytes as unknown as BlobPart], `voice-${Date.now()}.ogg`, {
         type: "audio/ogg",
       });
+      audioLog("recording:stopped", { sizeBytes: file.size });
       if (file.size === 0) {
         // Cancelled / empty take — nothing to do.
-        pendingActionRef.current = null;
+        sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
         return;
       }
       if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
         toast.error(t("recordingTooLong"));
-        pendingActionRef.current = null;
+        sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
         return;
       }
+
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const record: PendingAudioRecord = {
+        id,
+        conversationId,
+        replyToId: replyTo?.id,
+        blob: file,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        status: "uploading",
+        attempts: 0,
+      };
+
       try {
-        const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
-
-        if (pendingActionRef.current === "discard") {
-          removeStaged(path);
-          pendingActionRef.current = null;
-          setMicPhase("idle");
-          setLocked(false);
-          return;
-        }
-        if (pendingActionRef.current === "send") {
-          onSendMedia({ kind: "audio", mediaUrl: publicUrl, path, replyToId: replyTo?.id });
-          pendingActionRef.current = null;
-          onClearReply?.();
-          setMicPhase("idle");
-          setLocked(false);
-          return;
-        }
-
-        // No decision yet — sit in "paused, ready" state; the trash/send
-        // handlers below read this ref directly once tapped.
-        uploadedAudioRef.current = { mediaUrl: publicUrl, path };
-        setMicPhase("paused");
+        // Persisted BEFORE anything else touches the network — even if
+        // the upload hangs, gets interrupted, or the PWA is killed a
+        // moment later, the recording itself is never lost.
+        await putPendingAudio(record);
+        audioLog("recording:saved-local", { id });
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Upload failed.");
-        pendingActionRef.current = null;
+        // IndexedDB itself failing (private browsing, quota, disabled) —
+        // rare, but don't let it strand the recording: fall through and
+        // hand it off anyway. The downstream pipeline will just fail to
+        // re-read it from IndexedDB on a retry if this ever happens; the
+        // *current* send attempt is unaffected either way.
+        audioLogError("recording:save-local-failed", err, { id });
+      }
+
+      if (sendOnStopRef.current) {
+        sendOnStopRef.current = false;
+        pendingRecordIdRef.current = null;
         setMicPhase("idle");
         setLocked(false);
+        onRecordAudio(id, replyTo?.id);
+        onClearReply?.();
+        return;
       }
+
+      // No decision yet — sit in "paused" with the trash/send bar; the
+      // handlers below act on `id` directly once tapped.
+      pendingRecordIdRef.current = id;
+      setMicPhase("paused");
+      setLocked(false);
     },
-    [onSendMedia, removeStaged, replyTo?.id, onClearReply, t],
+    [conversationId, onRecordAudio, replyTo?.id, onClearReply, t],
   );
 
   // Actual mic/encoder setup — deliberately kept separate from the
@@ -956,7 +1069,7 @@ export function MessageComposer({
     if (micPhase === "recording") {
       // Still actively capturing (held or locked) — full cancel, mirrors
       // the pre-existing cancel behaviour: mark cancelled so
-      // finalizeRecording's ondataavailable callback skips the upload
+      // finalizeRecording's ondataavailable callback skips saving/sending
       // entirely once the recorder actually stops.
       cancelledRef.current = true;
       clearTimer();
@@ -965,47 +1078,48 @@ export function MessageComposer({
       void stopRecorder();
       return;
     }
-    if (micPhase === "paused") {
-      if (uploadedAudioRef.current) {
-        removeStaged(uploadedAudioRef.current.path);
-        uploadedAudioRef.current = null;
-        setMicPhase("idle");
-      } else {
-        // Upload still in flight — finalizeRecording will GC it once it lands.
-        pendingActionRef.current = "discard";
-        setMicPhase("idle");
-      }
+    if (micPhase === "paused" || micPhase === "failed") {
+      const id = pendingRecordIdRef.current;
+      pendingRecordIdRef.current = null;
+      setMicPhase("idle");
       setLocked(false);
+      setFailedError(undefined);
+      if (id) {
+        // Deletes the IndexedDB record and, if it had already made it to
+        // Storage, GCs that object too. Fire-and-forget: nothing in the
+        // UI is waiting on this, and a failure here is a storage nit, not
+        // something the agent needs to see (mirrors deleteAccountMedia's
+        // existing best-effort GC calls elsewhere in this file).
+        void discardPendingAudio(id);
+      }
     }
-  }, [micPhase, clearTimer, removeStaged, stopRecorder]);
+  }, [micPhase, clearTimer, stopRecorder]);
 
   const handleSendRecording = useCallback(() => {
     if (micPhase === "recording") {
       // Only reachable while locked (send isn't shown unless the bar is
       // up, and the bar only stays up hands-free once locked). Stop the
-      // recorder now; finalizeRecording sees pendingActionRef "send" and
-      // sends the moment the upload resolves — no extra tap needed.
+      // recorder now; finalizeRecording sees sendOnStopRef and queues the
+      // send itself the moment the encoder finishes flushing — a local,
+      // sub-second wait, not a network one.
       clearTimer();
-      pendingActionRef.current = "send";
+      sendOnStopRef.current = true;
       setMicPhase("sending");
       void stopRecorder();
       return;
     }
-    if (micPhase === "paused") {
-      if (uploadedAudioRef.current) {
-        const { mediaUrl, path } = uploadedAudioRef.current;
-        uploadedAudioRef.current = null;
-        onSendMedia({ kind: "audio", mediaUrl, path, replyToId: replyTo?.id });
-        onClearReply?.();
-        setMicPhase("idle");
-      } else {
-        // Upload still in flight — finalizeRecording sends the moment it lands.
-        pendingActionRef.current = "send";
-        setMicPhase("sending");
-      }
+    if (micPhase === "paused" || micPhase === "failed") {
+      const id = pendingRecordIdRef.current;
+      pendingRecordIdRef.current = null;
+      setMicPhase("idle");
       setLocked(false);
+      setFailedError(undefined);
+      if (id) {
+        onRecordAudio(id, replyTo?.id);
+        onClearReply?.();
+      }
     }
-  }, [micPhase, clearTimer, onSendMedia, replyTo?.id, onClearReply, stopRecorder]);
+  }, [micPhase, clearTimer, onRecordAudio, replyTo?.id, onClearReply, stopRecorder]);
 
   // Auto-stop at the cap so a forgotten recording can't blow the upload
   // size limit — pauses exactly like an unlocked release (keeps what was
@@ -1020,8 +1134,10 @@ export function MessageComposer({
 
   // Tear down any live recording + timer on unmount so a mid-record
   // navigation doesn't leak the mic, and GC any staged-but-unsent
-  // attachment (image/video/document draft, or an already-uploaded
-  // voice note nobody acted on) so it doesn't orphan in the bucket.
+  // image/video/document draft so it doesn't orphan in the bucket. A
+  // paused/failed voice note is deliberately NOT GC'd here — it's already
+  // durable in pending-audio-db.ts and is meant to survive a conversation
+  // switch or unmount, so the mount effect above can rehydrate it later.
   useEffect(() => {
     return () => {
       clearTimer();
@@ -1030,7 +1146,6 @@ export function MessageComposer({
       // stop() releases the mic stream + audio context inside opus-recorder.
       void stopRecorder();
       removeStaged(draftRef.current?.path);
-      removeStaged(uploadedAudioRef.current?.path);
     };
   }, [clearTimer, clearLongPressTimer, removeStaged, stopRecorder]);
 
@@ -1341,7 +1456,13 @@ export function MessageComposer({
           </div>
 
           {micActive && (
-            <div className="relative flex items-center gap-3 rounded-xl border border-border bg-muted px-3 py-2.5">
+            <div
+              className={cn(
+                "relative flex items-center gap-3 rounded-xl border px-3 py-2.5",
+                micPhase === "failed" ? "border-red-500/40 bg-red-500/5" : "border-border bg-muted",
+              )}
+              title={micPhase === "failed" ? failedError : undefined}
+            >
               {/* Drag-up-to-lock hint — only while still holding and not
                   yet locked. Position/scale/opacity are all written
                   live (via ref, not state) during the gesture in
@@ -1398,13 +1519,20 @@ export function MessageComposer({
                   // actually carries the "locked!" confirmation moment.
                   <Lock className="h-3.5 w-3.5 shrink-0 animate-in text-primary zoom-in-50 duration-200" />
                 )}
-                {micPhase !== "sending" ? (
-                  <RecordingIndicator active={micPhase === "recording"} />
-                ) : (
+                {micPhase === "sending" ? (
                   <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                ) : micPhase === "failed" ? (
+                  <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />
+                ) : (
+                  <RecordingIndicator active={micPhase === "recording"} />
                 )}
-                <span className="text-sm font-medium tabular-nums text-foreground">
-                  {formatDuration(recordSeconds)}
+                <span
+                  className={cn(
+                    "text-sm font-medium tabular-nums",
+                    micPhase === "failed" ? "text-red-500" : "text-foreground",
+                  )}
+                >
+                  {micPhase === "failed" ? t("recordingFailed") : formatDuration(recordSeconds)}
                 </span>
               </div>
 
@@ -1414,7 +1542,8 @@ export function MessageComposer({
                 gateReason="enviar mensagens"
                 disabled={micPhase === "sending"}
                 onClick={handleSendRecording}
-                aria-label={t("sendRecording")}
+                aria-label={micPhase === "failed" ? t("retryRecording") : t("sendRecording")}
+                title={micPhase === "failed" ? t("retryRecording") : undefined}
                 className="h-8 w-8 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
               >
                 <Send className="h-4 w-4" />
