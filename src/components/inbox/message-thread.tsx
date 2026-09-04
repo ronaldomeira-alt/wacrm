@@ -1302,7 +1302,7 @@ export function MessageThread({
         preview: buildReplyPreview(msg, tQuote),
       });
     },
-    [authorLabelFor]
+    [authorLabelFor, tQuote]
   );
 
   // Single reaction-set primitive. emoji === "" removes; otherwise adds/swaps.

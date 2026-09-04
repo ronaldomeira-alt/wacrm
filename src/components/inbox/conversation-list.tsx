@@ -1326,6 +1326,10 @@ function ConversationItem({
         {/* Avatar */}
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
           {contact?.avatar_url ? (
+            // Arbitrary external host (WhatsApp-hosted avatar URL) — not
+            // in next/image's static domain allowlist, so plain <img> is
+            // intentional here.
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={contact.avatar_url}
               alt={displayName}

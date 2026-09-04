@@ -109,7 +109,7 @@ export function Step1ChooseTemplate({
     }
 
     fetchTemplates();
-  }, []);
+  }, [t]);
 
   async function handleImageFile(file: File) {
     const allowed = ALLOWED_MIME_TYPES_BY_KIND.image as readonly string[];

@@ -156,6 +156,9 @@ function MediaImage({
         aria-label={t("photo")}
         className={cn("block cursor-zoom-in", overlay && "relative")}
       >
+        {/* blob: URLs (see above) aren't something next/image's optimizer
+            can fetch/serve — plain <img> is required here. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src ?? ""}
           alt={alt}

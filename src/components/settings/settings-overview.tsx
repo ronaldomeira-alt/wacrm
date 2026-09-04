@@ -139,6 +139,11 @@ export function SettingsOverview({
     return () => {
       cancelled = true;
     };
+    // user (the object) intentionally omitted in favor of user?.id: the
+    // auth object's own reference can change across renders (session
+    // refresh, etc.) without the id changing, and this effect only
+    // actually needs the id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, accountId, canManageMembers]);
 
   const displayName = profile?.full_name || profile?.email || t('yourAccount');

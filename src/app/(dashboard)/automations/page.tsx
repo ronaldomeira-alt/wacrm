@@ -85,6 +85,10 @@ export default function AutomationsPage() {
 
   useEffect(() => {
     load()
+    // load is a plain function recreated every render (not useCallback);
+    // depending on it would turn this mount-only fetch into a fetch-on-
+    // every-render loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function toggleActive(a: Automation, next: boolean) {

@@ -79,6 +79,13 @@ export function ContactForm({
       setDupMatch(null);
       fetchTags();
     }
+    // contactTags and fetchTags intentionally omitted: this effect should
+    // only reset the form's fields when the dialog opens (or the target
+    // contact changes) — not on every parent re-render that happens to
+    // pass a new contactTags array reference while the dialog is already
+    // open, which would blow away in-progress tag edits. fetchTags is
+    // also a plain function recreated every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, contact]);
 
   // Look up an existing contact with this number (new contacts only).

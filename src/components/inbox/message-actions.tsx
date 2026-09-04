@@ -84,6 +84,9 @@ function AppleEmojiImage({
     return <span className="text-lg leading-none">{emoji}</span>;
   }
   return (
+    // jsdelivr CDN, not in next/image's domain allowlist — also relies on
+    // plain <img>'s onError to fall back to the native glyph above.
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={appleEmojiImageUrl(emoji)}
       alt={label ?? emoji}

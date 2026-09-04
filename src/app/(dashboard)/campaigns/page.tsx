@@ -112,6 +112,10 @@ export default function CampaignsPage() {
 
   useEffect(() => {
     fetchCampaigns();
+    // fetchCampaigns is a plain function recreated every render (not
+    // useCallback); depending on it would turn this mount-only fetch into
+    // a fetch-on-every-render loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const anySending = useMemo(
@@ -153,6 +157,11 @@ export default function CampaignsPage() {
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
+    // fetchCampaigns intentionally omitted (same reason as the mount
+    // effect above): it's recreated every render, so depending on it
+    // would tear down/re-add the listener and restart polling every
+    // render instead of only when anySending flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anySending]);
 
   async function handleResume(e: React.MouseEvent, campaignId: string) {

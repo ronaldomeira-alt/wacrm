@@ -107,7 +107,13 @@ export function FollowupsInteligentesSection() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+    // fetchFollowupPlans intentionally omitted: it's a plain function
+    // recreated every render (not useCallback), so depending on it would
+    // re-subscribe/re-fetch on every render instead of once on mount.
+    // supabase IS safe to depend on — createClient() returns a
+    // module-level singleton, so its reference never changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase]);
 
   return (
     <div className="space-y-4">

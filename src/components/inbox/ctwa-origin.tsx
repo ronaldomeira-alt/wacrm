@@ -111,6 +111,9 @@ export function CtwaOrigin({ referral }: CtwaOriginProps) {
 
         <div className="flex-1 overflow-y-auto px-4">
           {adMediaUrl && (
+            // Arbitrary Meta-hosted ad media URL — not in next/image's
+            // static domain allowlist.
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={adMediaUrl}
               alt={t("imageAlt")}
