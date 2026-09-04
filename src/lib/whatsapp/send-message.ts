@@ -97,6 +97,16 @@ export interface SendMessageParams {
    * null there, same as historic messages sent before this field existed.
    */
   senderId?: string | null;
+  /**
+   * Stable id from a caller that may retry the same logical send after an
+   * ambiguous outcome (timeout/abort doesn't mean Meta wasn't already
+   * called) — currently only pending-audio-sync.ts, which reuses a voice
+   * note's pending-audio-db.ts record id across every retry/resume of the
+   * same recording. When set, a message already persisted with this
+   * `client_ref` is returned as-is instead of sending to Meta again. See
+   * migration 20260903230000 for the schema + full incident writeup.
+   */
+  clientRef?: string | null;
 }
 
 export interface SendMessageResult {
@@ -211,6 +221,7 @@ export async function sendMessageToConversation(
     interactivePayload,
     replyToMessageId,
     senderId,
+    clientRef,
   } = params;
 
   if (!conversationId) {
@@ -219,6 +230,22 @@ export async function sendMessageToConversation(
       'conversation_id is required',
       400
     );
+  }
+
+  // Idempotency short-circuit: if this exact client-side attempt already
+  // landed (a prior call reached this point, called Meta, and persisted —
+  // the caller just never found out because its own fetch timed out or
+  // was aborted), return that result instead of sending to Meta again.
+  if (clientRef) {
+    const { data: existing } = await db
+      .from('messages')
+      .select('id, message_id')
+      .eq('conversation_id', conversationId)
+      .eq('client_ref', clientRef)
+      .maybeSingle();
+    if (existing) {
+      return { messageId: existing.id, whatsappMessageId: existing.message_id ?? '' };
+    }
   }
 
   validateSendMessageParams({
@@ -501,6 +528,7 @@ export async function sendMessageToConversation(
       message_id: waMessageId,
       status: 'sent',
       reply_to_message_id: replyToMessageId || null,
+      client_ref: clientRef || null,
     })
     .select()
     .single();

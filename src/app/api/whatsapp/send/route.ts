@@ -69,6 +69,10 @@ export async function POST(request: Request) {
       // request also claims the single-send guard — see the block below.
       // Absent for every other send; zero effect on the existing paths.
       action_item_id,
+      // Idempotency key for callers that may retry the same logical send
+      // after an ambiguous outcome (currently only the voice-note pipeline
+      // — see SendMessageParams.clientRef). Absent for every other send.
+      client_ref,
     } = body
 
     if ((!conversationIdInput && !contact_id) || !message_type) {
@@ -215,6 +219,7 @@ export async function POST(request: Request) {
         interactivePayload: interactive_payload,
         replyToMessageId: reply_to_message_id,
         senderId: userId,
+        clientRef: typeof client_ref === 'string' ? client_ref : null,
       })
 
       // Best-effort, never blocks the response: a successful send from a

@@ -108,6 +108,12 @@ async function sendToWhatsapp(record: PendingAudioRecord, cb?: PendingAudioCallb
             message_type: "audio",
             media_url: record.mediaUrl,
             reply_to_message_id: record.replyToId,
+            // record.id is stable across every retry of this recording
+            // (this call, a later manual retry, or the recovery sweep) —
+            // see migration 20260903230000 for why this is required: a
+            // client-side timeout/abort here does not mean the server
+            // didn't already reach Meta, so a retry must be idempotent.
+            client_ref: record.id,
           }),
           signal: controller.signal,
         });
