@@ -11,7 +11,6 @@ import {
   Mail,
   Copy,
   Check,
-  User,
   Tag as TagIcon,
   Kanban,
   ChevronRight,

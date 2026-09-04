@@ -15,7 +15,6 @@ import {
 } from '@/lib/storage/upload-media';
 import {
   Loader2,
-  FileText,
   ArrowRight,
   Rocket,
   Smartphone,

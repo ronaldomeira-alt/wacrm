@@ -16,7 +16,6 @@ import { MessageThread, LOCAL_AUDIO_PREFIX } from "@/components/inbox/message-th
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
 import { DeleteLeadDialog } from "@/components/contacts/delete-lead-dialog";
 import { BlockLeadDialog } from "@/components/contacts/block-lead-dialog";
-import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { scanAndRetryAllPendingAudio } from "@/lib/inbox/pending-audio-sync";

@@ -54,7 +54,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { MessageBubble } from './message-bubble';
 import { MessageActions } from './message-actions';
 import { MessageAlbum, computeAlbumGroups } from './message-album';
