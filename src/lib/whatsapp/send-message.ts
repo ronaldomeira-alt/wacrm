@@ -50,6 +50,37 @@ import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import { generateDocumentPreviewFromUrl, looksLikePdf } from '@/lib/documents/generate-document-preview';
 import { logError } from '@/lib/observability/log';
 
+/**
+ * Structured, greppable log for the `clientRef` idempotency path —
+ * server-side counterpart to the client's `[voice-note]` pipeline logging
+ * (src/lib/inbox/pending-audio-log.ts), same prefix so a recording can be
+ * traced end-to-end across both. `clientRef` currently only ever comes
+ * from the voice-note pipeline (pending-audio-sync.ts reuses a recording's
+ * durable id across every retry/resume), hence the prefix — should another
+ * caller start passing `clientRef` later, this stays accurate since it's
+ * describing the mechanism, not literally "audio".
+ *
+ * Answers, by grepping server logs for "[voice-note]":
+ *  - how many retries happened at all (any line here)
+ *  - how many were short-circuited by idempotency (status=idempotent-hit)
+ *  - which message a retry reused (message_id=…)
+ *  - which recording/attempt it traces back to (client_ref=…)
+ */
+function logIdempotencyEvent(fields: {
+  client_ref: string;
+  status: 'idempotent-hit' | 'claim-conflict';
+  message_id?: string;
+  action: string;
+}): void {
+  const parts = [
+    `client_ref=${fields.client_ref}`,
+    `status=${fields.status}`,
+    fields.message_id ? `message_id=${fields.message_id}` : null,
+    `action=${fields.action}`,
+  ].filter(Boolean);
+  console.log(`[voice-note] ${parts.join(' ')}`);
+}
+
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
   'text',
@@ -232,22 +263,6 @@ export async function sendMessageToConversation(
     );
   }
 
-  // Idempotency short-circuit: if this exact client-side attempt already
-  // landed (a prior call reached this point, called Meta, and persisted —
-  // the caller just never found out because its own fetch timed out or
-  // was aborted), return that result instead of sending to Meta again.
-  if (clientRef) {
-    const { data: existing } = await db
-      .from('messages')
-      .select('id, message_id')
-      .eq('conversation_id', conversationId)
-      .eq('client_ref', clientRef)
-      .maybeSingle();
-    if (existing) {
-      return { messageId: existing.id, whatsappMessageId: existing.message_id ?? '' };
-    }
-  }
-
   validateSendMessageParams({
     messageType,
     contentText,
@@ -268,6 +283,82 @@ export async function sendMessageToConversation(
 
   if (convError || !conversation) {
     throw new SendMessageError('not_found', 'Conversation not found', 404);
+  }
+
+  // Idempotency: claim `clientRef` atomically via the DB's UNIQUE
+  // constraint (messages_client_ref_unique, migration 20260903230000 +
+  // 20260903231500) rather than a plain app-level check-then-insert. A
+  // SELECT-then-decide check still leaves a window where two genuinely
+  // concurrent requests for the same client_ref — e.g. a client-side
+  // timeout firing a retry while the original request's Meta call is
+  // still in flight server-side, the exact voice-note double-send
+  // incident this exists for — could both pass the check and both call
+  // Meta. This upsert either wins the claim (this call proceeds to Meta,
+  // owning `claimedMessageId`) or loses it: a loser whose winner already
+  // finished gets that result back instead of ever touching Meta; a loser
+  // whose winner is still mid-flight is rejected outright (409) rather
+  // than risk a duplicate send — pending-audio-sync.ts treats that as an
+  // ordinary failed attempt and retries later, by which point the winner
+  // has settled.
+  let claimedMessageId: string | null = null;
+  if (clientRef) {
+    const { data: claimed, error: claimError } = await db
+      .from('messages')
+      .upsert(
+        {
+          conversation_id: conversationId,
+          sender_type: 'agent',
+          sender_id: senderId || null,
+          content_type: messageType,
+          status: 'sending',
+          client_ref: clientRef,
+        },
+        { onConflict: 'client_ref', ignoreDuplicates: true }
+      )
+      .select('id')
+      .maybeSingle();
+
+    if (claimError) {
+      logError('send-message.claim_failed', claimError, { clientRef });
+      throw new SendMessageError(
+        'db_error',
+        `Failed to claim idempotent send: ${claimError.message}`,
+        500
+      );
+    }
+
+    if (claimed) {
+      claimedMessageId = claimed.id;
+    } else {
+      // Lost the race — another request (an earlier attempt, or one that
+      // beat us by microseconds) already owns this client_ref.
+      const { data: existing } = await db
+        .from('messages')
+        .select('id, message_id, status')
+        .eq('client_ref', clientRef)
+        .maybeSingle();
+
+      if (existing?.status === 'sent' && existing.message_id) {
+        logIdempotencyEvent({
+          client_ref: clientRef,
+          status: 'idempotent-hit',
+          message_id: existing.id,
+          action: 'returned_existing_message',
+        });
+        return { messageId: existing.id, whatsappMessageId: existing.message_id };
+      }
+
+      logIdempotencyEvent({
+        client_ref: clientRef,
+        status: 'claim-conflict',
+        action: 'rejected_in_progress',
+      });
+      throw new SendMessageError(
+        'conflict',
+        'A send for this client_ref is already in progress',
+        409
+      );
+    }
   }
 
   const contact = conversation.contact;
@@ -465,6 +556,20 @@ export async function sendMessageToConversation(
 
     if (lastError) throw lastError;
   } catch (err) {
+    // A real Meta failure (not an ambiguous client timeout) — release the
+    // claim row so it doesn't sit at status:'sending' forever, which
+    // would permanently reject every future retry of this client_ref as
+    // "already in progress" (see the claim-conflict branch above) even
+    // though nothing is actually in progress anymore.
+    if (claimedMessageId) {
+      const { error: releaseError } = await db
+        .from('messages')
+        .delete()
+        .eq('id', claimedMessageId);
+      if (releaseError) {
+        logError('send-message.claim_release_failed', releaseError, { clientRef });
+      }
+    }
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
     if (err instanceof MetaApiError) {
@@ -498,11 +603,18 @@ export async function sendMessageToConversation(
   // writer of (automation/flow/AI sends persist as sender_type='bot'),
   // so this can only be true for a genuine agent send, and only once
   // per conversation.
-  const { count: priorAgentMessageCount } = await db
+  // A clientRef claim already inserted its own row (status: 'sending')
+  // above, before this count runs — exclude it here so it doesn't count
+  // itself and make a genuine first agent message look like a second one.
+  let priorAgentMessageCountQuery = db
     .from('messages')
     .select('id', { count: 'exact', head: true })
     .eq('conversation_id', conversationId)
     .eq('sender_type', 'agent');
+  if (claimedMessageId) {
+    priorAgentMessageCountQuery = priorAgentMessageCountQuery.neq('id', claimedMessageId);
+  }
+  const { count: priorAgentMessageCount } = await priorAgentMessageCountQuery;
   const isFirstAgentMessage = (priorAgentMessageCount ?? 0) === 0;
 
   // Persist the sent message. Field names MUST match the messages
@@ -513,25 +625,46 @@ export async function sendMessageToConversation(
   const interactiveBody =
     messageType === 'interactive' ? interactivePayload!.body : null;
 
-  const { data: messageRecord, error: msgError } = await db
-    .from('messages')
-    .insert({
-      conversation_id: conversationId,
-      sender_type: 'agent',
-      sender_id: senderId || null,
-      content_type: messageType,
-      content_text: interactiveBody ?? contentText ?? null,
-      media_url: mediaUrl || null,
-      template_name: templateName || null,
-      interactive_payload:
-        messageType === 'interactive' ? interactivePayload : null,
-      message_id: waMessageId,
-      status: 'sent',
-      reply_to_message_id: replyToMessageId || null,
-      client_ref: clientRef || null,
-    })
-    .select()
-    .single();
+  // A claimed client_ref already has its row (status: 'sending') from the
+  // idempotency claim above — fill it in with an UPDATE rather than
+  // inserting a second row, which messages_client_ref_unique would reject
+  // anyway. Every other send path (no clientRef) inserts fresh, exactly
+  // as before this idempotency work existed.
+  const { data: messageRecord, error: msgError } = claimedMessageId
+    ? await db
+        .from('messages')
+        .update({
+          content_text: interactiveBody ?? contentText ?? null,
+          media_url: mediaUrl || null,
+          template_name: templateName || null,
+          interactive_payload:
+            messageType === 'interactive' ? interactivePayload : null,
+          message_id: waMessageId,
+          status: 'sent',
+          reply_to_message_id: replyToMessageId || null,
+        })
+        .eq('id', claimedMessageId)
+        .select()
+        .single()
+    : await db
+        .from('messages')
+        .insert({
+          conversation_id: conversationId,
+          sender_type: 'agent',
+          sender_id: senderId || null,
+          content_type: messageType,
+          content_text: interactiveBody ?? contentText ?? null,
+          media_url: mediaUrl || null,
+          template_name: templateName || null,
+          interactive_payload:
+            messageType === 'interactive' ? interactivePayload : null,
+          message_id: waMessageId,
+          status: 'sent',
+          reply_to_message_id: replyToMessageId || null,
+          client_ref: clientRef || null,
+        })
+        .select()
+        .single();
 
   if (msgError) {
     logError('send-message.insert_failed', msgError);
