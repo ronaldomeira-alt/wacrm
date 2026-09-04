@@ -308,7 +308,7 @@ interface MessageThreadProps {
 // while pending-audio-sync.ts's upload/send pipeline is still running (or
 // has failed) for it. The suffix is the pending-audio-db.ts record id, so
 // handleRetryAudio / handleDeleteMessage can recover it.
-const LOCAL_AUDIO_PREFIX = 'local-audio-';
+export const LOCAL_AUDIO_PREFIX = 'local-audio-';
 
 function extractStoragePath(
   mediaUrl: string | undefined,

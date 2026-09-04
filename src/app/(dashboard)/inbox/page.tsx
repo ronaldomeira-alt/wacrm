@@ -12,7 +12,7 @@ import type { Conversation, Message, Contact, ConversationStatus, Profile } from
 import { fetchAssignedAgentMap } from "@/lib/responder-color";
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
-import { MessageThread } from "@/components/inbox/message-thread";
+import { MessageThread, LOCAL_AUDIO_PREFIX } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
 import { DeleteLeadDialog } from "@/components/contacts/delete-lead-dialog";
 import { BlockLeadDialog } from "@/components/contacts/block-lead-dialog";
@@ -364,6 +364,20 @@ function InboxPageInner() {
           setMessages((prev) => {
             // Avoid duplicates
             if (prev.some((m) => m.id === newMsg.id)) return prev;
+            // A voice note claims its client_ref row (status: 'sending',
+            // no media yet) BEFORE Meta is even called — see
+            // sendMessageToConversation's idempotency claim — so its
+            // realtime INSERT can land while message-thread.tsx's own
+            // `local-audio-<id>` optimistic bubble (handleQueuedAudio) is
+            // still showing. Skip adding this placeholder rather than
+            // showing a second, empty audio bubble; the UPDATE event once
+            // the send actually completes reconciles the two (see below).
+            if (
+              newMsg.client_ref &&
+              prev.some((m) => m.id === `${LOCAL_AUDIO_PREFIX}${newMsg.client_ref}`)
+            ) {
+              return prev;
+            }
             // Replace optimistic message if it exists
             const withoutOptimistic = prev.filter(
               (m) => !m.id.startsWith("temp-")
@@ -411,10 +425,22 @@ function InboxPageInner() {
       }
 
       if (event.eventType === "UPDATE") {
-        // Update message status
-        setMessages((prev) =>
-          prev.map((m) => (m.id === newMsg.id ? { ...m, ...newMsg } : m))
-        );
+        setMessages((prev) => {
+          // The send this row belongs to has now completed (Meta call +
+          // final content, see sendMessageToConversation) — if the
+          // `local-audio-<id>` optimistic bubble is still showing for it,
+          // this is the moment to swap it for the real row: a plain
+          // id-match (below) can never find it, since the optimistic
+          // bubble uses its own local id, not the DB row's.
+          if (newMsg.client_ref) {
+            const localId = `${LOCAL_AUDIO_PREFIX}${newMsg.client_ref}`;
+            if (prev.some((m) => m.id === localId)) {
+              return [...prev.filter((m) => m.id !== localId), newMsg];
+            }
+          }
+          // Update message status
+          return prev.map((m) => (m.id === newMsg.id ? { ...m, ...newMsg } : m));
+        });
       }
 
       if (event.eventType === "DELETE") {

@@ -508,6 +508,15 @@ export interface Message {
   created_at: string;
   reply_to_message_id?: string;
   /**
+   * Idempotency key from sendMessageToConversation's clientRef claim —
+   * currently only ever set for agent-sent audio (pending-audio-sync.ts
+   * reuses a recording's pending-audio-db.ts id across every retry).
+   * Read client-side to reconcile a `local-audio-<id>` optimistic bubble
+   * (message-thread.tsx) with the real row once realtime delivers it —
+   * see handleMessageEvent in inbox/page.tsx.
+   */
+  client_ref?: string | null;
+  /**
    * Only set when `content_type === 'interactive'` — the stable id of
    * the button or list row the customer tapped. The Flows engine uses
    * this to route the next node; the inbox bubble uses it as a styling
