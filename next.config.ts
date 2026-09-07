@@ -153,6 +153,7 @@ const nextConfig: NextConfig = {
       "node_modules/pdf-to-img/node_modules/pdfjs-dist/wasm/**/*",
       "node_modules/pdf-to-img/node_modules/pdfjs-dist/iccs/**/*",
       "node_modules/@swc/helpers/esm/**/*",
+      "node_modules/@napi-rs/canvas/**/*",
     ],
   },
 
