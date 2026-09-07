@@ -589,17 +589,18 @@ function MessageBubbleComponent({
   // Same reasoning as isFramedPhoto, just for video — see MediaVideo.
   const isFramedVideo =
     message.content_type === "video" && !!message.media_url && !message.content_text;
-  const isFramedMedia = isFramedPhoto || isFramedVideo || isFramedLink;
-
   // A document message with a generated PDF preview renders its own
   // self-contained card (thumbnail + footer with an embedded timestamp,
   // see DocumentPreviewCard) — the bubble's own timestamp/status row
   // below would just duplicate it, so it's suppressed for this case only.
-  // Not treated as "framed" media (no edge-to-edge 2px frame): the card
-  // already draws its own border and sits fine inside the bubble's
-  // normal padding.
+  // Treated as framed media (edge-to-edge 2px frame, same as a caption-less
+  // photo/video/link) so the card's own thumbnail — not the bubble's
+  // px-3/py-2 text padding — defines how much of the bubble it fills;
+  // documents never carry a caption (see MessageContent's "document" case),
+  // so there's no text row that would need the wider padding back.
   const hasDocumentPreview =
     message.content_type === "document" && !!message.document_thumbnail_url;
+  const isFramedMedia = isFramedPhoto || isFramedVideo || isFramedLink || hasDocumentPreview;
 
   // Voice notes render their own WhatsApp-style player (waveform, speed
   // control) with an embedded timestamp/status footer — same reasoning as
@@ -687,6 +688,23 @@ function MessageBubbleComponent({
               time,
               status: isAgent ? <StatusIcon status={message.status} overlay /> : null,
             }}
+          />
+        ) : hasDocumentPreview && message.media_url ? (
+          <DocumentContent
+            url={message.media_url}
+            filename={message.content_text || t("document")}
+            isAgent={isAgent}
+            thumbnailUrl={message.document_thumbnail_url ?? null}
+            fileSize={message.document_file_size ?? null}
+            time={time}
+            status={isAgent ? <StatusIcon status={message.status} /> : null}
+            verLabel={t("documentView")}
+            baixarLabel={t("documentDownload")}
+            pagesLabel={
+              message.document_page_count
+                ? t("documentPages", { count: message.document_page_count })
+                : null
+            }
           />
         ) : (
           <>
