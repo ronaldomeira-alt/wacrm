@@ -20,6 +20,7 @@
 // ============================================================
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { after } from 'next/server';
 
 import { runAutomationsForTrigger } from '@/lib/automations/engine';
 import {
@@ -687,19 +688,27 @@ export async function sendMessageToConversation(
   }
 
   // WhatsApp-style PDF preview (thumbnail + page count + size) for an
-  // outbound document. Awaited — not fire-and-forget: this function has
-  // no after()-style keep-alive (see isFirstAgentMessage below), so a
-  // detached `void` here risks being frozen mid-download/render once the
-  // response is sent, same reasoning as that automation dispatch. Every
-  // caller of sendMessageToConversation (composer, public v1 API, Flows
-  // send_media) gets it from this one place; generateDocumentPreviewFromUrl
-  // owns its own try/catch and never throws, so this can't fail the send.
+  // outbound document. Executed in background via Next.js after()
+  // so the message send completes and returns immediately (<1-2s).
+  // after() keeps the serverless/node environment alive until preview
+  // generation finishes. If invoked outside request context (e.g. tests),
+  // falls back to a non-blocking detached promise.
+  // generateDocumentPreviewFromUrl owns its own try/catch and never throws.
   if (messageType === 'document' && resolvedMediaUrl && looksLikePdf(null, filename ?? null)) {
-    await generateDocumentPreviewFromUrl({
+    const previewPayload = {
       messageId: messageRecord.id,
       accountId,
       url: resolvedMediaUrl,
-    });
+    };
+    try {
+      after(async () => {
+        await generateDocumentPreviewFromUrl(previewPayload);
+      });
+    } catch {
+      void generateDocumentPreviewFromUrl(previewPayload).catch((err) => {
+        logError('send-message.document_preview_background_failed', err);
+      });
+    }
   }
 
   // Fire "first_agent_message" — awaited (not fire-and-forget): this

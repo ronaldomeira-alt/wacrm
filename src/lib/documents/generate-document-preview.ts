@@ -39,11 +39,11 @@ export async function generateDocumentPreview({
     const preview = await renderPdfPreview(pdfBuffer);
     if (!preview) return;
 
-    const path = `account-${accountId}/doc-thumbs/${messageId}.png`;
+    const path = `account-${accountId}/doc-thumbs/${messageId}.jpg`;
     const { error: uploadError } = await supabaseAdmin()
       .storage.from("chat-media")
       .upload(path, preview.thumbnail, {
-        contentType: "image/png",
+        contentType: preview.contentType ?? "image/jpeg",
         upsert: true,
       });
     if (uploadError) {
