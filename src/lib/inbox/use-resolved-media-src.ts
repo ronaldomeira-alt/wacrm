@@ -332,36 +332,42 @@ export function useResolvedMediaSrcs(urls: (string | undefined)[]): {
   loading: boolean;
   error: boolean;
 } {
-  const initialResolved = useMemo(() => {
-    return urls.map((u) => getCachedMediaSrc(u) ?? u ?? "");
-  }, [urls]);
-
-  const allCached = useMemo(() => {
-    return urls.every((u) => !u || !!getCachedMediaSrc(u));
-  }, [urls]);
-
-  const [resolvedUrls, setResolvedUrls] = useState<string[]>(initialResolved);
-  const [loading, setLoading] = useState<boolean>(!allCached && urls.length > 0);
+  const [asyncResolved, setAsyncResolved] = useState<Map<string, string>>(() => new Map());
   const [error, setError] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const missingKeys = urls.filter(
-      (u): u is string => !!u && isR2MediaKey(u) && !getCachedMediaSrc(u),
-    );
-    const missingInbound = urls.filter(
-      (u): u is string =>
-        !!u && u.startsWith("/api/whatsapp/media/") && !getInboundBlob(u),
-    );
+  // Synchronously compute current resolved URLs from memory cache and async map
+  const resolvedUrls = useMemo(() => {
+    return urls.map((u) => {
+      if (!u) return "";
+      return (
+        asyncResolved.get(u) ??
+        getCachedMediaSrc(u) ??
+        (isR2MediaKey(u) || u.startsWith("/api/whatsapp/media/") ? "" : u)
+      );
+    });
+  }, [urls, asyncResolved]);
 
+  const missingKeys = useMemo(() => {
+    return urls.filter(
+      (u): u is string => !!u && isR2MediaKey(u) && !getCachedMediaSrc(u) && !asyncResolved.has(u),
+    );
+  }, [urls, asyncResolved]);
+
+  const missingInbound = useMemo(() => {
+    return urls.filter(
+      (u): u is string =>
+        !!u && u.startsWith("/api/whatsapp/media/") && !getInboundBlob(u) && !asyncResolved.has(u),
+    );
+  }, [urls, asyncResolved]);
+
+  const loading = missingKeys.length > 0 || missingInbound.length > 0;
+
+  useEffect(() => {
     if (missingKeys.length === 0 && missingInbound.length === 0) {
-      setResolvedUrls(urls.map((u) => getCachedMediaSrc(u) ?? u ?? ""));
-      setLoading(false);
       return;
     }
 
-    setLoading(true);
-    setError(false);
+    let cancelled = false;
 
     (async () => {
       try {
@@ -383,14 +389,16 @@ export function useResolvedMediaSrcs(urls: (string | undefined)[]): {
         );
 
         if (cancelled) return;
-        setResolvedUrls(
-          urls.map((u) => (u ? (resolvedMap.get(u) ?? getCachedMediaSrc(u) ?? u) : "")),
-        );
-        setLoading(false);
+        setAsyncResolved((prev) => {
+          const next = new Map(prev);
+          for (const [k, v] of resolvedMap.entries()) {
+            next.set(k, v);
+          }
+          return next;
+        });
       } catch {
         if (!cancelled) {
           setError(true);
-          setLoading(false);
         }
       }
     })();
@@ -398,7 +406,7 @@ export function useResolvedMediaSrcs(urls: (string | undefined)[]): {
     return () => {
       cancelled = true;
     };
-  }, [urls]);
+  }, [missingKeys, missingInbound]);
 
   return { urls: resolvedUrls, loading, error };
 }

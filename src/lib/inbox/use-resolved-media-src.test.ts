@@ -3,7 +3,6 @@ import {
   getCachedMediaSrc,
   seedMediaResolution,
   resolveMediaKeys,
-  prefetchMediaKeys,
   __resetResolvedMediaCacheForTests,
 } from "./use-resolved-media-src";
 import { isR2MediaKey } from "@/lib/storage/media-url-kind";
@@ -131,11 +130,11 @@ describe("use-resolved-media-src", () => {
       const revokeMock = vi.fn();
       vi.stubGlobal("URL", {
         ...globalThis.URL,
-        createObjectURL: vi.fn((blob: Blob) => `blob:mock-${Math.random()}`),
+        createObjectURL: vi.fn(() => `blob:mock-${Math.random()}`),
         revokeObjectURL: revokeMock,
       });
 
-      const fetchMock = vi.fn(async (url: string) => {
+      const fetchMock = vi.fn(async () => {
         return {
           ok: true,
           blob: async () => new Blob(["test"], { type: "image/jpeg" }),
