@@ -100,6 +100,8 @@ export function getR2Bucket(): string {
 
 export { isR2MediaKey } from "./media-url-kind";
 
+export const RESOLVE_TTL_SECONDS = 86400;
+
 export type MediaKind = "image" | "video" | "audio" | "document";
 
 /**

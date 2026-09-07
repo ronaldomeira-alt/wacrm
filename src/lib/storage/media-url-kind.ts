@@ -14,7 +14,9 @@
  * known proxy path," not any positive R2-specific pattern, so a future
  * legitimate key format doesn't silently fall through.
  */
-export function isR2MediaKey(value: string | null | undefined): value is string {
+export type R2MediaKey = string & { readonly __brand?: "R2MediaKey" };
+
+export function isR2MediaKey(value: string | null | undefined): value is R2MediaKey {
   if (!value) return false;
   if (value.startsWith("http://") || value.startsWith("https://")) return false;
   if (value.startsWith("/api/whatsapp/media/")) return false;

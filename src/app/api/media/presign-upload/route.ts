@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { hasMinRole } from "@/lib/auth/roles";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
-import { buildR2MediaKey, getR2Bucket, getR2Client, type MediaKind } from "@/lib/storage/r2-client";
+import {
+  buildR2MediaKey,
+  getR2Bucket,
+  getR2Client,
+  RESOLVE_TTL_SECONDS,
+  type MediaKind,
+} from "@/lib/storage/r2-client";
 import {
   isMediaPurpose,
   ruleForPurpose,
@@ -102,10 +108,31 @@ export async function POST(request: Request) {
       if (bumpError) {
         console.error("[media/presign-upload] reference bump failed:", bumpError);
       }
+
+      let resolvedUrl: string | undefined;
+      let expiresAt: number | undefined;
+      if (visibility === "private") {
+        try {
+          const client = getR2Client();
+          const bucket = getR2Bucket();
+          const command = new GetObjectCommand({
+            Bucket: bucket,
+            Key: existing.object_key,
+            ResponseCacheControl: "private, max-age=86400, immutable",
+          });
+          resolvedUrl = await getSignedUrl(client, command, { expiresIn: RESOLVE_TTL_SECONDS });
+          expiresAt = Date.now() + RESOLVE_TTL_SECONDS * 1000;
+        } catch (e) {
+          console.error("[media/presign-upload] dedup sign failed:", e);
+        }
+      }
+
       return NextResponse.json({
         dedup: true,
         key: existing.object_key,
         publicUrl: existing.public_url ?? undefined,
+        resolvedUrl,
+        expiresAt,
       });
     }
     if (existing?.status === "pending") {
@@ -146,7 +173,12 @@ export async function POST(request: Request) {
     const client = getR2Client();
     const uploadUrl = await getSignedUrl(
       client,
-      new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: contentType }),
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: objectKey,
+        ContentType: contentType,
+        CacheControl: "private, max-age=31536000, immutable",
+      }),
       { expiresIn: PRESIGN_TTL_SECONDS },
     );
 

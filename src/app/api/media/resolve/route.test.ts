@@ -107,6 +107,17 @@ describe('POST /api/media/resolve', () => {
     expect(json.resolved).toHaveLength(1)
     expect(json.resolved[0].key).toBe(key)
     expect(json.invalid).toEqual([])
+
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner')
+    expect(getSignedUrl).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        input: expect.objectContaining({
+          ResponseCacheControl: 'private, max-age=86400, immutable',
+        }),
+      }),
+      { expiresIn: 86400 },
+    )
   })
 
   it("rejects another account's key by prefix alone, before any DB round trip", async () => {

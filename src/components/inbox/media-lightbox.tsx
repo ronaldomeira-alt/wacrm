@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { ImageOff, X } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useTranslations } from "next-intl";
+import { useResolvedMediaSrc } from "@/lib/inbox/use-resolved-media-src";
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
@@ -30,6 +31,53 @@ interface MediaLightboxProps {
   images?: string[];
   /** Index into `images` to open on. Ignored when `images` is omitted. */
   initialIndex?: number;
+}
+
+function LightboxImageItem({
+  src,
+  alt,
+  className,
+  style,
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  // Defensive auto-resolve layer (Safeguard 4):
+  // If `src` was already resolved outside (primary path in MessageAlbum/MessageBubble),
+  // useResolvedMediaSrc returns synchronously from cache / plain URL with 0ms delay.
+  // If an unresolved key or proxy URL was passed, it falls back to resolving it safely here.
+  const { src: resolvedSrc, loading, error } = useResolvedMediaSrc(src);
+  const [loadError, setLoadError] = useState(false);
+
+  if (error || loadError) {
+    return (
+      <div className="flex h-full w-full items-center justify-center p-4">
+        <ImageOff className="h-10 w-10 text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (loading || !resolvedSrc) {
+    return (
+      <div className="flex h-full w-full items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={resolvedSrc}
+      alt={alt}
+      draggable={false}
+      onError={() => setLoadError(true)}
+      className={className}
+      style={style}
+    />
+  );
 }
 
 /**
@@ -296,11 +344,9 @@ export function MediaLightbox({
                 key={i}
                 className="flex h-full w-full snap-start snap-always items-center justify-center"
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
+                <LightboxImageItem
                   src={url}
                   alt={i === 0 ? alt : ""}
-                  draggable={false}
                   className="max-h-full max-w-full object-contain"
                 />
               </div>
@@ -317,11 +363,9 @@ export function MediaLightbox({
             onClick={handleClick}
             onWheel={handleWheel}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <LightboxImageItem
               src={currentSrc}
               alt={alt}
-              draggable={false}
               className="max-h-full max-w-full object-contain"
               style={{
                 transform: `translate(${tx}px, ${ty}px) scale(${scale})`,

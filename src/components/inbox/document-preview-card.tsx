@@ -157,38 +157,49 @@ export function DocumentPreviewCard({
             {status}
           </span>
         </div>
-        <div
-          className={cn(
-            "flex items-center gap-2 border-t pt-2.5 text-sm font-medium",
-            isAgent ? "border-primary-foreground/20" : "border-border/60",
-          )}
-        >
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={cn(
-              "flex-1 rounded-md py-1 text-center",
-              isAgent
-                ? "text-primary-foreground hover:bg-primary-foreground/10"
-                : "text-primary-on-soft hover:bg-primary/10",
-            )}
-          >
-            {verLabel}
-          </a>
-          <button
-            type="button"
-            onClick={() => downloadFile(url, filename)}
-            className={cn(
-              "flex-1 rounded-md py-1 text-center",
-              isAgent
-                ? "text-primary-foreground hover:bg-primary-foreground/10"
-                : "text-primary-on-soft hover:bg-primary/10",
-            )}
-          >
-            {baixarLabel}
-          </button>
-        </div>
+        {(() => {
+          const isReady = url.startsWith("http://") || url.startsWith("https://") || url.startsWith("blob:");
+          return (
+            <div
+              className={cn(
+                "flex items-center gap-2 border-t pt-2.5 text-sm font-medium",
+                isAgent ? "border-primary-foreground/20" : "border-border/60",
+              )}
+            >
+              <a
+                href={isReady ? url : undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => {
+                  if (!isReady) e.preventDefault();
+                }}
+                className={cn(
+                  "flex-1 rounded-md py-1 text-center transition-opacity",
+                  !isReady && "pointer-events-none opacity-50",
+                  isAgent
+                    ? "text-primary-foreground hover:bg-primary-foreground/10"
+                    : "text-primary-on-soft hover:bg-primary/10",
+                )}
+              >
+                {verLabel}
+              </a>
+              <button
+                type="button"
+                disabled={!isReady}
+                onClick={() => downloadFile(url, filename)}
+                className={cn(
+                  "flex-1 rounded-md py-1 text-center transition-opacity",
+                  !isReady && "cursor-not-allowed opacity-50",
+                  isAgent
+                    ? "text-primary-foreground hover:bg-primary-foreground/10"
+                    : "text-primary-on-soft hover:bg-primary/10",
+                )}
+              >
+                {baixarLabel}
+              </button>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

@@ -298,23 +298,13 @@ function DocumentContent({
 }) {
   const { src, loading, error } = useResolvedMediaSrc(url);
 
-  if (error || loading || !src) {
-    return (
-      <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm">
-        {error ? (
-          <ImageOff className="h-5 w-5 shrink-0 text-muted-foreground" />
-        ) : (
-          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        )}
-        <span className="truncate text-muted-foreground">{filename}</span>
-      </div>
-    );
-  }
-
+  // If a thumbnail is already available, render the preview card immediately.
+  // The document's download/view link will update as soon as src resolves in background,
+  // without blocking the bubble behind a spinner.
   if (thumbnailUrl) {
     return (
       <DocumentPreviewCard
-        url={src}
+        url={src || url}
         filename={filename}
         isAgent={isAgent}
         thumbnailUrl={thumbnailUrl}
@@ -325,6 +315,19 @@ function DocumentContent({
         baixarLabel={baixarLabel}
         pagesLabel={pagesLabel}
       />
+    );
+  }
+
+  if (error || loading || !src) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm">
+        {error ? (
+          <ImageOff className="h-5 w-5 shrink-0 text-muted-foreground" />
+        ) : (
+          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        )}
+        <span className="truncate text-muted-foreground">{filename}</span>
+      </div>
     );
   }
 

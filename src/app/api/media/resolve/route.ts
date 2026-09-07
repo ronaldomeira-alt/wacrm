@@ -5,10 +5,9 @@ import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
 import { getR2Bucket, getR2Client, isR2MediaKey } from "@/lib/storage/r2-client";
 
-/** Short — minted fresh on every call and never persisted; only needs
- *  to outlive whatever the browser is about to do with it (load an
- *  <img>/<video>, or a "Baixar" click). */
-const RESOLVE_TTL_SECONDS = 5 * 60;
+/** 24h TTL — allows browser caching, keeps URLs stable across conversation
+ *  navigation and long-duration CRM sessions without breaking previews. */
+export const RESOLVE_TTL_SECONDS = 24 * 60 * 60;
 
 const MAX_KEYS_PER_REQUEST = 50;
 
@@ -94,9 +93,17 @@ export async function POST(request: Request) {
         .filter((key) => ownedKeys.has(key))
         .map(async (key) => ({
           key,
-          url: await getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
-            expiresIn: RESOLVE_TTL_SECONDS,
-          }),
+          url: await getSignedUrl(
+            client,
+            new GetObjectCommand({
+              Bucket: bucket,
+              Key: key,
+              ResponseCacheControl: "private, max-age=86400, immutable",
+            }),
+            {
+              expiresIn: RESOLVE_TTL_SECONDS,
+            },
+          ),
           expiresAt,
         })),
     );

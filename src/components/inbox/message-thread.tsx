@@ -65,6 +65,7 @@ import {
 import { deleteAccountMedia } from '@/lib/storage/upload-media';
 import { deleteR2Media } from '@/lib/storage/upload-media-r2';
 import { isR2MediaKey } from '@/lib/storage/media-url-kind';
+import { prefetchMediaKeys } from '@/lib/inbox/use-resolved-media-src';
 import { getPendingAudio } from '@/lib/inbox/pending-audio-db';
 import { runPendingAudio, discardPendingAudio } from '@/lib/inbox/pending-audio-sync';
 import { markConversationUnread } from '@/lib/inbox/conversations';
@@ -623,7 +624,14 @@ export function MessageThread({
       if (error) {
         console.error('Failed to fetch messages:', error);
       } else {
-        onMessagesLoadedRef.current(data ?? []);
+        const loaded = data ?? [];
+        onMessagesLoadedRef.current(loaded);
+        const r2Keys = loaded
+          .map((m) => m.media_url)
+          .filter((url): url is string => Boolean(url && isR2MediaKey(url)));
+        if (r2Keys.length > 0) {
+          prefetchMediaKeys(r2Keys);
+        }
       }
 
       if (!cancelled) setLoading(false);

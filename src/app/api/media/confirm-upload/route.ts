@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { DeleteObjectCommand, HeadObjectCommand, NotFound } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, NotFound } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
-import { getR2Client, type MediaKind } from "@/lib/storage/r2-client";
+import { getR2Client, RESOLVE_TTL_SECONDS, type MediaKind } from "@/lib/storage/r2-client";
 import { buildPublicMediaUrl, validateSizeAndMime } from "@/lib/storage/media-purpose";
 
 /**
@@ -94,7 +95,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Failed to finalize the upload" }, { status: 500 });
     }
 
-    return NextResponse.json({ key, publicUrl: publicUrl ?? undefined });
+    const expiresAt = Date.now() + RESOLVE_TTL_SECONDS * 1000;
+    const resolvedUrl =
+      row.visibility === "public"
+        ? (publicUrl ?? undefined)
+        : await getSignedUrl(
+            client,
+            new GetObjectCommand({
+              Bucket: row.bucket,
+              Key: key,
+              ResponseCacheControl: "private, max-age=86400, immutable",
+            }),
+            { expiresIn: RESOLVE_TTL_SECONDS },
+          );
+
+    return NextResponse.json({
+      key,
+      publicUrl: publicUrl ?? undefined,
+      resolvedUrl,
+      expiresAt,
+    });
   } catch (error) {
     console.error("[media/confirm-upload] error:", error);
     return toErrorResponse(error);

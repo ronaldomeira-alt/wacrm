@@ -1,6 +1,7 @@
 "use client";
 
 import { sha256Hex } from "@/lib/media/hash-file";
+import { seedMediaResolution } from "@/lib/inbox/use-resolved-media-src";
 import type { MediaKind } from "./r2-client";
 import type { MediaPurpose } from "./media-purpose";
 
@@ -49,6 +50,8 @@ export async function presignAndUpload(
     dedup: boolean;
     key: string;
     publicUrl?: string;
+    resolvedUrl?: string;
+    expiresAt?: number;
     uploadUrl?: string;
   }>("/api/media/presign-upload", {
     purpose,
@@ -62,6 +65,9 @@ export async function presignAndUpload(
   if (presign.dedup) {
     // Identical bytes already uploaded for this account+purpose — no
     // network transfer needed at all.
+    if (presign.resolvedUrl) {
+      seedMediaResolution(presign.key, presign.resolvedUrl, presign.expiresAt);
+    }
     return { key: presign.key, publicUrl: presign.publicUrl };
   }
 
@@ -74,10 +80,19 @@ export async function presignAndUpload(
     throw new Error(`Upload to storage failed (HTTP ${putRes.status})`);
   }
 
-  const confirmed = await postJson<{ key: string; publicUrl?: string }>(
+  const confirmed = await postJson<{
+    key: string;
+    publicUrl?: string;
+    resolvedUrl?: string;
+    expiresAt?: number;
+  }>(
     "/api/media/confirm-upload",
     { key: presign.key },
   );
+
+  if (confirmed.resolvedUrl) {
+    seedMediaResolution(confirmed.key, confirmed.resolvedUrl, confirmed.expiresAt);
+  }
 
   return { key: confirmed.key, publicUrl: confirmed.publicUrl };
 }

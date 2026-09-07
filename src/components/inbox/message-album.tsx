@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
-import { useResolvedMediaSrc } from "@/lib/inbox/use-resolved-media-src";
+import { useResolvedMediaSrc, useResolvedMediaSrcs } from "@/lib/inbox/use-resolved-media-src";
 import { MessageActions } from "./message-actions";
 import { MessageReactions } from "./message-reactions";
 import { MediaLightbox } from "./media-lightbox";
@@ -157,6 +157,11 @@ function MessageAlbumComponent({
   const first = messages[0];
   const isAgent = first.sender_type === "agent" || first.sender_type === "bot";
   const urls = useMemo(() => messages.map((m) => m.media_url!), [messages]);
+  const { urls: resolvedUrls } = useResolvedMediaSrcs(urls);
+  const lightboxImages = useMemo(
+    () => urls.map((u, i) => resolvedUrls[i] || u),
+    [urls, resolvedUrls],
+  );
 
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [selected, setSelected] = useState(false);
@@ -372,9 +377,9 @@ function MessageAlbumComponent({
         onOpenChange={(next) => {
           if (!next) setLightboxIndex(null);
         }}
-        src={urls[lightboxIndex ?? 0] ?? ""}
+        src={lightboxImages[lightboxIndex ?? 0] ?? ""}
         alt={t("photo")}
-        images={urls}
+        images={lightboxImages}
         initialIndex={lightboxIndex ?? 0}
       />
 
