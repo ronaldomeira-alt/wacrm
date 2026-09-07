@@ -1,6 +1,7 @@
 import { uploadResumableMedia } from '@/lib/whatsapp/meta-api'
 import type { TemplatePayload } from '@/lib/whatsapp/template-validators'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import { resolveMediaUrlForSend } from '@/lib/storage/resolve-media-for-send'
 
 /**
  * Meta requires an `example.header_handle` (from the Resumable Upload
@@ -44,11 +45,20 @@ export async function ensureImageHeaderHandle(
     throw new Error('Could not fetch the header image URL. Make sure it is publicly reachable.')
   }
 
-  // Fetch the sample image bytes (works for our uploaded chat-media URL
-  // and for a manually-pasted public link).
+  // Our own uploads store the permanent `/api/media/public/{key}` link
+  // (see media-purpose.ts's buildPublicMediaUrl) — resolve it to the
+  // real, directly-fetchable signed URL in process. A manually-pasted
+  // external link passes through unchanged. Must happen after the SSRF
+  // guard above (which validates the literal stored value) and before
+  // the redirect:'manual' fetch below — our own link 302s, and a
+  // manual-redirect fetch would otherwise treat that as a failure.
+  const fetchUrl = await resolveMediaUrlForSend(payload.header_media_url)
+
+  // Fetch the sample image bytes (works for our uploaded media and for
+  // a manually-pasted public link).
   let res: Response
   try {
-    res = await fetch(payload.header_media_url, {
+    res = await fetch(fetchUrl, {
       // Do NOT follow redirects — a public URL could 3xx-bounce to an
       // internal address, defeating the guard above. Bound the request so
       // a hung host can't tie up the template-submit handler.

@@ -232,9 +232,30 @@ function MediaVideo({
   url: string;
   overlay?: { time: string; status: ReactNode };
 }) {
+  // `url` may be a bare R2 key (private chat media) or the Meta inbound
+  // proxy path, neither of which `<video src>` can load directly — same
+  // resolution as MediaImage above.
+  const { src, loading, error } = useResolvedMediaSrc(url);
+
+  if (error) {
+    return (
+      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
+        <ImageOff className="h-8 w-8 text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (loading || !src) {
+    return (
+      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
   return (
     <div className="relative block">
-      <video src={url} controls className="max-h-64 max-w-60 rounded-lg" />
+      <video src={src} controls className="max-h-64 max-w-60 rounded-lg" />
       {overlay && (
         <span className="pointer-events-none absolute right-2 top-2 z-[1] flex items-center gap-1 rounded-full bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
           {overlay.time}
@@ -242,6 +263,81 @@ function MediaVideo({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * Resolves `url` (may now be a bare R2 key for private chat media)
+ * before handing it to `DocumentPreviewCard` or the plain-filename-pill
+ * fallback — both stay purely presentational, URL-shape-agnostic.
+ * `thumbnailUrl` (document_thumbnail_url) is never resolved here: PDF
+ * thumbnails always stay on Supabase Storage, already a plain public URL.
+ */
+function DocumentContent({
+  url,
+  filename,
+  isAgent,
+  thumbnailUrl,
+  fileSize,
+  time,
+  status,
+  verLabel,
+  baixarLabel,
+  pagesLabel,
+}: {
+  url: string;
+  filename: string;
+  isAgent: boolean;
+  thumbnailUrl: string | null;
+  fileSize: number | null;
+  time: string;
+  status: ReactNode;
+  verLabel: string;
+  baixarLabel: string;
+  pagesLabel: string | null;
+}) {
+  const { src, loading, error } = useResolvedMediaSrc(url);
+
+  if (error || loading || !src) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm">
+        {error ? (
+          <ImageOff className="h-5 w-5 shrink-0 text-muted-foreground" />
+        ) : (
+          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        )}
+        <span className="truncate text-muted-foreground">{filename}</span>
+      </div>
+    );
+  }
+
+  if (thumbnailUrl) {
+    return (
+      <DocumentPreviewCard
+        url={src}
+        filename={filename}
+        isAgent={isAgent}
+        thumbnailUrl={thumbnailUrl}
+        fileSize={fileSize}
+        time={time}
+        status={status}
+        verLabel={verLabel}
+        baixarLabel={baixarLabel}
+        pagesLabel={pagesLabel}
+      />
+    );
+  }
+
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm hover:bg-muted"
+    >
+      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{filename}</span>
+    </a>
   );
 }
 
@@ -295,11 +391,7 @@ function MessageContent({
       return (
         <div>
           {message.media_url ? (
-            <video
-              src={message.media_url}
-              controls
-              className="max-h-64 max-w-60 rounded-lg"
-            />
+            <MediaVideo url={message.media_url} />
           ) : (
             <MediaUnavailable label={t("video")} t={t} />
           )}
@@ -361,45 +453,23 @@ function MessageContent({
       if (!message.media_url) {
         return <MediaUnavailable label={message.content_text || t("document")} t={t} />;
       }
-      // WhatsApp-style card once the server-side PDF preview has landed
-      // (see generate-document-preview.ts) — first-page thumbnail, page
-      // count + size, Ver/Baixar actions, own embedded timestamp (the
-      // bubble suppresses its usual footer row for this case, see
-      // MessageBubble's `hasDocumentPreview`). Any non-PDF document, or
-      // a PDF whose preview hasn't generated yet / failed, falls back to
-      // the plain filename pill unchanged.
-      if (message.document_thumbnail_url) {
-        return (
-          <DocumentPreviewCard
-            url={message.media_url}
-            filename={message.content_text || t("document")}
-            isAgent={isAgent}
-            thumbnailUrl={message.document_thumbnail_url}
-            fileSize={message.document_file_size ?? null}
-            time={time}
-            status={status}
-            verLabel={t("documentView")}
-            baixarLabel={t("documentDownload")}
-            pagesLabel={
-              message.document_page_count
-                ? t("documentPages", { count: message.document_page_count })
-                : null
-            }
-          />
-        );
-      }
       return (
-        <a
-          href={message.media_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm hover:bg-muted"
-        >
-          <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
-          <span className="truncate">
-            {message.content_text || t("document")}
-          </span>
-        </a>
+        <DocumentContent
+          url={message.media_url}
+          filename={message.content_text || t("document")}
+          isAgent={isAgent}
+          thumbnailUrl={message.document_thumbnail_url ?? null}
+          fileSize={message.document_file_size ?? null}
+          time={time}
+          status={status}
+          verLabel={t("documentView")}
+          baixarLabel={t("documentDownload")}
+          pagesLabel={
+            message.document_page_count
+              ? t("documentPages", { count: message.document_page_count })
+              : null
+          }
+        />
       );
 
     case "template":

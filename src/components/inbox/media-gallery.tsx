@@ -155,14 +155,7 @@ export function MediaGallery({
                 {videos.length === 0 ? (
                   <EmptyState icon={VideoIcon} label={t("noVideos")} />
                 ) : (
-                  videos.map((m) => (
-                    <div key={m.id} className="space-y-1">
-                      <video src={m.media_url} controls className="w-full rounded-lg" />
-                      <p className="text-[10px] text-muted-foreground">
-                        {format(new Date(m.created_at), "MMM d, yyyy HH:mm")}
-                      </p>
-                    </div>
-                  ))
+                  videos.map((m) => <GalleryVideoItem key={m.id} message={m} />)
                 )}
               </TabsContent>
 
@@ -171,24 +164,14 @@ export function MediaGallery({
                   <EmptyState icon={FileText} label={t("noDocuments")} />
                 ) : (
                   documents.map((m) => (
-                    <a
+                    <GalleryDocumentItem
                       key={m.id}
-                      href={m.media_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-3 rounded-lg bg-muted/50 px-3 py-2 hover:bg-muted"
-                    >
-                      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm text-foreground">
-                          {m.content_text || t("documents")}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground">
-                          {isAgentMessage(m) ? t("you") : contactDisplayName} ·{" "}
-                          {format(new Date(m.created_at), "MMM d, yyyy HH:mm")}
-                        </p>
-                      </div>
-                    </a>
+                      message={m}
+                      isAgent={isAgentMessage(m)}
+                      contactDisplayName={contactDisplayName}
+                      documentsLabel={t("documents")}
+                      youLabel={t("you")}
+                    />
                   ))
                 )}
               </TabsContent>
@@ -289,5 +272,77 @@ function GalleryImageThumb({
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={src} alt="" className="h-full w-full object-cover" />
     </button>
+  );
+}
+
+/** Video tile — `m.media_url` may now be a bare R2 key (private chat
+ *  media), which `<video src>` can't load directly; resolves through
+ *  the same hook/cache as the image thumbnails above. A legacy
+ *  Supabase URL still passes straight through unchanged. */
+function GalleryVideoItem({ message }: { message: Message }) {
+  const { src, loading, error } = useResolvedMediaSrc(message.media_url ?? undefined);
+
+  if (error) {
+    return (
+      <div className="flex aspect-video items-center justify-center rounded-lg bg-muted">
+        <ImageOff className="h-5 w-5 text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {loading || !src ? (
+        <div className="flex aspect-video items-center justify-center rounded-lg bg-muted">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        </div>
+      ) : (
+        <video src={src} controls className="w-full rounded-lg" />
+      )}
+      <p className="text-[10px] text-muted-foreground">
+        {format(new Date(message.created_at), "MMM d, yyyy HH:mm")}
+      </p>
+    </div>
+  );
+}
+
+/** Document row — same resolution as the video tile above; the
+ *  underlying document may now be a bare R2 key while
+ *  `document_thumbnail_url` (not used here) stays a Supabase URL
+ *  either way. */
+function GalleryDocumentItem({
+  message,
+  isAgent,
+  contactDisplayName,
+  documentsLabel,
+  youLabel,
+}: {
+  message: Message;
+  isAgent: boolean;
+  contactDisplayName: string;
+  documentsLabel: string;
+  youLabel: string;
+}) {
+  const { src, loading, error } = useResolvedMediaSrc(message.media_url ?? undefined);
+
+  return (
+    <a
+      href={error || loading ? undefined : src || undefined}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-disabled={error || loading}
+      className="flex items-center gap-3 rounded-lg bg-muted/50 px-3 py-2 hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-60"
+    >
+      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm text-foreground">
+          {message.content_text || documentsLabel}
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          {isAgent ? youLabel : contactDisplayName} ·{" "}
+          {format(new Date(message.created_at), "MMM d, yyyy HH:mm")}
+        </p>
+      </div>
+    </a>
   );
 }

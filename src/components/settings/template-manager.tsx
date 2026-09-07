@@ -14,10 +14,8 @@ import {
   Upload,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
-import {
-  uploadAccountMedia,
-  MEDIA_MAX_BYTES_BY_KIND,
-} from '@/lib/storage/upload-media';
+import { MEDIA_MAX_BYTES_BY_KIND } from '@/lib/storage/upload-media';
+import { presignAndUpload } from '@/lib/storage/upload-media-r2';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -471,7 +469,10 @@ export function TemplateManager() {
     }
     setUploadingHeader(true);
     try {
-      const { publicUrl } = await uploadAccountMedia('chat-media', file);
+      const { publicUrl } = await presignAndUpload('template-header', 'image', file);
+      if (!publicUrl) {
+        throw new Error('Upload succeeded but no public URL was returned');
+      }
       setForm((f) => ({ ...f, header_media_url: publicUrl }));
       toast.success(t('toastUploadSuccess'));
     } catch (err) {

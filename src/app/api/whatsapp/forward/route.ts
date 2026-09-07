@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto'
 import { NextResponse } from 'next/server'
+import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import {
   checkRateLimit,
@@ -12,12 +14,7 @@ import {
 import { findOrCreateConversation } from '@/lib/whatsapp/find-or-create-conversation'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
-import { buildMediaPath } from '@/lib/storage/upload-media'
-
-// Matches the bucket name in `message-composer.tsx`'s CHAT_MEDIA_BUCKET —
-// duplicated as a literal here (as `template-manager.tsx` already does)
-// rather than importing a client-tagged component file into a server route.
-const CHAT_MEDIA_BUCKET = 'chat-media'
+import { buildR2MediaKey, getR2Bucket, getR2Client, type MediaKind } from '@/lib/storage/r2-client'
 
 // Content types a message can be re-sent as. Excludes 'template' (no
 // stable content to copy — Meta requires re-approval per send anyway)
@@ -130,17 +127,61 @@ export async function POST(request: Request) {
           message.content_type === 'document' && message.content_text
             ? message.content_text
             : `forwarded-${Date.now()}.${ext}`
-        const path = buildMediaPath(accountId, fileName)
+        // FORWARDABLE_TYPES minus 'text' is exactly the MediaKind union
+        // — this branch only ever runs for a media-kind message.
+        const kind = message.content_type as MediaKind
 
-        const { error: upErr } = await supabase.storage
-          .from(CHAT_MEDIA_BUCKET)
-          .upload(path, buffer, { contentType, upsert: false })
-        if (upErr) throw new Error(upErr.message)
+        // Same dedup + reference-count bookkeeping as every other R2
+        // write (see media_objects' doc comment): re-hosting the exact
+        // same bytes twice (e.g. forwarding the same inbound photo to
+        // two different contacts) reuses one physical object.
+        const sha256 = createHash('sha256').update(buffer).digest('hex')
+        const { data: existing } = await supabase
+          .from('media_objects')
+          .select('id, object_key, status')
+          .eq('account_id', accountId)
+          .eq('sha256', sha256)
+          .eq('visibility', 'private')
+          .maybeSingle()
 
-        const {
-          data: { publicUrl },
-        } = supabase.storage.from(CHAT_MEDIA_BUCKET).getPublicUrl(path)
-        mediaUrl = publicUrl
+        let objectKey: string
+        if (existing?.status === 'completed') {
+          await supabase.rpc('increment_media_object_reference', {
+            p_object_id: existing.id,
+          })
+          objectKey = existing.object_key
+        } else if (existing?.status === 'pending') {
+          return NextResponse.json(
+            { error: 'This attachment is mid-upload elsewhere — try again in a moment' },
+            { status: 409 },
+          )
+        } else {
+          objectKey = buildR2MediaKey(accountId, kind, fileName)
+          const bucket = getR2Bucket()
+          const { error: insertErr } = await supabase.from('media_objects').insert({
+            account_id: accountId,
+            sha256,
+            object_key: objectKey,
+            bucket,
+            visibility: 'private',
+            kind,
+            content_type: contentType,
+            size_bytes: buffer.byteLength,
+            status: 'pending',
+          })
+          if (insertErr) throw new Error(insertErr.message)
+
+          await getR2Client().send(
+            new PutObjectCommand({ Bucket: bucket, Key: objectKey, Body: buffer, ContentType: contentType }),
+          )
+
+          await supabase
+            .from('media_objects')
+            .update({ status: 'completed', confirmed_at: new Date().toISOString() })
+            .eq('account_id', accountId)
+            .eq('object_key', objectKey)
+        }
+        mediaUrl = objectKey
       } catch (err) {
         console.error('Error re-hosting media for forward:', err)
         return NextResponse.json(

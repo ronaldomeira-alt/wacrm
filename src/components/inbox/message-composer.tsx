@@ -35,13 +35,11 @@ import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
-  uploadAccountMedia,
-  deleteAccountMedia,
-  resolveAccountId,
   MEDIA_MAX_BYTES_BY_KIND,
   ALLOWED_MIME_TYPES_BY_KIND,
   CHAT_MEDIA_BUCKET,
 } from "@/lib/storage/upload-media";
+import { presignAndUpload, deleteR2Media } from "@/lib/storage/upload-media-r2";
 import {
   isQuickTimeVideo,
   convertMovToMp4ViaWebCodecs,
@@ -111,11 +109,24 @@ const PICKER_ACCEPT: Record<"image" | "video" | "document", string> = {
 
 interface MediaDraft {
   kind: Exclude<ComposerMediaKind, "audio">;
-  mediaUrl: string;
-  /** Storage path — used to GC the object if the draft is discarded. */
+  /** Local `blob:` URL (URL.createObjectURL) for the pre-send preview
+   *  only — the file is already in browser memory, so this needs no
+   *  round trip to resolve. Never sent anywhere; revoked whenever the
+   *  draft is replaced, discarded, sent, or the component unmounts. */
+  previewUrl: string;
+  /** R2 object key from the completed upload — used to GC the object
+   *  if the draft is discarded, and as the real value sent as
+   *  SendMediaPayload.mediaUrl/path once the draft is sent. */
   path: string;
   filename: string;
   caption: string;
+}
+
+/** Best-effort revoke — no-op for anything that isn't a blob: URL
+ *  (guards against double-revoking or revoking a value that was never
+ *  a local preview in the first place). */
+function revokeStagedPreview(url: string | undefined): void {
+  if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
 }
 
 interface MessageComposerProps {
@@ -352,7 +363,7 @@ export function MessageComposer({
   // Best-effort GC of a staged object the user never sent. Fire-and-forget.
   const removeStaged = useCallback((path: string | undefined) => {
     if (!path) return;
-    void deleteAccountMedia(CHAT_MEDIA_BUCKET, path).catch(() => {});
+    void deleteR2Media(path).catch(() => {});
   }, []);
 
   // ---- Voice recording ------------------------------------------------
@@ -639,10 +650,16 @@ export function MessageComposer({
       }
       setBusy(true);
       try {
-        const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
-        // Replacing an existing draft? GC the previous object first.
+        const { key } = await presignAndUpload("chat-attachment", kind, file);
+        // Local preview only — the file is already in memory, so this
+        // needs no network round trip (unlike resolving a private R2
+        // key, which is for *sent* media, not a draft nobody's seen yet).
+        const previewUrl = URL.createObjectURL(file);
+        // Replacing an existing draft? GC the previous object + revoke
+        // its preview first.
         removeStaged(draftRef.current?.path);
-        setDraft({ kind, mediaUrl: publicUrl, path, filename: file.name, caption: "" });
+        revokeStagedPreview(draftRef.current?.previewUrl);
+        setDraft({ kind, previewUrl, path: key, filename: file.name, caption: "" });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Upload failed.");
       } finally {
@@ -659,17 +676,8 @@ export function MessageComposer({
   // validation exactly (same size cap, same MIME whitelist, same .mov
   // transcode), kept as a separate function so the existing single-file
   // draft/caption/send flow above is completely untouched.
-  //
-  // `accountId` is resolved once by the batch caller (handlePicked) and
-  // threaded through here to skip the auth.getUser()+profiles round-trip
-  // uploadAccountMedia would otherwise repeat for every file — pure
-  // network-cost elimination, doesn't touch upload order/timing/content.
   const uploadAndSend = useCallback(
-    async (
-      kind: Exclude<ComposerMediaKind, "audio">,
-      pickedFile: File,
-      accountId: string,
-    ) => {
+    async (kind: Exclude<ComposerMediaKind, "audio">, pickedFile: File) => {
       let file = pickedFile;
       if (kind === "video" && isQuickTimeVideo(file)) {
         try {
@@ -696,11 +704,11 @@ export function MessageComposer({
         return;
       }
       try {
-        const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file, accountId);
+        const { key } = await presignAndUpload("chat-attachment", kind, file);
         onSendMedia({
           kind,
-          mediaUrl: publicUrl,
-          path,
+          mediaUrl: key,
+          path: key,
           filename: kind === "document" ? file.name : undefined,
         });
       } catch (err) {
@@ -716,9 +724,7 @@ export function MessageComposer({
       const files = Array.from(fileList);
 
       // Exactly one file — unchanged behavior: stage it as a draft with
-      // a caption field, wait for an explicit Send tap. (stageUpload
-      // resolves its own account id — a single file has nothing to
-      // amortize the lookup across.)
+      // a caption field, wait for an explicit Send tap.
       if (files.length === 1) {
         void stageUpload(kind, files[0]);
         return;
@@ -733,17 +739,11 @@ export function MessageComposer({
       // picked. `busy` covers the whole batch, same as it does for a
       // single staged upload — disables the attach button/shows the
       // spinner until every file has been handled.
-      //
-      // account_id is resolved once here, up front, and reused for every
-      // file in the loop below (instead of each uploadAndSend/
-      // uploadAccountMedia call repeating that same auth+profile lookup)
-      // — the loop itself stays exactly as sequential as before.
       setBusy(true);
       void (async () => {
         try {
-          const accountId = await resolveAccountId();
           for (const file of files) {
-            await uploadAndSend(kind, file, accountId);
+            await uploadAndSend(kind, file);
           }
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Upload failed.");
@@ -1146,6 +1146,7 @@ export function MessageComposer({
       // stop() releases the mic stream + audio context inside opus-recorder.
       void stopRecorder();
       removeStaged(draftRef.current?.path);
+      revokeStagedPreview(draftRef.current?.previewUrl);
     };
   }, [clearTimer, clearLongPressTimer, removeStaged, stopRecorder]);
 
@@ -1155,12 +1156,15 @@ export function MessageComposer({
     if (!draft || busy) return;
     onSendMedia({
       kind: draft.kind,
-      mediaUrl: draft.mediaUrl,
+      // The real R2 key — never the local preview blob, which is
+      // meaningless outside this browser tab.
+      mediaUrl: draft.path,
       path: draft.path,
       caption: draft.caption.trim() || undefined,
       filename: draft.kind === "document" ? draft.filename : undefined,
       replyToId: replyTo?.id,
     });
+    revokeStagedPreview(draft.previewUrl);
     // The object is now owned by the sent message — clear without GC.
     setDraft(null);
     onClearReply?.();
@@ -1169,8 +1173,9 @@ export function MessageComposer({
   // Discard GCs the staged object — it was uploaded but never sent.
   const discardDraft = useCallback(() => {
     removeStaged(draft?.path);
+    revokeStagedPreview(draft?.previewUrl);
     setDraft(null);
-  }, [draft?.path, removeStaged]);
+  }, [draft?.path, draft?.previewUrl, removeStaged]);
 
   const setCaption = useCallback((caption: string) => {
     setDraft((d) => (d ? { ...d, caption } : d));
@@ -1635,7 +1640,7 @@ function MediaDraftPreview({
       {isPdf && (
         <DocumentFullscreenPreview
           open={pdfPreviewOpen}
-          url={draft.mediaUrl}
+          url={draft.previewUrl}
           filename={draft.filename}
           onCancel={onDiscard}
           containerRef={pdfPreviewContainerRef}
@@ -1646,13 +1651,13 @@ function MediaDraftPreview({
           {draft.kind === "image" && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={draft.mediaUrl}
+              src={draft.previewUrl}
               alt={draft.filename}
               className="max-h-40 rounded-lg object-cover"
             />
           )}
           {draft.kind === "video" && (
-            <video src={draft.mediaUrl} controls className="max-h-40 rounded-lg" />
+            <video src={draft.previewUrl} controls className="max-h-40 rounded-lg" />
           )}
           {draft.kind === "document" && (
             <div className="flex items-center gap-2 text-sm text-foreground">

@@ -48,6 +48,7 @@ import {
 import type { MessageTemplate } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import { generateDocumentPreviewFromUrl, looksLikePdf } from '@/lib/documents/generate-document-preview';
+import { resolveMediaUrlForSend } from '@/lib/storage/resolve-media-for-send';
 import { logError } from '@/lib/observability/log';
 
 /**
@@ -461,6 +462,16 @@ export async function sendMessageToConversation(
     templateRow = data ?? null;
   }
 
+  // `mediaUrl` as persisted/passed in may be an R2 key (private media)
+  // or our own permanent public-media URL — neither is directly
+  // fetchable by Meta. Resolve once, before the phone-variant retry
+  // loop below, so a retry across variants doesn't mint a fresh signed
+  // URL per attempt; a legacy Supabase URL or pasted external link
+  // passes through unchanged. `messages.media_url` keeps storing the
+  // original (unresolved) value — only what's sent to Meta changes.
+  const resolvedMediaUrl =
+    isMediaKind && mediaUrl ? await resolveMediaUrlForSend(mediaUrl) : mediaUrl;
+
   const attempt = async (phone: string): Promise<string> => {
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
@@ -482,7 +493,7 @@ export async function sendMessageToConversation(
         accessToken,
         to: phone,
         kind: messageType as MediaKind,
-        link: mediaUrl!,
+        link: resolvedMediaUrl!,
         caption: contentText || undefined,
         filename: filename || undefined,
         contextMessageId,
@@ -683,11 +694,11 @@ export async function sendMessageToConversation(
   // caller of sendMessageToConversation (composer, public v1 API, Flows
   // send_media) gets it from this one place; generateDocumentPreviewFromUrl
   // owns its own try/catch and never throws, so this can't fail the send.
-  if (messageType === 'document' && mediaUrl && looksLikePdf(null, filename ?? null)) {
+  if (messageType === 'document' && resolvedMediaUrl && looksLikePdf(null, filename ?? null)) {
     await generateDocumentPreviewFromUrl({
       messageId: messageRecord.id,
       accountId,
-      url: mediaUrl,
+      url: resolvedMediaUrl,
     });
   }
 

@@ -63,6 +63,8 @@ import {
   type SendMediaPayload,
 } from './message-composer';
 import { deleteAccountMedia } from '@/lib/storage/upload-media';
+import { deleteR2Media } from '@/lib/storage/upload-media-r2';
+import { isR2MediaKey } from '@/lib/storage/media-url-kind';
 import { getPendingAudio } from '@/lib/inbox/pending-audio-db';
 import { runPendingAudio, discardPendingAudio } from '@/lib/inbox/pending-audio-sync';
 import { markConversationUnread } from '@/lib/inbox/conversations';
@@ -949,7 +951,7 @@ export function MessageThread({
           // Logged (not silently swallowed): if this delete itself fails,
           // that's a real orphaned-storage-object nit worth seeing in the
           // console, distinct from the send failure already toasted above.
-          void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(
+          void deleteR2Media(payload.path).catch(
             (err) =>
               console.error(
                 'Failed to GC orphaned media after send failure:',
@@ -965,7 +967,7 @@ export function MessageThread({
         const reason = err instanceof Error ? err.message : 'network error';
         toast.error(`Failed to send: ${reason}`);
         onUpdateMessage(tempId, { status: 'failed' });
-        void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch((err) =>
+        void deleteR2Media(payload.path).catch((err) =>
           console.error('Failed to GC orphaned media after send failure:', err)
         );
       }
@@ -1075,10 +1077,15 @@ export function MessageThread({
 
       // Best-effort storage cleanup for agent-sent media (image, video,
       // document, voice note) — the row is gone either way; this just
-      // stops the object from orphaning in the chat-media bucket.
+      // stops the object from orphaning in storage. Two possible shapes
+      // for `msg.media_url`: a legacy Supabase chat-media URL (older
+      // messages, pre-R2), or a bare R2 key (new messages) — never both
+      // checks matching at once, so order doesn't matter.
       const path = extractStoragePath(msg.media_url, CHAT_MEDIA_BUCKET);
       if (path) {
         void deleteAccountMedia(CHAT_MEDIA_BUCKET, path).catch(() => {});
+      } else if (isR2MediaKey(msg.media_url)) {
+        void deleteR2Media(msg.media_url).catch(() => {});
       }
     },
     [onDeleteMessage]

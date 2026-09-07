@@ -181,6 +181,24 @@ export const RATE_LIMITS = {
    *  hasn't happened yet, so it's a fallback path, not the common one.
    *  Same one-shot budget as aiTemplateFill. */
   aiTranscribe: { limit: 20, windowMs: 60_000 },
+  /** R2 media presign/confirm, per user. Generous enough for a batch
+   *  of several attachments picked at once (message-composer.tsx's
+   *  multi-file send loop), while bounding a runaway/malicious client
+   *  hammering the endpoint to enumerate dedup hits or churn presigned
+   *  URLs. */
+  mediaUpload: { limit: 60, windowMs: 60_000 },
+  /** R2 signed-URL resolve, per user. Higher than mediaUpload — a
+   *  single conversation/gallery render can need several keys resolved
+   *  at once, and re-renders are cheap (cached client-side once
+   *  resolved — see use-resolved-media-src.ts), but this still bounds
+   *  a client that isn't caching from hammering the endpoint. */
+  mediaResolve: { limit: 120, windowMs: 60_000 },
+  /** GET /api/media/public/[...key], per IP (no session — this route is
+   *  deliberately unauthenticated). 60/min per IP comfortably covers a
+   *  human clicking a shared link, a template preview reloading, and
+   *  Meta fetching a header image, while bounding scraping/enumeration
+   *  attempts against the key space. */
+  mediaPublicRedirect: { limit: 60, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't
