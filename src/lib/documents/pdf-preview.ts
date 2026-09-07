@@ -60,7 +60,11 @@ export async function renderPdfPreview(pdfBuffer: Buffer): Promise<PdfPreview | 
   try {
     await ensureGeometryPolyfills();
     const { pdf } = await import("pdf-to-img");
-    const document = await pdf(pdfBuffer, { scale: 0.5, format: "jpeg" });
+    const document = await pdf(pdfBuffer, {
+      scale: 0.6,
+      format: "jpeg",
+      renderParams: { background: "rgb(255,255,255)" },
+    });
     if (document.length < 1) return null;
     const thumbnail = await document.getPage(1);
     return {

@@ -78,24 +78,14 @@ export function DocumentPreviewCard({
   return (
     <div
       className={cn(
-        "max-w-72 overflow-hidden rounded-lg border",
+        "w-72 max-w-full overflow-hidden rounded-lg border",
         isAgent ? "border-primary-foreground/20" : "border-border",
       )}
     >
       {thumbnailUrl && (
-        // Fixed, deliberately short band (~35-45% of the card's total
-        // height, not the full first page at its native aspect ratio) —
-        // a quick preview strip, not the card's main event, same
-        // proportions as WhatsApp's own document card. `object-cover` +
-        // `object-top` crops to fill the band edge-to-edge, anchored on
-        // the page's top (its most identifying content) — matches
-        // WhatsApp's own thumbnail behavior exactly, so a portrait page
-        // (the common case for contracts/tables) never shows blank
-        // space on the sides the way `object-contain` would in a band
-        // this short. The bg fallback only shows on a slow image load.
         <div
           className={cn(
-            "h-24 w-full overflow-hidden",
+            "h-28 w-full overflow-hidden bg-white/5",
             isAgent ? "bg-primary-foreground/10" : "bg-muted",
           )}
         >
@@ -103,7 +93,7 @@ export function DocumentPreviewCard({
           <img
             src={thumbnailUrl}
             alt=""
-            className="h-full w-full object-cover object-top"
+            className="h-full w-full object-cover object-top contrast-[1.05] saturate-[1.12] brightness-[1.02]"
           />
         </div>
       )}
@@ -127,7 +117,7 @@ export function DocumentPreviewCard({
               )}
             />
           </div>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 min-h-[2.5rem] flex flex-col justify-center">
             <p
               className={cn(
                 "line-clamp-2 text-sm font-semibold leading-snug",

@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { renderPdfPreview } from "./pdf-preview";
@@ -42,7 +42,7 @@ describe("renderPdfPreview", () => {
     expect(result?.pageCount).toBeGreaterThan(0);
     expect(result?.contentType).toBe("image/jpeg");
     expect(result?.thumbnail.length).toBeGreaterThan(0);
-    // Ensure the JPEG size is compact (< 200 KB) despite the large PDF (14.7 MB)
-    expect(result!.thumbnail.length).toBeLessThan(200 * 1024);
+    // Ensure the JPEG size is compact (< 400 KB) despite the large PDF (14.7 MB)
+    expect(result!.thumbnail.length).toBeLessThan(400 * 1024);
   });
 });
