@@ -186,6 +186,7 @@ interface MessageRowProps {
   reply: { authorLabel: string; preview: string } | null;
   reactions: MessageReaction[] | undefined;
   currentUserId: string | undefined;
+  currentContactId?: string;
   onReply: (message: Message) => void;
   onReact: (messageId: string, emoji: string) => void;
   onDelete: (message: Message) => Promise<void> | void;
@@ -212,6 +213,7 @@ const MessageRow = memo(function MessageRow({
   reply,
   reactions,
   currentUserId,
+  currentContactId,
   onReply,
   onReact,
   onDelete,
@@ -223,6 +225,7 @@ const MessageRow = memo(function MessageRow({
   return (
     <MessageActions
       message={message}
+      currentContactId={currentContactId}
       onReply={onReply}
       onReact={onReact}
       onDelete={onDelete}
@@ -1881,6 +1884,7 @@ export function MessageThread({
                             key={album.id}
                             messages={album.messages}
                             currentUserId={user?.id}
+                            currentContactId={contact?.id}
                             reactions={reactionsByMessageId.get(
                               album.messages[0].id
                             )}
@@ -1898,6 +1902,7 @@ export function MessageThread({
                           reply={replyPreviewByMessageId.get(msg.id) ?? null}
                           reactions={reactionsByMessageId.get(msg.id)}
                           currentUserId={user?.id}
+                          currentContactId={contact?.id}
                           onReply={handleStartReply}
                           onReact={postReaction}
                           onDelete={handleDeleteMessage}

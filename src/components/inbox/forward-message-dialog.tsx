@@ -16,7 +16,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import type { Contact, Message } from "@/types";
+import type { Message } from "@/types";
+import {
+  sortForwardRecipients,
+  type ForwardContactRecipient,
+} from "@/lib/inbox/forward-recipients";
 
 interface ForwardMessageDialogProps {
   /** The message being forwarded. Null hides the dialog. */
@@ -30,6 +34,11 @@ interface ForwardMessageDialogProps {
   messages?: Message[] | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * ID of the contact whose conversation is currently open.
+   * Promoted to Priority 1 (top of the list) when forwarding.
+   */
+  currentContactId?: string;
 }
 
 interface ForwardResult {
@@ -48,13 +57,14 @@ export function ForwardMessageDialog({
   messages,
   open,
   onOpenChange,
+  currentContactId,
 }: ForwardMessageDialogProps) {
   const t = useTranslations("Inbox.forward");
   const targets = useMemo(
     () => (messages && messages.length > 0 ? messages : message ? [message] : []),
     [messages, message],
   );
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [contacts, setContacts] = useState<ForwardContactRecipient[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -72,13 +82,33 @@ export function ForwardMessageDialog({
     (async () => {
       const { data, error } = await supabase
         .from("contacts")
-        .select("id, name, phone, avatar_url")
-        .order("name");
+        .select("id, name, phone, avatar_url, blocked_at, conversations(id, last_message_at)")
+        .is("blocked_at", null);
       if (cancelled) return;
       if (error) {
         console.error("Failed to load contacts for forward:", error.message);
       }
-      setContacts((data as Contact[]) ?? []);
+      const rawList = (data ?? []) as Array<{
+        id: string;
+        name: string | null;
+        phone: string | null;
+        avatar_url: string | null;
+        conversations?: Array<{ id: string; last_message_at: string | null }> | { id: string; last_message_at: string | null } | null;
+      }>;
+      const mapped: ForwardContactRecipient[] = rawList.map((c) => {
+        const rawConvs = c.conversations;
+        const conv = Array.isArray(rawConvs) ? rawConvs[0] : rawConvs;
+        return {
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          avatar_url: c.avatar_url,
+          conversation: conv
+            ? { id: conv.id, last_message_at: conv.last_message_at }
+            : null,
+        };
+      });
+      setContacts(mapped);
       setLoadingContacts(false);
     })();
     return () => {
@@ -86,14 +116,18 @@ export function ForwardMessageDialog({
     };
   }, [open]);
 
+  const sortedContacts = useMemo(() => {
+    return sortForwardRecipients(contacts, currentContactId);
+  }, [contacts, currentContactId]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return contacts;
-    return contacts.filter(
+    if (!q) return sortedContacts;
+    return sortedContacts.filter(
       (c) =>
         c.name?.toLowerCase().includes(q) || c.phone?.toLowerCase().includes(q),
     );
-  }, [contacts, search]);
+  }, [sortedContacts, search]);
 
   const toggle = useCallback((id: string) => {
     setSelectedIds((prev) =>

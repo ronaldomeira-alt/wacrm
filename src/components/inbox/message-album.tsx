@@ -88,6 +88,8 @@ interface MessageAlbumProps {
   /** 2+ messages, already validated by computeAlbumGroups. */
   messages: Message[];
   currentUserId?: string;
+  /** ID of the contact whose conversation is currently open. */
+  currentContactId?: string;
   /** Reactions on the album's first (representative) message — same
    *  convention MessageBubble already uses for a single message. */
   reactions?: MessageReaction[];
@@ -145,6 +147,7 @@ function AlbumTile({
 function MessageAlbumComponent({
   messages,
   currentUserId,
+  currentContactId,
   reactions,
   onReply,
   onReact,
@@ -264,6 +267,7 @@ function MessageAlbumComponent({
     <>
       <MessageActions
         message={first}
+        currentContactId={currentContactId}
         onReply={onReply}
         onReact={onReact}
         onDelete={onDelete}
@@ -388,6 +392,7 @@ function MessageAlbumComponent({
         messages={forwardOpen ? messages : null}
         open={forwardOpen}
         onOpenChange={setForwardOpen}
+        currentContactId={currentContactId}
       />
     </>
   );

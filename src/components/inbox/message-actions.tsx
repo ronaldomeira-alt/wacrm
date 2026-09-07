@@ -208,6 +208,8 @@ interface MessageActionsProps {
    * onto the message so the bubble can render it.
    */
   onTranscribe?: (message: Message) => Promise<void> | void;
+  /** ID of the contact whose conversation is currently open. */
+  currentContactId?: string;
   /**
    * Render-prop instead of a plain node: the chevron trigger + dropdown
    * menu (`cornerAction`) needs to live *inside* `<MessageBubble>`'s own
@@ -233,6 +235,7 @@ interface MessageActionsProps {
  */
 function MessageActionsComponent({
   message,
+  currentContactId,
   onReply,
   onReact,
   onDelete,
@@ -751,6 +754,7 @@ function MessageActionsComponent({
         messages={forwardOpen ? forwardMessages : null}
         open={forwardOpen}
         onOpenChange={setForwardOpen}
+        currentContactId={currentContactId}
       />
     </div>
   );
