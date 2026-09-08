@@ -692,6 +692,16 @@ html[data-theme="rose"] {
       border-color: #383838;
     }
 
+    /* In standalone iOS PWA mode, map .invisible on the composer capsule
+       to transparent + pointer-events-none instead of visibility:hidden,
+       so WebKit does not forcibly strip focus from the textarea and drop
+       the software keyboard while recording audio or swapping state. */
+    [data-composer-capsule].invisible {
+      visibility: visible !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+
     /* Multi-line state (2 to 4 lines): the textarea takes its own dedicated
        full-width line above the controls, while controls (+ on left, mic and
        send on right) anchor to the bottom line matching ChatGPT on iPhone. */
@@ -839,6 +849,51 @@ html[data-theme="rose"] {
       mask-repeat: no-repeat;
       -webkit-mask-position: center;
       mask-position: center;
+    }
+
+    /* Recording bar: inherits the exact same dark elevated capsule
+       surface (#0f0f10), 1px contour (#2f2f2f), and 26px pill radius
+       as the main composer capsule, ensuring seamless visual consistency
+       when audio recording is active. */
+    [data-composer-recording-bar] {
+      position: relative !important;
+      background-color: #0f0f10 !important;
+      border: 1px solid #2f2f2f !important;
+      border-radius: 26px !important;
+      padding: 3px 8px 3px 8px !important;
+      min-height: 44px !important;
+      box-sizing: border-box !important;
+      align-items: center !important;
+    }
+
+    [data-composer-recording-bar] button {
+      border-radius: 999px !important;
+      height: 38px !important;
+      width: 38px !important;
+      min-width: 38px !important;
+      min-height: 38px !important;
+      padding: 0 !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      color: #ffffff !important;
+    }
+
+    [data-composer-recording-bar] button svg {
+      height: 18px !important;
+      width: 18px !important;
+    }
+
+    [data-composer-recording-bar] > span:has(button) {
+      display: inline-flex !important;
+      height: 38px !important;
+      width: 38px !important;
+      align-items: center !important;
+      justify-content: center !important;
+    }
+
+    [data-composer-recording-bar] span {
+      color: #ffffff !important;
     }
   }
 }

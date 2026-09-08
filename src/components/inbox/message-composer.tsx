@@ -491,39 +491,46 @@ export function MessageComposer({
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
+
+    // Reset height to auto first so scrollHeight accurately measures content
     el.style.height = "auto";
-    // Max 4 lines (24px line-height * 4 + 20px vertical padding = 116px)
-    el.style.height = `${Math.min(el.scrollHeight, 116)}px`;
 
-    // Presentational-only signal for the iPhone-PWA composer capsule's
-    // CSS (globals.css, `[data-composer-capsule]:has([data-multiline])`)
-    // to switch from a single row (attach/textarea/mic/send side by
-    // side) to a stacked one (textarea on its own full-width row, the
-    // three controls on a row below) once the text wraps past one
-    // line — never read anywhere else, never fed back into the height
-    // math above. Computed fresh from computed line-height + vertical
-    // padding on every call rather than cached from the first
-    // measurement, so it stays correct even when `initialText` seeds
-    // an already-multi-line draft on mount.
-    const cs = getComputedStyle(el);
-    const singleLineHeight =
-      (parseFloat(cs.lineHeight) || 24) +
-      parseFloat(cs.paddingTop) +
-      parseFloat(cs.paddingBottom);
+    const hasNewlines = el.value.includes("\n");
+    const isEmpty = el.value.length === 0;
 
-    const isCurrentlyMultiline = el.hasAttribute("data-multiline");
-    if (isCurrentlyMultiline) {
-      if (el.scrollHeight <= singleLineHeight + 1 && !el.value.includes("\n")) {
-        el.removeAttribute("data-multiline");
-        if (el.scrollHeight > singleLineHeight + 1) {
-          el.setAttribute("data-multiline", "");
-        }
-      }
+    if (isEmpty) {
+      el.removeAttribute("data-multiline");
+      el.style.height = "auto";
+      return;
+    }
+
+    if (hasNewlines) {
+      el.setAttribute("data-multiline", "");
     } else {
+      // Determine if 1-line text wraps in single-row mode:
+      // temporarily remove data-multiline and check single-row scrollHeight
+      el.removeAttribute("data-multiline");
+      el.style.height = "auto";
+      const cs = getComputedStyle(el);
+      const singleLineHeight =
+        (parseFloat(cs.lineHeight) || 24) +
+        parseFloat(cs.paddingTop) +
+        parseFloat(cs.paddingBottom);
+
       if (el.scrollHeight > singleLineHeight + 1) {
         el.setAttribute("data-multiline", "");
       }
     }
+
+    // Measure final height under the chosen layout mode
+    el.style.height = "auto";
+    const csFinal = getComputedStyle(el);
+    const lineH = parseFloat(csFinal.lineHeight) || 24;
+    const padV = parseFloat(csFinal.paddingTop) + parseFloat(csFinal.paddingBottom);
+    // Cap at exactly 4 visible lines; lines 5+ scroll internally
+    const maxHeight = Math.round(lineH * 4 + padV);
+    const targetHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${targetHeight}px`;
   }, []);
 
   const handleSend = useCallback(async () => {
@@ -536,6 +543,7 @@ export function MessageComposer({
       setText("");
       setSlashToken(null);
       if (textareaRef.current) {
+        textareaRef.current.removeAttribute("data-multiline");
         textareaRef.current.style.height = "auto";
         textareaRef.current.focus();
       }
@@ -1010,6 +1018,7 @@ export function MessageComposer({
         if (micPhase !== "idle") return;
         e.preventDefault();
         startRecordingGesture();
+        textareaRef.current?.focus();
         return;
       }
 
@@ -1018,6 +1027,7 @@ export function MessageComposer({
       // still pending (micPhase only flips once the timer actually fires).
       if (micPhase !== "idle" || longPressTimerRef.current !== null) return;
       e.preventDefault();
+      textareaRef.current?.focus();
       micButtonRef.current?.setPointerCapture(e.pointerId);
       gestureRef.current = { startY: e.clientY };
       longPressStartRef.current = { x: e.clientX, y: e.clientY };
@@ -1083,14 +1093,17 @@ export function MessageComposer({
   const handleMicPointerEnd = useCallback(
     (e: React.PointerEvent<HTMLButtonElement>) => {
       if (e.pointerType === "mouse") return;
+      e.preventDefault();
       micButtonRef.current?.releasePointerCapture(e.pointerId);
       gestureRef.current = null;
       if (longPressTimerRef.current !== null) {
         clearLongPressTimer();
+        textareaRef.current?.focus();
         return;
       }
       if (locked) return;
       stopRecordingGesture();
+      textareaRef.current?.focus();
     },
     [locked, clearLongPressTimer, stopRecordingGesture],
   );
@@ -1106,6 +1119,7 @@ export function MessageComposer({
       setMicPhase("idle");
       setLocked(false);
       void stopRecorder();
+      textareaRef.current?.focus();
       return;
     }
     if (micPhase === "paused" || micPhase === "failed") {
@@ -1114,6 +1128,7 @@ export function MessageComposer({
       setMicPhase("idle");
       setLocked(false);
       setFailedError(undefined);
+      textareaRef.current?.focus();
       if (id) {
         // Deletes the IndexedDB record and, if it had already made it to
         // Storage, GCs that object too. Fire-and-forget: nothing in the
@@ -1136,6 +1151,7 @@ export function MessageComposer({
       sendOnStopRef.current = true;
       setMicPhase("sending");
       void stopRecorder();
+      textareaRef.current?.focus();
       return;
     }
     if (micPhase === "paused" || micPhase === "failed") {
@@ -1144,6 +1160,7 @@ export function MessageComposer({
       setMicPhase("idle");
       setLocked(false);
       setFailedError(undefined);
+      textareaRef.current?.focus();
       if (id) {
         onRecordAudio(id, replyTo?.id);
         onClearReply?.();
@@ -1360,8 +1377,14 @@ export function MessageComposer({
                       ? undefined
                       : t("attachMedia")
                 }
-                onPointerDown={(e) => e.preventDefault()}
-                onMouseDown={(e) => e.preventDefault()}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  textareaRef.current?.focus();
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  textareaRef.current?.focus();
+                }}
                 className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
@@ -1375,21 +1398,36 @@ export function MessageComposer({
                 className="min-w-[165px] border-border bg-popover p-[5.5px] ring-foreground/5 duration-150 zoom-in-96 zoom-out-96"
               >
                 <DropdownMenuItem
-                  onClick={() => imageInputRef.current?.click()}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    imageInputRef.current?.click();
+                    textareaRef.current?.focus();
+                  }}
                   className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
                   <ImageIcon className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
                   {t("photo")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  onClick={() => videoInputRef.current?.click()}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    videoInputRef.current?.click();
+                    textareaRef.current?.focus();
+                  }}
                   className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
                   <Video className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
                   {t("video")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  onClick={() => documentInputRef.current?.click()}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    documentInputRef.current?.click();
+                    textareaRef.current?.focus();
+                  }}
                   className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
                   <FileText className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
@@ -1514,6 +1552,7 @@ export function MessageComposer({
 
           {micActive && (
             <div
+              data-composer-recording-bar
               className={cn(
                 "relative flex items-center gap-3 rounded-xl border px-3 py-2.5",
                 micPhase === "failed" ? "border-red-500/40 bg-red-500/5" : "border-border bg-muted",
@@ -1541,7 +1580,12 @@ export function MessageComposer({
 
               <button
                 type="button"
-                onClick={handleDiscardRecording}
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  handleDiscardRecording();
+                  textareaRef.current?.focus();
+                }}
                 aria-label={t("discardRecording")}
                 disabled={micPhase === "sending"}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-40"
@@ -1560,7 +1604,12 @@ export function MessageComposer({
               {micPhase === "recording" && (
                 <button
                   type="button"
-                  onClick={stopRecordingGesture}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    stopRecordingGesture();
+                    textareaRef.current?.focus();
+                  }}
                   aria-label={t("stopRecording")}
                   title={t("stopRecording")}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-500 transition-colors hover:bg-red-500/10"
@@ -1598,6 +1647,8 @@ export function MessageComposer({
                 canAct={!readOnly}
                 gateReason="enviar mensagens"
                 disabled={micPhase === "sending"}
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={handleSendRecording}
                 aria-label={micPhase === "failed" ? t("retryRecording") : t("sendRecording")}
                 title={micPhase === "failed" ? t("retryRecording") : undefined}
