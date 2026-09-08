@@ -492,8 +492,38 @@ export function MessageComposer({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    // Max 4 lines (~96px)
-    el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
+    // Max 4 lines (24px line-height * 4 + 20px vertical padding = 116px)
+    el.style.height = `${Math.min(el.scrollHeight, 116)}px`;
+
+    // Presentational-only signal for the iPhone-PWA composer capsule's
+    // CSS (globals.css, `[data-composer-capsule]:has([data-multiline])`)
+    // to switch from a single row (attach/textarea/mic/send side by
+    // side) to a stacked one (textarea on its own full-width row, the
+    // three controls on a row below) once the text wraps past one
+    // line — never read anywhere else, never fed back into the height
+    // math above. Computed fresh from computed line-height + vertical
+    // padding on every call rather than cached from the first
+    // measurement, so it stays correct even when `initialText` seeds
+    // an already-multi-line draft on mount.
+    const cs = getComputedStyle(el);
+    const singleLineHeight =
+      (parseFloat(cs.lineHeight) || 24) +
+      parseFloat(cs.paddingTop) +
+      parseFloat(cs.paddingBottom);
+
+    const isCurrentlyMultiline = el.hasAttribute("data-multiline");
+    if (isCurrentlyMultiline) {
+      if (el.scrollHeight <= singleLineHeight + 1 && !el.value.includes("\n")) {
+        el.removeAttribute("data-multiline");
+        if (el.scrollHeight > singleLineHeight + 1) {
+          el.setAttribute("data-multiline", "");
+        }
+      }
+    } else {
+      if (el.scrollHeight > singleLineHeight + 1) {
+        el.setAttribute("data-multiline", "");
+      }
+    }
   }, []);
 
   const handleSend = useCallback(async () => {
@@ -1203,7 +1233,15 @@ export function MessageComposer({
     // Safari tab) collapses to 0 while the keyboard is open in a
     // standalone iOS PWA, where the inset otherwise keeps reserving
     // home-indicator space the keyboard has already covered.
-    <div className="border-t border-border bg-card px-3 py-[6px] pb-[calc(6px+var(--composer-safe-bottom,env(safe-area-inset-bottom)))]">
+    // `data-composer-shell` is a plain structural hook — no conditional
+    // logic attached to it here, it's always present. Consumed only by
+    // the iPhone-PWA-scoped CSS block in globals.css (see the
+    // `@supports (-webkit-touch-callout: none)` composer section there),
+    // which is the sole place any platform branching happens.
+    <div
+      data-composer-shell
+      className="border-t border-border bg-card px-3 py-[6px] pb-[calc(6px+var(--composer-safe-bottom,env(safe-area-inset-bottom)))]"
+    >
       {replyTo && (
         <div className="mb-2">
           <ReplyQuote
@@ -1289,6 +1327,13 @@ export function MessageComposer({
         // whole row exactly as if it were a swap.
         <div className="relative">
           <div
+            // `data-composer-capsule` — structural hook only, always
+            // present regardless of `micActive`; does not participate in
+            // the `cn()` conditional below. The `invisible absolute
+            // inset-0` mic-recording swap (see the comment above this
+            // block) is untouched — the hook rides alongside it, never
+            // replaces it.
+            data-composer-capsule
             className={cn(
               // items-center (was items-end): Attach/Mic are taller
               // (h-[47px]) than Send (h-9) and the textarea's own
@@ -1306,6 +1351,7 @@ export function MessageComposer({
             {/* Left — attach media: photo / video / document. */}
             <DropdownMenu>
               <DropdownMenuTrigger
+                data-composer-attach
                 disabled={inputsDisabled || busy}
                 title={
                   readOnly
@@ -1314,6 +1360,8 @@ export function MessageComposer({
                       ? undefined
                       : t("attachMedia")
                 }
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
                 className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
@@ -1357,6 +1405,7 @@ export function MessageComposer({
                 WhatsApp/Telegram/iMessage don't have. */}
             <div className="relative flex-1">
               <textarea
+                data-composer-textarea
                 ref={textareaRef}
                 value={text}
                 onChange={handleChange}
@@ -1432,12 +1481,14 @@ export function MessageComposer({
             {/* Right — record audio. Press-and-hold (Pointer Events cover
                 touch + mouse identically), drag up to lock. */}
             <button
+              data-composer-mic
               ref={micButtonRef}
               type="button"
               disabled={inputsDisabled || busy}
               title={readOnly ? undefined : t("voiceNote")}
               aria-label={t("voiceNote")}
               onPointerDown={handleMicPointerDown}
+              onMouseDown={(e) => e.preventDefault()}
               onPointerMove={handleMicPointerMove}
               onPointerUp={handleMicPointerEnd}
               onPointerCancel={handleMicPointerEnd}
@@ -1447,6 +1498,7 @@ export function MessageComposer({
             </button>
 
             <GatedButton
+              data-composer-send
               size="sm"
               canAct={!readOnly}
               gateReason="enviar mensagens"

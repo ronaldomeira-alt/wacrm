@@ -571,6 +571,278 @@ html[data-theme="rose"] {
   }
 }
 
+/* ============================================================
+   Inbox Composer — visual layer, iPhone PWA (Home Screen install)
+   ONLY. ChatGPT-style single pill capsule (attach + textarea + mic
+   + send sharing one surface) over a pure-black conversation
+   background. Requested 2026-09-08 as a purely cosmetic change —
+   read message-composer.tsx's/message-thread.tsx's own comments at
+   each `data-composer-*`/`data-inbox-doodle-bg` attribute before
+   touching either side of this.
+
+   Hard constraints this block honors:
+   - Colour/border/radius/padding only. Never touches an element's
+     border-*-WIDTH, padding that feeds adjustHeight()'s
+     `scrollHeight` math, `box-sizing`, or anything that would shift
+     the composer's computed height.
+   - Never sets `display`/`visibility`/`position` on anything —
+     the mic button's `invisible absolute inset-0` recording-state
+     swap (message-composer.tsx) is left completely alone; this
+     block doesn't select that element's container in a way that
+     could interact with it.
+   - No JS, no React state, no new hook — the three selectors below
+     (`@supports` WebKit-iOS detection + `display-mode: standalone`
+     + the 430px iPhone-vs-iPad ceiling already used above for the
+     Calculator) are the entire isolation mechanism. Unlayered CSS
+     beats Tailwind's `@layer utilities` regardless of source order
+     (same mechanism as the Calculator block above), so no
+     `!important` is needed anywhere here.
+
+   Scope, precisely:
+   - `@supports (-webkit-touch-callout: none)` → WebKit-on-iOS only
+     (a real Safari tab or an installed PWA — never Android, never
+     desktop, never Windows/macOS Chrome or Edge).
+   - `(display-mode: standalone)` → only once actually launched
+     from the Home Screen icon; a regular Safari tab (WebKit-on-iOS
+     too) never matches this and keeps today's look.
+   - `max-width: 430px` → excludes iPad (smallest iPad viewport is
+     744px), same ceiling as the Calculator block above.
+   ============================================================ */
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone) and (max-width: 430px) {
+    /* Conversation background: the doodle SVG tile itself (a
+       separate `bg-[url(...)]` utility, untouched) now sits over
+       pure black instead of the themed --background token. Applies
+       to both the active-thread root and the "no conversation
+       selected" empty state — they share the same DOODLE_BG_CLASSES
+       constant in message-thread.tsx. */
+    [data-inbox-doodle-bg] {
+      background-color: #000;
+    }
+
+    /* Composer outer shell (message-composer.tsx) — drop its own
+       bar look (top border + card background) so it blends into the
+       black conversation background and only the pill capsule below
+       reads as a floating surface. Its padding/safe-area calc()
+       (home-indicator inset) is untouched. */
+    [data-composer-shell] {
+      background-color: transparent;
+      border-top-color: transparent;
+    }
+
+    /* The capsule: attach (+) / textarea / mic / send all already
+       live inside this one row in the DOM (message-composer.tsx's
+       existing `flex items-center gap-2` div) — this just gives that
+       existing row a surface instead of introducing a new wrapper.
+
+       `border-radius: 1.75rem` (NOT 999px) is deliberate — a fixed
+       absolute radius, not a relative one. At the capsule's resting
+       height (~57px: 47px attach/mic buttons + 4px/6px vertical
+       padding) 1.75rem (28px) per corner is close enough to half
+       the box height that the two corners' arcs meet, reading as a
+       full pill — same look 999px gave. But as the row grows taller
+       (the *existing* adjustHeight() in message-composer.tsx driving
+       the textarea's own height up to its already-existing 96px cap
+       — untouched here), that same fixed 28px stops being close to
+       half the height, so the corners read as rounded-rectangle
+       corners with increasingly straight sides instead of a
+       stretched vertical pill. This ratio-only-shrinks-as-height-
+       grows effect falls out of using an absolute unit — no
+       container query, no JS line-count detection, no new state.
+
+       `align-items: center` (explicit, matching Tailwind's own
+       `items-center` on this element — restated here only so it
+       isn't silently dependent on that utility class surviving
+       future edits) keeps attach/textarea/mic/send vertically
+       centered against each other at rest. The multi-line case below
+       doesn't need this row's cross-axis alignment at all anymore —
+       once `data-multiline` flips, the textarea and the button trio
+       become two SEPARATE flex lines (via `flex-wrap` + `order`), so
+       the buttons are anchored to the bottom by being on their own
+       dedicated bottom line, not by any alignment trick on this
+       shared row. (2026-09-08: this used to be `flex-end` — dropped
+       after it caused a real single-line-state alignment glitch:
+       attach/mic are both a fixed 47px→42px box, but the send button
+       is shorter, so bottom-aligning boxes of different heights while
+       centering each icon *within* its own box put the send icon
+       visibly lower than attach/mic's. `center` doesn't have that
+       problem since it aligns the *icons'* effective centers, not
+       each box's bottom edge.) */
+    /* The capsule: dark elevated surface (#0f0f10) with a refined,
+       continuous 1px contour (#2f2f2f / rgba(255, 255, 255, 0.15))
+       matching ChatGPT iPhone PWA reference (IMG_8381.jpg).
+       Radius: 26px (1.625rem) matches ChatGPT's capsule pill at 1 line
+       and continuous rounded rectangle at multi-line (2-4 lines). */
+    [data-composer-capsule] {
+      position: relative;
+      background-color: #0f0f10;
+      border: 1px solid #2f2f2f;
+      border-radius: 26px;
+      /* 3px/8px/3px/8px — the capsule's OWN padding, not the
+         textarea's (that one stays completely untouched, see the
+         textarea rule below and message-composer.tsx's
+         adjustHeight()). Trimmed tight to give buttons and text
+         the whole vertical space with identical baseline. */
+      padding: 3px 8px 3px 8px;
+      align-items: center;
+      transition: border-radius 180ms ease-out, border-color 150ms ease-out;
+    }
+
+    [data-composer-capsule]:focus-within {
+      border-color: #383838;
+    }
+
+    /* Multi-line state (2 to 4 lines): the textarea takes its own dedicated
+       full-width line above the controls, while controls (+ on left, mic and
+       send on right) anchor to the bottom line matching ChatGPT on iPhone. */
+    [data-composer-capsule]:has([data-multiline]) {
+      flex-wrap: wrap;
+      align-items: flex-end;
+      padding: 8px 8px 6px 8px;
+    }
+
+    [data-composer-capsule]:has([data-multiline]) > div:has([data-composer-textarea]) {
+      order: 1;
+      width: 100%;
+      flex: 0 0 100%;
+    }
+
+    [data-composer-capsule]:has([data-multiline]) [data-composer-textarea] {
+      padding-left: 6px;
+      padding-right: 6px;
+      padding-top: 4px;
+      padding-bottom: 4px;
+    }
+
+    [data-composer-capsule]:has([data-multiline]) > [data-composer-attach] {
+      order: 2;
+      margin-right: auto;
+    }
+
+    [data-composer-capsule]:has([data-multiline]) > [data-composer-mic] {
+      order: 3;
+    }
+
+    [data-composer-capsule]:has([data-multiline]) > span:has([data-composer-send]) {
+      order: 4;
+    }
+
+    /* Textarea: neutralize its own boxed look + add smooth height
+       transition for natural vertical stretching as lines are added/removed */
+    [data-composer-textarea] {
+      background-color: transparent;
+      border-color: transparent;
+      transition: height 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+    }
+    [data-composer-textarea]:focus {
+      border-color: transparent;
+    }
+
+    /* Attach, mic, and send controls — unified 38px circle bounding
+       boxes ensure mathematical vertical center alignment across all 3
+       controls in both single-line and multi-line states. */
+    [data-composer-attach],
+    [data-composer-mic],
+    [data-composer-send] {
+      border-radius: 999px;
+      height: 38px;
+      width: 38px;
+      min-width: 38px;
+      min-height: 38px;
+      max-width: 38px;
+      max-height: 38px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      box-sizing: border-box;
+    }
+
+    /* Wrapper span from GatedButton around [data-composer-send] */
+    [data-composer-capsule] > span:has([data-composer-send]) {
+      display: inline-flex;
+      height: 38px;
+      width: 38px;
+      flex-shrink: 0;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Microphone button and SVG icon: crisp pure white (#ffffff) */
+    [data-composer-mic] {
+      color: #ffffff !important;
+    }
+    [data-composer-mic] svg {
+      height: 22px;
+      width: 22px;
+      stroke: #ffffff !important;
+      color: #ffffff !important;
+    }
+
+    /* Attach icon swap: Paperclip → Plus in crisp pure white (#ffffff).
+       Can't conditionally render a different lucide component only on iPhone
+       PWA without JS platform-detection in message-composer.tsx — explicitly
+       off-limits per this task's constraints — so this does it entirely in
+       CSS instead: the real Paperclip <svg> is made invisible with
+       `opacity: 0`, and a `::after` pseudo-element draws a pure white plus.
+       Upload spinner (Loader2) is preserved when busy. */
+    [data-composer-attach] svg:not(.animate-spin) {
+      opacity: 0;
+    }
+    [data-composer-attach] {
+      position: relative;
+      color: #ffffff !important;
+    }
+    [data-composer-attach]:has(svg.animate-spin)::after {
+      content: none;
+    }
+    [data-composer-attach]::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      width: 22px;
+      height: 22px;
+      background-color: #ffffff !important;
+      -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3Cpath d='M12 5v14'/%3E%3C/svg%3E");
+      mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3Cpath d='M12 5v14'/%3E%3C/svg%3E");
+      -webkit-mask-size: contain;
+      mask-size: contain;
+      -webkit-mask-repeat: no-repeat;
+      mask-repeat: no-repeat;
+      -webkit-mask-position: center;
+      mask-position: center;
+    }
+
+    /* Send button — circular button with crisp pure white (#ffffff)
+       arrow-up matching ChatGPT iPhone PWA reference. */
+    [data-composer-send] {
+      position: relative;
+    }
+    [data-composer-send] svg {
+      opacity: 0;
+    }
+    [data-composer-send]::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      width: 18px;
+      height: 18px;
+      background-color: #ffffff !important;
+      -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5'/%3E%3Cpath d='m5 12 7-7 7 7'/%3E%3C/svg%3E");
+      mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5'/%3E%3Cpath d='m5 12 7-7 7 7'/%3E%3C/svg%3E");
+      -webkit-mask-size: contain;
+      mask-size: contain;
+      -webkit-mask-repeat: no-repeat;
+      mask-repeat: no-repeat;
+      -webkit-mask-position: center;
+      mask-position: center;
+    }
+  }
+}
+
 /* frimousse (message-actions.tsx's "more reactions" full emoji picker) is
    unstyled by design — its docs' own recommended path is targeting these
    `[frimousse-*]` attribute selectors directly, since they aren't classes

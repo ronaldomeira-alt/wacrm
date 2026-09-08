@@ -69,10 +69,26 @@ export async function middleware(request: NextRequest) {
     return withRefreshedCookies(NextResponse.redirect(url))
   }
 
-  // Protected pages - redirect to login if not authenticated (bypassed in development mode for local testing)
-  const protectedPaths = ['/dashboard', '/inbox', '/contacts', '/pipelines', '/broadcasts', '/campaigns', '/automations', '/settings']
-  if (!user && process.env.NODE_ENV !== 'development' && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path))) {
+  // In development mode, auto-authenticate on /login as well (unless ?manual=1 is specified)
+  if (!user && process.env.NODE_ENV === 'development' && request.nextUrl.pathname === '/login' && !request.nextUrl.searchParams.has('manual')) {
     const url = request.nextUrl.clone()
+    url.pathname = '/api/auth/dev-login'
+    url.searchParams.set('redirect', '/dashboard')
+    return withRefreshedCookies(NextResponse.redirect(url))
+  }
+
+  // Protected pages - redirect to login if not authenticated.
+  // In development mode, auto-authenticate seamlessly via /api/auth/dev-login
+  // so developers and mobile preview testers get real Supabase session cookies
+  // without needing manual login or encountering PostgREST RLS permission errors.
+  const protectedPaths = ['/dashboard', '/inbox', '/contacts', '/pipelines', '/broadcasts', '/campaigns', '/automations', '/settings']
+  if (!user && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path))) {
+    const url = request.nextUrl.clone()
+    if (process.env.NODE_ENV === 'development') {
+      url.pathname = '/api/auth/dev-login'
+      url.searchParams.set('redirect', request.nextUrl.pathname + request.nextUrl.search)
+      return withRefreshedCookies(NextResponse.redirect(url))
+    }
     url.pathname = '/login'
     return withRefreshedCookies(NextResponse.redirect(url))
   }

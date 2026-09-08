@@ -1448,6 +1448,11 @@ export function MessageThread({
   if (!conversation || !contact) {
     return (
       <div
+        // `data-inbox-doodle-bg` — structural hook only (no conditional
+        // logic here); consumed by the iPhone-PWA-scoped CSS block in
+        // globals.css to swap the base colour under the doodle pattern
+        // to pure black. Every other platform is untouched.
+        data-inbox-doodle-bg
         className={cn(
           'flex flex-1 flex-col items-center justify-center',
           DOODLE_BG_CLASSES
@@ -1481,6 +1486,7 @@ export function MessageThread({
     // Issue #257.
     <div
       ref={threadRootRef}
+      data-inbox-doodle-bg
       className={cn('flex min-w-0 flex-1 flex-col', DOODLE_BG_CLASSES)}
     >
       {/* Header — solid card surface sits on top of the doodle so the

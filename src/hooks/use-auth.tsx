@@ -257,17 +257,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // profile data gate on `profileLoading` instead.
           fetchProfile(currentUser.id);
         } else if (process.env.NODE_ENV === "development") {
-          // Local dev fallback user (Ronaldo Meira / Owner) for testing without login
-          const DEV_USER_ID = "9e4fc8ba-cee9-440b-b3b4-e74b52135293";
-          setUser({
-            id: DEV_USER_ID,
-            email: "ronaldomeiracorretor@gmail.com",
-            app_metadata: {},
-            user_metadata: {},
-            aud: "authenticated",
-            created_at: new Date().toISOString(),
-          } as unknown as User);
-          fetchProfile(DEV_USER_ID);
+          // Local dev fallback user: first attempt to obtain a real Supabase session
+          // so PostgREST RLS queries have a valid authenticated JWT
+          let sessionEstablished = false;
+          try {
+            const devRes = await fetch("/api/auth/dev-login", { method: "POST" });
+            if (devRes.ok) {
+              const devData = await devRes.json();
+              if (devData.session) {
+                const { error: setErr } = await supabase.auth.setSession(devData.session);
+                if (!setErr) {
+                  sessionEstablished = true;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("[AuthProvider] Could not hydrate dev session:", e);
+          }
+
+          if (!sessionEstablished && mounted) {
+            const DEV_USER_ID = "9e4fc8ba-cee9-440b-b3b4-e74b52135293";
+            setUser({
+              id: DEV_USER_ID,
+              email: "ronaldomeiracorretor@gmail.com",
+              app_metadata: {},
+              user_metadata: {},
+              aud: "authenticated",
+              created_at: new Date().toISOString(),
+            } as unknown as User);
+            fetchProfile(DEV_USER_ID);
+          }
         } else {
           // No user → no profile to load. Flip profileLoading off so
           // pages that gate on it don't wait forever on the logged-out
