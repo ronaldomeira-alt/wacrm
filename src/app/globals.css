@@ -623,11 +623,13 @@ html[data-theme="rose"] {
     /* Composer outer shell (message-composer.tsx) — drop its own
        bar look (top border + card background) so it blends into the
        black conversation background and only the pill capsule below
-       reads as a floating surface. Its padding/safe-area calc()
-       (home-indicator inset) is untouched. */
+       reads as a floating surface. Vertical padding reduced by 10%
+       (6px -> 5px) to trim total composer height. */
     [data-composer-shell] {
       background-color: transparent;
       border-top-color: transparent;
+      padding-top: 5px;
+      padding-bottom: calc(5px + var(--composer-safe-bottom, env(safe-area-inset-bottom)));
     }
 
     /* The capsule: attach (+) / textarea / mic / send all already
@@ -635,54 +637,16 @@ html[data-theme="rose"] {
        existing `flex items-center gap-2` div) — this just gives that
        existing row a surface instead of introducing a new wrapper.
 
-       `border-radius: 1.75rem` (NOT 999px) is deliberate — a fixed
-       absolute radius, not a relative one. At the capsule's resting
-       height (~57px: 47px attach/mic buttons + 4px/6px vertical
-       padding) 1.75rem (28px) per corner is close enough to half
-       the box height that the two corners' arcs meet, reading as a
-       full pill — same look 999px gave. But as the row grows taller
-       (the *existing* adjustHeight() in message-composer.tsx driving
-       the textarea's own height up to its already-existing 96px cap
-       — untouched here), that same fixed 28px stops being close to
-       half the height, so the corners read as rounded-rectangle
-       corners with increasingly straight sides instead of a
-       stretched vertical pill. This ratio-only-shrinks-as-height-
-       grows effect falls out of using an absolute unit — no
-       container query, no JS line-count detection, no new state.
-
-       `align-items: center` (explicit, matching Tailwind's own
-       `items-center` on this element — restated here only so it
-       isn't silently dependent on that utility class surviving
-       future edits) keeps attach/textarea/mic/send vertically
-       centered against each other at rest. The multi-line case below
-       doesn't need this row's cross-axis alignment at all anymore —
-       once `data-multiline` flips, the textarea and the button trio
-       become two SEPARATE flex lines (via `flex-wrap` + `order`), so
-       the buttons are anchored to the bottom by being on their own
-       dedicated bottom line, not by any alignment trick on this
-       shared row. (2026-09-08: this used to be `flex-end` — dropped
-       after it caused a real single-line-state alignment glitch:
-       attach/mic are both a fixed 47px→42px box, but the send button
-       is shorter, so bottom-aligning boxes of different heights while
-       centering each icon *within* its own box put the send icon
-       visibly lower than attach/mic's. `center` doesn't have that
-       problem since it aligns the *icons'* effective centers, not
-       each box's bottom edge.) */
-    /* The capsule: dark elevated surface (#0f0f10) with a refined,
-       continuous 1px contour (#2f2f2f / rgba(255, 255, 255, 0.15))
-       matching ChatGPT iPhone PWA reference (IMG_8381.jpg).
-       Radius: 26px (1.625rem) matches ChatGPT's capsule pill at 1 line
-       and continuous rounded rectangle at multi-line (2-4 lines). */
+       `border-radius: 24px` is tailored to the reduced height (~46px-48px),
+       maintaining the smooth pill shape at resting height and continuous
+       rounded rectangle in multi-line state. */
     [data-composer-capsule] {
       position: relative;
       background-color: #0f0f10;
       border: 1px solid #2f2f2f;
-      border-radius: 26px;
-      /* 3px/8px/3px/8px — the capsule's OWN padding, not the
-         textarea's (that one stays completely untouched, see the
-         textarea rule below and message-composer.tsx's
-         adjustHeight()). Trimmed tight to give buttons and text
-         the whole vertical space with identical baseline. */
+      border-radius: 24px;
+      /* 3px/8px/3px/8px — the capsule's OWN padding. Trimmed tight to
+         give buttons and text the whole vertical space with identical baseline. */
       padding: 3px 8px 3px 8px;
       align-items: center;
       transition: border-radius 180ms ease-out, border-color 150ms ease-out;
@@ -708,7 +672,7 @@ html[data-theme="rose"] {
     [data-composer-capsule]:has([data-multiline]) {
       flex-wrap: wrap;
       align-items: flex-end;
-      padding: 8px 8px 6px 8px;
+      padding: 7px 8px 5px 8px;
     }
 
     [data-composer-capsule]:has([data-multiline]) > div:has([data-composer-textarea]) {
@@ -738,10 +702,17 @@ html[data-theme="rose"] {
     }
 
     /* Textarea: neutralize its own boxed look + add smooth height
-       transition for natural vertical stretching as lines are added/removed */
+       transition for natural vertical stretching as lines are added/removed.
+       In single-line mode on iPhone PWA, padding is set to 7px top/bottom
+       (line-height 24px + 14px pad = 38px total height), perfectly matching
+       the 38px controls (mic, send, attach) and reducing composer height by 10%
+       without shrinking any icons. */
     [data-composer-textarea] {
       background-color: transparent;
       border-color: transparent;
+      padding-top: 7px;
+      padding-bottom: 7px;
+      line-height: 24px;
       transition: height 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
     }
     [data-composer-textarea]:focus {
@@ -852,14 +823,14 @@ html[data-theme="rose"] {
     }
 
     /* Recording bar: inherits the exact same dark elevated capsule
-       surface (#0f0f10), 1px contour (#2f2f2f), and 26px pill radius
+       surface (#0f0f10), 1px contour (#2f2f2f), and 24px pill radius
        as the main composer capsule, ensuring seamless visual consistency
        when audio recording is active. */
     [data-composer-recording-bar] {
       position: relative !important;
       background-color: #0f0f10 !important;
       border: 1px solid #2f2f2f !important;
-      border-radius: 26px !important;
+      border-radius: 24px !important;
       padding: 3px 8px 3px 8px !important;
       min-height: 44px !important;
       box-sizing: border-box !important;
