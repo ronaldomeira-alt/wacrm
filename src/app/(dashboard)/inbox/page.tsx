@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState, useCallback, useEffect, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -46,7 +46,6 @@ export default function InboxPage() {
 
 function InboxPageInner() {
   const t = useTranslations("Inbox.page");
-  const router = useRouter();
   const searchParams = useSearchParams();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
@@ -115,11 +114,29 @@ function InboxPageInner() {
    */
   const activeConversationIdRef = useRef<string | null>(null);
   activeConversationIdRef.current = activeConversation?.id ?? null;
+
   /**
-   * Tracks in-flight internal navigations (e.g. card clicks, UI back button)
-   * to eliminate race conditions between router.push/replace and useSearchParams.
+   * Tracks whether a history entry was pushed by this session when opening a conversation
+   * from the list, so that the UI back button ("<") knows whether to call window.history.back()
+   * or perform a local state reset.
    */
-  const isInternalNavRef = useRef<string | null>(null);
+  const hasHistoryEntryRef = useRef<boolean>(false);
+
+  /**
+   * Helper to construct URL preserving search params like `filter`
+   */
+  const buildInboxUrl = useCallback((convId: string | null) => {
+    if (typeof window === "undefined") return convId ? `/inbox?c=${convId}` : "/inbox";
+    const params = new URLSearchParams(window.location.search);
+    if (convId) {
+      params.set("c", convId);
+    } else {
+      params.delete("c");
+    }
+    const qs = params.toString();
+    return qs ? `/inbox?${qs}` : "/inbox";
+  }, []);
+
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   // ── Conversation slide transition (visual-only, mobile) ──────────────
@@ -643,108 +660,86 @@ function InboxPageInner() {
     };
   }, []);
 
-  /**
-   * History & URL synchronization (useSearchParams + popstate / native iOS back gesture).
-   * Distinguishes internal application navigations (tracked via isInternalNavRef)
-   * from browser history navigations (iPhone edge-swipe, browser back/forward buttons).
-   */
-  useEffect(() => {
-    // Check if the current URL matches an in-flight internal navigation
-    if (isInternalNavRef.current) {
-      if (
-        (isInternalNavRef.current === "CLOSE" && !deepLinkConvId) ||
-        (isInternalNavRef.current === deepLinkConvId)
-      ) {
-        // The router has completed transitioning to the requested state
-        isInternalNavRef.current = null;
-      } else {
-        // Router transition is still in-flight; do not treat intermediate URL state as history navigation
-        return;
+  // Deselect the active conversation and optionally update the browser URL
+  const handleCloseConversation = useCallback(
+    (options?: { updateHistory?: boolean }) => {
+      setActiveConversation(null);
+      setActiveContact(null);
+      setMessages([]);
+      autoSelectedForDeepLinkRef.current = null;
+      if (options?.updateHistory !== false && typeof window !== "undefined") {
+        window.history.replaceState(null, "", buildInboxUrl(null));
       }
-    }
+    },
+    [buildInboxUrl]
+  );
 
-    // Case 1: URL has NO conversation param (?c=), but a conversation is currently active in state.
-    // This occurs when the user swipes back or clicks browser back.
-    if (!deepLinkConvId && activeConversationIdRef.current) {
-      if (shouldAnimateTransition()) {
-        setInboxTransition("leave");
-        if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
-        leaveTimerRef.current = setTimeout(() => {
-          setActiveConversation(null);
-          setActiveContact(null);
-          setMessages([]);
-          autoSelectedForDeepLinkRef.current = null;
-          setInboxTransition("idle");
-          leaveTimerRef.current = null;
-        }, 500);
-      } else {
-        setActiveConversation(null);
-        setActiveContact(null);
-        setMessages([]);
-        autoSelectedForDeepLinkRef.current = null;
-      }
-      return;
-    }
-
-    // Case 2: URL has a ?c= param that differs from the active conversation in state.
-    // This occurs when the user navigates forward or to a different conversation via browser history.
-    if (
-      deepLinkConvId &&
-      deepLinkConvId !== activeConversationIdRef.current &&
-      conversations.length > 0
-    ) {
-      const match = conversations.find((c) => c.id === deepLinkConvId);
-      if (match) {
-        autoSelectedForDeepLinkRef.current = deepLinkConvId;
-        setActiveConversation(match);
-        setActiveContact(match.contact ?? null);
-        const cached = getCachedMessages(match.id);
-        setMessages(cached ?? []);
-        if (shouldAnimateTransition()) {
-          if (leaveTimerRef.current) {
-            clearTimeout(leaveTimerRef.current);
-            leaveTimerRef.current = null;
-          }
-          setInboxTransition("enter");
-        }
-      }
-    }
-  }, [deepLinkConvId, conversations, shouldAnimateTransition]);
-
-  // Complementary popstate listener to clear internal nav locks on native popstate
+  // ── Master-Detail History & Popstate synchronization ──────────────────
+  // Listens to browser back/forward and native iPhone edge-swipe gestures.
+  // When the user navigates back to /inbox, we trigger the slide-out leave
+  // animation and clear the active conversation in local state — with ZERO
+  // RSC network roundtrips, Suspense fallbacks, or tree remounts.
   useEffect(() => {
     const handlePopState = () => {
-      isInternalNavRef.current = null;
+      const params = new URLSearchParams(window.location.search);
+      const convIdFromUrl = params.get("c");
+
+      if (!convIdFromUrl) {
+        // User navigated back to /inbox list (Safari edge swipe, browser Back, or history.back())
+        hasHistoryEntryRef.current = false;
+        if (activeConversationIdRef.current) {
+          if (shouldAnimateTransition()) {
+            setInboxTransition("leave");
+            if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+            leaveTimerRef.current = setTimeout(() => {
+              handleCloseConversation({ updateHistory: false });
+              setInboxTransition("idle");
+              leaveTimerRef.current = null;
+            }, 500);
+          } else {
+            handleCloseConversation({ updateHistory: false });
+          }
+        }
+      } else {
+        // User navigated forward or jumped to a specific conversation via history
+        if (convIdFromUrl !== activeConversationIdRef.current) {
+          const match = conversations.find((c) => c.id === convIdFromUrl);
+          if (match) {
+            autoSelectedForDeepLinkRef.current = convIdFromUrl;
+            setActiveConversation(match);
+            setActiveContact(match.contact ?? null);
+            const cached = getCachedMessages(match.id);
+            setMessages(cached ?? []);
+            if (shouldAnimateTransition()) {
+              if (leaveTimerRef.current) {
+                clearTimeout(leaveTimerRef.current);
+                leaveTimerRef.current = null;
+              }
+              setInboxTransition("enter");
+            }
+          } else {
+            hydrateConversation(convIdFromUrl);
+          }
+        }
+      }
     };
+
     window.addEventListener("popstate", handlePopState);
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, []);
+  }, [conversations, handleCloseConversation, hydrateConversation, shouldAnimateTransition]);
 
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
       setConversations(loaded);
-      // Resolve a pending deep-link here rather than in an effect — this
-      // is an event handler, so the setState calls below are allowed by
-      // react-hooks/set-state-in-effect. Runs once per ?c=<id> URL value
-      // via the ref, so realtime refreshes of the list can't snap the
-      // user back to the deep-linked thread after they've navigated.
+      // Resolve a pending deep-link on mount or initial list load (/inbox?c=<id>)
       if (
         deepLinkConvId &&
         autoSelectedForDeepLinkRef.current !== deepLinkConvId &&
         loaded.length > 0
       ) {
         autoSelectedForDeepLinkRef.current = deepLinkConvId;
-        // If the deep-linked conversation is already the active one
-        // (e.g. because the user clicked it in the list and we
-        // router.replace()'d the URL, which made the ConversationList
-        // refetch and land us back here), do NOT re-apply it. Doing so
-        // would setMessages([]) on a thread whose messages have
-        // already been loaded by MessageThread — and because
-        // conversationId didn't change, MessageThread wouldn't
-        // refetch. The thread would read "No messages yet" until a
-        // full page reload rehydrated state from scratch.
         if (activeConversation?.id === deepLinkConvId) return;
         const match = loaded.find((c) => c.id === deepLinkConvId);
         if (match) {
@@ -752,10 +747,6 @@ function InboxPageInner() {
           setActiveContact(match.contact ?? null);
           const cached = getCachedMessages(match.id);
           setMessages(cached ?? []);
-          // Mirror the optimistic unread reset that handleSelectConversation
-          // does — the user just deep-linked into this conv, treat that the
-          // same as a click. Leaves activeConversation.unread_count alone so
-          // the MessageThread reset effect still fires the server UPDATE.
           if (match.unread_count > 0) {
             setConversations((prev) =>
               prev.map((c) =>
@@ -771,12 +762,21 @@ function InboxPageInner() {
 
   const handleSelectConversation = useCallback(
     (conv: Conversation) => {
-      // Re-clicking the already-active conversation would clear the
-      // messages array, but the fetch effect in MessageThread only re-runs
-      // when conversationId changes — so messages would stay empty until
-      // the user navigated away and back. Bail out early instead.
+      // Re-clicking the already-active conversation is a no-op
       if (activeConversation?.id === conv.id) return;
-      isInternalNavRef.current = conv.id;
+
+      const isFirstOpen = !activeConversation;
+      const nextUrl = buildInboxUrl(conv.id);
+
+      if (typeof window !== "undefined") {
+        if (isFirstOpen) {
+          window.history.pushState({ wacrm_inbox: true, conversationId: conv.id }, "", nextUrl);
+          hasHistoryEntryRef.current = true;
+        } else {
+          window.history.replaceState({ wacrm_inbox: true, conversationId: conv.id }, "", nextUrl);
+        }
+      }
+
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
       const cached = getCachedMessages(conv.id);
@@ -789,15 +789,8 @@ function InboxPageInner() {
           prefetchMediaKeys(r2Keys);
         }
       }
-      // Optimistically clear the unread badge for this conv. The
-      // server-side reset is fired by the unread-reset effect inside
-      // MessageThread (which reads activeConversation.unread_count, not
-      // the list copy — so we deliberately leave that intact below to
-      // keep the effect firing), and the realtime UPDATE that comes
-      // back will sync to 0 again as a no-op. Zeroing the list copy
-      // here means the user sees the badge disappear the instant they
-      // click instead of waiting for the round-trip — and it persists
-      // even if the realtime UPDATE is dropped.
+
+      // Optimistically clear unread badge for snappy UX
       setConversations((prev) =>
         prev.map((c) =>
           c.id === conv.id && c.unread_count > 0
@@ -805,27 +798,9 @@ function InboxPageInner() {
             : c,
         ),
       );
-      // Record the selection on the deep-link ref BEFORE we change the
-      // URL. The router.replace below flips `deepLinkConvId`, which can
-      // in turn cause ConversationList to refetch and eventually call
-      // handleConversationsLoaded again. Without this line, the ref
-      // still points at the previous value, the auto-select block
-      // sees `ref !== deepLinkConvId`, fires a second time, and
-      // clobbers the messages MessageThread just fetched.
+
       autoSelectedForDeepLinkRef.current = conv.id;
-      // On mobile, the first opening of a conversation from the list uses
-      // router.push() to create a single history entry for the native iOS
-      // edge-swipe / browser back gesture. Subsequent switches between
-      // conversations (or on desktop) use router.replace() to avoid
-      // accumulating redundant history entries.
-      const isMobile =
-        typeof window !== "undefined" &&
-        window.matchMedia("(max-width: 1023px)").matches;
-      if (isMobile && !activeConversation) {
-        router.push(`/inbox?c=${conv.id}`, { scroll: false });
-      } else {
-        router.replace(`/inbox?c=${conv.id}`, { scroll: false });
-      }
+
       // ── Slide-in transition (mobile only) ──
       if (shouldAnimateTransition()) {
         if (leaveTimerRef.current) {
@@ -835,7 +810,7 @@ function InboxPageInner() {
         setInboxTransition("enter");
       }
     },
-    [activeConversation, router, shouldAnimateTransition]
+    [activeConversation, buildInboxUrl, shouldAnimateTransition]
   );
 
   const handleRequestDeleteConversation = useCallback((conv: Conversation) => {
@@ -850,14 +825,17 @@ function InboxPageInner() {
       setDeleteLeadTarget(null);
       setConversations((prev) => prev.filter((c) => c.contact_id !== contactId));
       if (activeConversation?.contact_id === contactId) {
-        isInternalNavRef.current = "CLOSE";
+        hasHistoryEntryRef.current = false;
         setActiveConversation(null);
         setActiveContact(null);
         setMessages([]);
-        router.replace("/inbox", { scroll: false });
+        autoSelectedForDeepLinkRef.current = null;
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", buildInboxUrl(null));
+        }
       }
     },
-    [activeConversation, router]
+    [activeConversation, buildInboxUrl]
   );
 
   const handleRequestBlockConversation = useCallback((conv: Conversation) => {
@@ -870,49 +848,41 @@ function InboxPageInner() {
   const handleLeadBlocked = useCallback(
     (contactId: string) => {
       setBlockLeadTarget(null);
-      // Same local-state removal as delete — ConversationList's own
-      // `filtered` memo also excludes any contact.blocked_at row, so
-      // this is belt-and-suspenders for the instant it takes a refetch
-      // to pick that up.
       setConversations((prev) => prev.filter((c) => c.contact_id !== contactId));
       if (activeConversation?.contact_id === contactId) {
-        isInternalNavRef.current = "CLOSE";
+        hasHistoryEntryRef.current = false;
         setActiveConversation(null);
         setActiveContact(null);
         setMessages([]);
-        router.replace("/inbox", { scroll: false });
+        autoSelectedForDeepLinkRef.current = null;
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", buildInboxUrl(null));
+        }
       }
     },
-    [activeConversation, router]
+    [activeConversation, buildInboxUrl]
   );
 
-  // Mobile "back" — deselect the conversation so the list pane comes
-  // back. Also clears the ?c= param so a refresh lands on the list
-  // instead of re-opening the thread the user just backed out of.
-  const handleCloseConversation = useCallback(() => {
-    isInternalNavRef.current = "CLOSE";
-    setActiveConversation(null);
-    setActiveContact(null);
-    setMessages([]);
-    // Clearing the ref lets the deep-link auto-selector fire again if
-    // the user later visits /inbox?c=<same-id> — desirable UX.
-    autoSelectedForDeepLinkRef.current = null;
-    router.replace("/inbox", { scroll: false });
-  }, [router]);
-
-  // ── Animated back: plays slide-out, then delegates to the real close.
-  // On desktop or with reduced-motion, fires immediately (identical to
-  // handleCloseConversation).  The original handler is NOT altered. ──
+  // ── Animated back:
+  // If a history entry was pushed in this session, calls window.history.back(),
+  // which lets popstate smoothly drive the slide-out transition and state cleanup.
+  // If opened directly from an external deep link, performs a direct animated fallback.
   const handleBack = useCallback(() => {
+    if (hasHistoryEntryRef.current && typeof window !== "undefined") {
+      hasHistoryEntryRef.current = false;
+      window.history.back();
+      return;
+    }
+
     if (shouldAnimateTransition()) {
       setInboxTransition("leave");
       leaveTimerRef.current = setTimeout(() => {
-        handleCloseConversation();
+        handleCloseConversation({ updateHistory: true });
         setInboxTransition("idle");
         leaveTimerRef.current = null;
       }, 500);
     } else {
-      handleCloseConversation();
+      handleCloseConversation({ updateHistory: true });
     }
   }, [handleCloseConversation, shouldAnimateTransition]);
 
