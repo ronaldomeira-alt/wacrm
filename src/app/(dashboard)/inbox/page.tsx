@@ -115,6 +115,11 @@ function InboxPageInner() {
    */
   const activeConversationIdRef = useRef<string | null>(null);
   activeConversationIdRef.current = activeConversation?.id ?? null;
+  /**
+   * Tracks in-flight internal navigations (e.g. card clicks, UI back button)
+   * to eliminate race conditions between router.push/replace and useSearchParams.
+   */
+  const isInternalNavRef = useRef<string | null>(null);
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   // ── Conversation slide transition (visual-only, mobile) ──────────────
@@ -639,10 +644,25 @@ function InboxPageInner() {
   }, []);
 
   /**
-   * History & URL synchronization (popstate / native iOS back gesture).
-   * Reacts to browser history navigation (iPhone edge-swipe, browser back/forward buttons).
+   * History & URL synchronization (useSearchParams + popstate / native iOS back gesture).
+   * Distinguishes internal application navigations (tracked via isInternalNavRef)
+   * from browser history navigations (iPhone edge-swipe, browser back/forward buttons).
    */
   useEffect(() => {
+    // Check if the current URL matches an in-flight internal navigation
+    if (isInternalNavRef.current) {
+      if (
+        (isInternalNavRef.current === "CLOSE" && !deepLinkConvId) ||
+        (isInternalNavRef.current === deepLinkConvId)
+      ) {
+        // The router has completed transitioning to the requested state
+        isInternalNavRef.current = null;
+      } else {
+        // Router transition is still in-flight; do not treat intermediate URL state as history navigation
+        return;
+      }
+    }
+
     // Case 1: URL has NO conversation param (?c=), but a conversation is currently active in state.
     // This occurs when the user swipes back or clicks browser back.
     if (!deepLinkConvId && activeConversationIdRef.current) {
@@ -690,6 +710,17 @@ function InboxPageInner() {
       }
     }
   }, [deepLinkConvId, conversations, shouldAnimateTransition]);
+
+  // Complementary popstate listener to clear internal nav locks on native popstate
+  useEffect(() => {
+    const handlePopState = () => {
+      isInternalNavRef.current = null;
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
 
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
@@ -745,6 +776,7 @@ function InboxPageInner() {
       // when conversationId changes — so messages would stay empty until
       // the user navigated away and back. Bail out early instead.
       if (activeConversation?.id === conv.id) return;
+      isInternalNavRef.current = conv.id;
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
       const cached = getCachedMessages(conv.id);
@@ -818,6 +850,7 @@ function InboxPageInner() {
       setDeleteLeadTarget(null);
       setConversations((prev) => prev.filter((c) => c.contact_id !== contactId));
       if (activeConversation?.contact_id === contactId) {
+        isInternalNavRef.current = "CLOSE";
         setActiveConversation(null);
         setActiveContact(null);
         setMessages([]);
@@ -843,6 +876,7 @@ function InboxPageInner() {
       // to pick that up.
       setConversations((prev) => prev.filter((c) => c.contact_id !== contactId));
       if (activeConversation?.contact_id === contactId) {
+        isInternalNavRef.current = "CLOSE";
         setActiveConversation(null);
         setActiveContact(null);
         setMessages([]);
@@ -856,6 +890,7 @@ function InboxPageInner() {
   // back. Also clears the ?c= param so a refresh lands on the list
   // instead of re-opening the thread the user just backed out of.
   const handleCloseConversation = useCallback(() => {
+    isInternalNavRef.current = "CLOSE";
     setActiveConversation(null);
     setActiveContact(null);
     setMessages([]);
