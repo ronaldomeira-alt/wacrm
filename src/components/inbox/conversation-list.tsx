@@ -1320,7 +1320,7 @@ const ConversationItem = memo(function ConversationItem({
         style={{ touchAction: "pan-y" }}
         className={cn(
           "group relative flex w-full min-w-0 items-start gap-3 bg-card px-3 py-3 text-left transition-colors hover:bg-muted/50",
-          isActive && "border-l-2 border-primary bg-muted/70"
+          isActive && "lg:border-l-2 lg:border-primary lg:bg-muted/70"
         )}
       >
         {/* Avatar */}
