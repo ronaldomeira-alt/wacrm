@@ -1380,6 +1380,8 @@ export function MessageComposer({
                       ? undefined
                       : t("attachMedia")
                 }
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
                 className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
