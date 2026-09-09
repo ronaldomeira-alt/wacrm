@@ -889,3 +889,129 @@ html[data-theme="rose"] {
     @apply w-full rounded-lg border-none bg-white/5 px-2.5 py-1.5 text-[13px] text-zinc-100 outline-none placeholder:text-zinc-500;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Inbox conversation slide transition — mobile only (< lg / 1024px).
+   Reproduces the WhatsApp-style slide-in / slide-out when opening or
+   closing a conversation thread.
+
+   Activated exclusively via `data-inbox-transition` on the panels'
+   flex container.  The attribute is set / removed by a small piece of
+   React state in inbox/page.tsx — no existing logic is altered.
+
+   GPU-only: every animated property is `transform` (translate3d),
+   which runs on the compositor thread without triggering reflow or
+   repaint.  `will-change: transform` is applied only while the
+   animation is active and removed immediately after.
+
+   Accessibility: the entire block is gated behind
+   `prefers-reduced-motion: no-preference`.
+   ═══════════════════════════════════════════════════════════════════════ */
+@media (max-width: 1023px) {
+  @media (prefers-reduced-motion: no-preference) {
+
+    /* ── Container: establish positioning context with explicit dimensions ── */
+    [data-inbox-transition] {
+      position: relative !important;
+      width: 100% !important;
+      height: 100% !important;
+      overflow: hidden !important;
+    }
+
+    /* ── Both panels: stack on top of each other during animation ── */
+    [data-inbox-transition] > [data-inbox-panel="list"],
+    [data-inbox-transition] > [data-inbox-panel="thread"] {
+      display: flex !important;
+      position: absolute !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      -webkit-perspective: 1000px;
+      perspective: 1000px;
+    }
+
+    /* ── ENTER: thread slides in from the right ── */
+    [data-inbox-transition="enter"] > [data-inbox-panel="thread"] {
+      animation: inbox-thread-enter 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      -webkit-animation: inbox-thread-enter 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      will-change: transform;
+      z-index: 2;
+    }
+
+    /* ── ENTER: list shifts slightly left (parallax, 8%) ── */
+    [data-inbox-transition="enter"] > [data-inbox-panel="list"] {
+      animation: inbox-list-enter 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      -webkit-animation: inbox-list-enter 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      will-change: transform;
+      pointer-events: none;
+      touch-action: none;
+      z-index: 1;
+    }
+
+    /* ── LEAVE: thread slides out to the right ── */
+    [data-inbox-transition="leave"] > [data-inbox-panel="thread"] {
+      animation: inbox-thread-leave 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      -webkit-animation: inbox-thread-leave 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      will-change: transform;
+      pointer-events: none;
+      touch-action: none;
+      z-index: 2;
+    }
+
+    /* ── LEAVE: list shifts back from -8% to center ── */
+    [data-inbox-transition="leave"] > [data-inbox-panel="list"] {
+      animation: inbox-list-leave 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      -webkit-animation: inbox-list-leave 500ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+      will-change: transform;
+      z-index: 1;
+    }
+  }
+}
+
+/* ── Keyframes (defined at root level for WebKit / Safari compatibility) ── */
+@keyframes inbox-thread-enter {
+  0% {
+    transform: translate3d(100%, 0, 0);
+    -webkit-transform: translate3d(100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes inbox-list-enter {
+  0% {
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-8%, 0, 0);
+    -webkit-transform: translate3d(-8%, 0, 0);
+  }
+}
+
+@keyframes inbox-thread-leave {
+  0% {
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(100%, 0, 0);
+    -webkit-transform: translate3d(100%, 0, 0);
+  }
+}
+
+@keyframes inbox-list-leave {
+  0% {
+    transform: translate3d(-8%, 0, 0);
+    -webkit-transform: translate3d(-8%, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+    -webkit-transform: translate3d(0, 0, 0);
+  }
+}

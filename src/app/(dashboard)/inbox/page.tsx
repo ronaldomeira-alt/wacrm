@@ -19,6 +19,15 @@ import { BlockLeadDialog } from "@/components/contacts/block-lead-dialog";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { scanAndRetryAllPendingAudio } from "@/lib/inbox/pending-audio-sync";
+import {
+  getCachedMessages,
+  setCachedMessages,
+  appendCachedMessage,
+  updateCachedMessage,
+  removeCachedMessage,
+} from "@/lib/inbox/message-cache";
+import { isR2MediaKey } from "@/lib/storage/media-url-kind";
+import { prefetchMediaKeys } from "@/lib/inbox/use-resolved-media-src";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -108,6 +117,39 @@ function InboxPageInner() {
   activeConversationIdRef.current = activeConversation?.id ?? null;
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  // ── Conversation slide transition (visual-only, mobile) ──────────────
+  // Controls the WhatsApp-style slide animation when opening/closing a
+  // conversation on mobile.  This state is NEVER read by any business
+  // logic — it only drives `data-inbox-transition` on the panels
+  // container so the CSS keyframes in globals.css can fire.
+  const [inboxTransition, setInboxTransition] = useState<
+    "idle" | "enter" | "leave"
+  >("idle");
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Whether the viewport qualifies for the slide transition. */
+  const shouldAnimateTransition = useCallback(() => {
+    if (typeof window === "undefined") return false;
+    const isMobile = window.matchMedia("(max-width: 1023px)").matches;
+    const noPref = window.matchMedia("(prefers-reduced-motion: no-preference)").matches;
+    return isMobile && noPref;
+  }, []);
+
+  useEffect(() => {
+    if (inboxTransition === "enter") {
+      const id = setTimeout(() => {
+        setInboxTransition("idle");
+      }, 500);
+      return () => clearTimeout(id);
+    }
+  }, [inboxTransition]);
+
+  useEffect(() => {
+    return () => {
+      if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    };
+  }, []);
+  // ── End transition state ─────────────────────────────────────────────
   // Delete-lead confirmation — same shared dialog/entry point as the
   // Pipeline's Kanban card (see AGENTS task). A "lead" is the contact
   // row; deleting it cascades to this conversation + its messages.
@@ -356,6 +398,7 @@ function InboxPageInner() {
         }
 
         // Add to messages if it belongs to active conversation
+        appendCachedMessage(newMsg.conversation_id, newMsg);
         if (
           activeConversation &&
           newMsg.conversation_id === activeConversation.id
@@ -424,6 +467,7 @@ function InboxPageInner() {
       }
 
       if (event.eventType === "UPDATE") {
+        updateCachedMessage(newMsg.conversation_id, newMsg);
         setMessages((prev) => {
           // The send this row belongs to has now completed (Meta call +
           // final content, see sendMessageToConversation) — if the
@@ -448,6 +492,9 @@ function InboxPageInner() {
         // client itself already removed it optimistically.
         const deletedId = event.old?.id;
         if (deletedId) {
+          if (activeConversation?.id) {
+            removeCachedMessage(activeConversation.id, deletedId);
+          }
           setMessages((prev) => prev.filter((m) => m.id !== deletedId));
         }
       }
@@ -619,7 +666,8 @@ function InboxPageInner() {
         if (match) {
           setActiveConversation(match);
           setActiveContact(match.contact ?? null);
-          setMessages([]);
+          const cached = getCachedMessages(match.id);
+          setMessages(cached ?? []);
           // Mirror the optimistic unread reset that handleSelectConversation
           // does — the user just deep-linked into this conv, treat that the
           // same as a click. Leaves activeConversation.unread_count alone so
@@ -646,7 +694,16 @@ function InboxPageInner() {
       if (activeConversation?.id === conv.id) return;
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
-      setMessages([]);
+      const cached = getCachedMessages(conv.id);
+      setMessages(cached ?? []);
+      if (cached && cached.length > 0) {
+        const r2Keys = cached
+          .map((m) => m.media_url)
+          .filter((url): url is string => Boolean(url && isR2MediaKey(url)));
+        if (r2Keys.length > 0) {
+          prefetchMediaKeys(r2Keys);
+        }
+      }
       // Optimistically clear the unread badge for this conv. The
       // server-side reset is fired by the unread-reset effect inside
       // MessageThread (which reads activeConversation.unread_count, not
@@ -675,8 +732,16 @@ function InboxPageInner() {
       // back in the same thread, and so copy-paste links work. Use
       // replace() to avoid polluting browser history with every click.
       router.replace(`/inbox?c=${conv.id}`, { scroll: false });
+      // ── Slide-in transition (mobile only) ──
+      if (shouldAnimateTransition()) {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current);
+          leaveTimerRef.current = null;
+        }
+        setInboxTransition("enter");
+      }
     },
-    [activeConversation?.id, router]
+    [activeConversation?.id, router, shouldAnimateTransition]
   );
 
   const handleRequestDeleteConversation = useCallback((conv: Conversation) => {
@@ -738,12 +803,32 @@ function InboxPageInner() {
     router.replace("/inbox", { scroll: false });
   }, [router]);
 
+  // ── Animated back: plays slide-out, then delegates to the real close.
+  // On desktop or with reduced-motion, fires immediately (identical to
+  // handleCloseConversation).  The original handler is NOT altered. ──
+  const handleBack = useCallback(() => {
+    if (shouldAnimateTransition()) {
+      setInboxTransition("leave");
+      leaveTimerRef.current = setTimeout(() => {
+        handleCloseConversation();
+        setInboxTransition("idle");
+        leaveTimerRef.current = null;
+      }, 500);
+    } else {
+      handleCloseConversation();
+    }
+  }, [handleCloseConversation, shouldAnimateTransition]);
+
 
   const handleMessagesLoaded = useCallback((loaded: Message[]) => {
     setMessages(loaded);
+    if (activeConversationIdRef.current) {
+      setCachedMessages(activeConversationIdRef.current, loaded);
+    }
   }, []);
 
   const handleNewMessage = useCallback((msg: Message) => {
+    appendCachedMessage(msg.conversation_id, msg);
     // Only add the optimistic bubble to the list actually on screen —
     // a still-resolving send from a conversation the agent has since
     // navigated away from (e.g. a multi-file media batch) must not leak
@@ -779,6 +864,9 @@ function InboxPageInner() {
       setMessages((prev) =>
         prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
       );
+      if (activeConversationIdRef.current) {
+        updateCachedMessage(activeConversationIdRef.current, { id, ...updates });
+      }
     },
     []
   );
@@ -827,6 +915,9 @@ function InboxPageInner() {
   // second time, so calling it twice for the same id is harmless).
   const handleDeleteMessage = useCallback((id: string) => {
     setMessages((prev) => prev.filter((m) => m.id !== id));
+    if (activeConversationIdRef.current) {
+      removeCachedMessage(activeConversationIdRef.current, id);
+    }
   }, []);
 
   const handleStatusChange = useCallback(
@@ -963,7 +1054,12 @@ function InboxPageInner() {
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div
+        className="flex flex-1 overflow-hidden"
+        {...(inboxTransition !== "idle"
+          ? { "data-inbox-transition": inboxTransition }
+          : undefined)}
+      >
         {/* Left panel: Conversation list.
             Hidden on mobile when a conversation is selected so the
             thread can occupy the full width. Always visible on lg+.
@@ -987,6 +1083,7 @@ function InboxPageInner() {
             visible viewport — it was never failing to render, just
             invisible past the right edge. */}
         <div
+          data-inbox-panel="list"
           className={cn(
             "flex h-full min-w-0 flex-1 lg:flex-none",
             hasActiveConv ? "hidden lg:flex" : "flex",
@@ -1020,6 +1117,7 @@ function InboxPageInner() {
             its share and pushes the contact-sidebar panel off-screen
             on the right. Issue #165. */}
         <div
+          data-inbox-panel="thread"
           className={cn(
             "flex h-full min-w-0 flex-1 lg:flex",
             hasActiveConv ? "flex" : "hidden lg:flex",
@@ -1036,7 +1134,7 @@ function InboxPageInner() {
             onStatusChange={handleStatusChange}
             onMarkUnread={handleMarkUnread}
             onAssignChange={handleAssignChange}
-            onBack={handleCloseConversation}
+            onBack={handleBack}
             resyncToken={resyncToken}
             contactPanelOpen={contactPanelOpen}
             onToggleContactPanel={handleToggleContactPanel}

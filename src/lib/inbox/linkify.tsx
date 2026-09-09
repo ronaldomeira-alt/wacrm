@@ -31,6 +31,9 @@ function cleanMatch(raw: string): string {
  *  candidate (its first element). */
 export function extractUrls(text: string | null | undefined): string[] {
   if (!text) return [];
+  if (!text.includes("http://") && !text.includes("https://") && !text.includes("HTTP://") && !text.includes("HTTPS://")) {
+    return [];
+  }
   const matches = text.match(URL_REGEX);
   if (!matches) return [];
   return matches.map(cleanMatch).filter(Boolean);
@@ -45,6 +48,9 @@ export function extractUrls(text: string | null | undefined): string[] {
 export function linkifyText(text: string | null | undefined): ReactNode[] {
   const value = text ?? "";
   if (!value) return [value];
+  if (!value.includes("http://") && !value.includes("https://") && !value.includes("HTTP://") && !value.includes("HTTPS://")) {
+    return [value];
+  }
 
   const nodes: ReactNode[] = [];
   let cursor = 0;

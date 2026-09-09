@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
@@ -795,7 +795,7 @@ export function rubberBand(overshoot: number, dimension: number): number {
   );
 }
 
-function ConversationItem({
+const ConversationItem = memo(function ConversationItem({
   conversation,
   isActive,
   onSelect,
@@ -1481,4 +1481,4 @@ function ConversationItem({
       </DropdownMenu>
     </div>
   );
-}
+});

@@ -245,6 +245,7 @@ export function AgendaWeek() {
             <Button
               variant="outline"
               size="sm"
+              nativeButton={false}
               disabled={calendarEmail === undefined}
               render={<a href="/api/calendar/google/connect" />}
             >

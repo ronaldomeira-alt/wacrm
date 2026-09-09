@@ -162,6 +162,8 @@ function MediaImage({
         <img
           src={src ?? ""}
           alt={alt}
+          loading="lazy"
+          decoding="async"
           className="max-h-64 max-w-60 rounded-lg object-cover"
           onError={() => setError(true)}
         />

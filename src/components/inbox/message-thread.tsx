@@ -89,6 +89,10 @@ import { FollowupRequirementDialog } from '@/components/action-items/followup-re
 import { ArchiveDealDialog } from '@/components/pipelines/archive-deal-dialog';
 import { useLeadPipelineStage } from '@/hooks/use-lead-pipeline-stage';
 import { useFollowupGate } from '@/hooks/use-followup-gate';
+import {
+  getCachedMessages,
+  setCachedMessages,
+} from '@/lib/inbox/message-cache';
 
 interface ReplyDraft {
   id: string;
@@ -341,7 +345,7 @@ function groupMessagesByDate(messages: Message[]) {
   let currentDate = '';
 
   for (const msg of messages) {
-    const day = format(new Date(msg.created_at), 'yyyy-MM-dd');
+    const day = msg.created_at ? msg.created_at.slice(0, 10) : '';
     if (day !== currentDate) {
       currentDate = day;
       groups.push({ date: msg.created_at, messages: [msg] });
@@ -364,6 +368,8 @@ function groupMessagesByDate(messages: Message[]) {
  */
 const DOODLE_BG_CLASSES =
   "bg-background bg-[url('/inbox-doodle.svg')] bg-repeat";
+
+const INITIAL_CHUNK_SIZE = 25;
 
 export function MessageThread({
   conversation,
@@ -447,6 +453,8 @@ export function MessageThread({
     () => new Set()
   );
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
+  // Initial render chunking: render recent 25 messages during slide transition, then expand
+  const [renderedCount, setRenderedCount] = useState(INITIAL_CHUNK_SIZE);
   // The 3 dialogs opened from the header's "⋮" menu — Transfer stays a
   // DropdownMenuSub (it's just the old Assign dropdown's content, one
   // level deeper), these three are substantial enough to want a real
@@ -610,12 +618,16 @@ export function MessageThread({
   useEffect(() => {
     if (!conversationId) return;
 
+    const cached = getCachedMessages(conversationId);
+    const hasCached = Boolean(cached && cached.length > 0);
+    if (!hasCached) {
+      setLoading(true);
+    }
+
     const supabase = createClient();
     let cancelled = false;
 
     (async () => {
-      setLoading(true);
-
       const { data, error } = await supabase
         .from('messages')
         .select('*')
@@ -628,6 +640,7 @@ export function MessageThread({
         console.error('Failed to fetch messages:', error);
       } else {
         const loaded = data ?? [];
+        setCachedMessages(conversationId, loaded);
         onMessagesLoadedRef.current(loaded);
         const r2Keys = loaded
           .map((m) => m.media_url)
@@ -779,31 +792,55 @@ export function MessageThread({
       });
   }, [conversationId, hasUnread]);
 
-  // Auto-scroll to bottom on new messages
+  // Whether the user is currently at (near) the bottom of the thread
+  const isNearBottomRef = useRef(true);
+
+  // Reset initial chunk size and pin to bottom when switching conversation
   useEffect(() => {
-    if (scrollRef.current) {
+    setRenderedCount(INITIAL_CHUNK_SIZE);
+    isNearBottomRef.current = true;
+  }, [conversationId]);
+
+  // Expand renderedCount to include full history after initial transition (250ms)
+  useEffect(() => {
+    if (messages.length > renderedCount) {
+      const timer = setTimeout(() => {
+        setRenderedCount(messages.length);
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [messages.length, renderedCount]);
+
+  // Take the most recent `renderedCount` messages for initial snappy render
+  const visibleMessages = useMemo(() => {
+    if (messages.length <= renderedCount) return messages;
+    return messages.slice(-renderedCount);
+  }, [messages, renderedCount]);
+
+  // Auto-scroll to bottom on new messages / initial render if near bottom
+  useEffect(() => {
+    if (scrollRef.current && isNearBottomRef.current) {
       const el = scrollRef.current;
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages]);
+  }, [visibleMessages]);
 
-  // Whether the user is currently at (near) the bottom of the thread —
-  // read by the keyboard-follow effect below so opening the composer
-  // only pulls the view down when that's where the user already was;
-  // someone scrolled up reading older messages keeps their position.
-  const isNearBottomRef = useRef(true);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const NEAR_BOTTOM_PX = 80;
     const onScroll = () => {
+      // If user scrolls up, load all messages immediately
+      if (el.scrollTop < 200 && renderedCount < messages.length) {
+        setRenderedCount(messages.length);
+      }
       isNearBottomRef.current =
         el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
     };
     onScroll();
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, [conversationId]);
+  }, [conversationId, messages.length, renderedCount]);
 
   // Keep the last message visible as the iOS keyboard opens/closes and
   // resizes the app shell (--app-height, use-app-height.ts) — which
@@ -1274,7 +1311,10 @@ export function MessageThread({
   // album — see computeAlbumGroups' own doc for the exact rules. Purely
   // a rendering concern: each message stays its own row/messageId/status
   // in the DB and over the wire.
-  const albumGroups = useMemo(() => computeAlbumGroups(messages), [messages]);
+  const albumGroups = useMemo(
+    () => computeAlbumGroups(visibleMessages),
+    [visibleMessages]
+  );
 
   // Pre-computed reply-quote info per message, keyed by message id — moved
   // out of the render loop below so a message's `reply` prop keeps the
@@ -1442,6 +1482,12 @@ export function MessageThread({
     [pipelineDeal, pipelineStages, followupGate, moveToStage]
   );
 
+  // Group messages by date (unconditional hook before any early return)
+  const messageGroups = useMemo(
+    () => groupMessagesByDate(visibleMessages),
+    [visibleMessages]
+  );
+
   // Empty state — same WhatsApp-style doodle background as the active
   // thread below, so swapping between empty/selected doesn't change the
   // pattern under the user's eye.
@@ -1472,7 +1518,6 @@ export function MessageThread({
   }
 
   const displayName = contact.name || contact.phone;
-  const messageGroups = groupMessagesByDate(messages);
   const assignedAgentId = conversation.assigned_agent_id ?? null;
 
   return (
