@@ -638,6 +638,59 @@ function InboxPageInner() {
     };
   }, []);
 
+  /**
+   * History & URL synchronization (popstate / native iOS back gesture).
+   * Reacts to browser history navigation (iPhone edge-swipe, browser back/forward buttons).
+   */
+  useEffect(() => {
+    // Case 1: URL has NO conversation param (?c=), but a conversation is currently active in state.
+    // This occurs when the user swipes back or clicks browser back.
+    if (!deepLinkConvId && activeConversationIdRef.current) {
+      if (shouldAnimateTransition()) {
+        setInboxTransition("leave");
+        if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+        leaveTimerRef.current = setTimeout(() => {
+          setActiveConversation(null);
+          setActiveContact(null);
+          setMessages([]);
+          autoSelectedForDeepLinkRef.current = null;
+          setInboxTransition("idle");
+          leaveTimerRef.current = null;
+        }, 500);
+      } else {
+        setActiveConversation(null);
+        setActiveContact(null);
+        setMessages([]);
+        autoSelectedForDeepLinkRef.current = null;
+      }
+      return;
+    }
+
+    // Case 2: URL has a ?c= param that differs from the active conversation in state.
+    // This occurs when the user navigates forward or to a different conversation via browser history.
+    if (
+      deepLinkConvId &&
+      deepLinkConvId !== activeConversationIdRef.current &&
+      conversations.length > 0
+    ) {
+      const match = conversations.find((c) => c.id === deepLinkConvId);
+      if (match) {
+        autoSelectedForDeepLinkRef.current = deepLinkConvId;
+        setActiveConversation(match);
+        setActiveContact(match.contact ?? null);
+        const cached = getCachedMessages(match.id);
+        setMessages(cached ?? []);
+        if (shouldAnimateTransition()) {
+          if (leaveTimerRef.current) {
+            clearTimeout(leaveTimerRef.current);
+            leaveTimerRef.current = null;
+          }
+          setInboxTransition("enter");
+        }
+      }
+    }
+  }, [deepLinkConvId, conversations, shouldAnimateTransition]);
+
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
       setConversations(loaded);
@@ -728,10 +781,19 @@ function InboxPageInner() {
       // sees `ref !== deepLinkConvId`, fires a second time, and
       // clobbers the messages MessageThread just fetched.
       autoSelectedForDeepLinkRef.current = conv.id;
-      // Reflect the selection in the URL so a refresh lands the user
-      // back in the same thread, and so copy-paste links work. Use
-      // replace() to avoid polluting browser history with every click.
-      router.replace(`/inbox?c=${conv.id}`, { scroll: false });
+      // On mobile, the first opening of a conversation from the list uses
+      // router.push() to create a single history entry for the native iOS
+      // edge-swipe / browser back gesture. Subsequent switches between
+      // conversations (or on desktop) use router.replace() to avoid
+      // accumulating redundant history entries.
+      const isMobile =
+        typeof window !== "undefined" &&
+        window.matchMedia("(max-width: 1023px)").matches;
+      if (isMobile && !activeConversation) {
+        router.push(`/inbox?c=${conv.id}`, { scroll: false });
+      } else {
+        router.replace(`/inbox?c=${conv.id}`, { scroll: false });
+      }
       // ── Slide-in transition (mobile only) ──
       if (shouldAnimateTransition()) {
         if (leaveTimerRef.current) {
@@ -741,7 +803,7 @@ function InboxPageInner() {
         setInboxTransition("enter");
       }
     },
-    [activeConversation?.id, router, shouldAnimateTransition]
+    [activeConversation, router, shouldAnimateTransition]
   );
 
   const handleRequestDeleteConversation = useCallback((conv: Conversation) => {
