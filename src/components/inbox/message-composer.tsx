@@ -1291,6 +1291,8 @@ export function MessageComposer({
         ref={imageInputRef}
         type="file"
         multiple
+        tabIndex={-1}
+        aria-hidden="true"
         accept={PICKER_ACCEPT.image}
         className="hidden"
         onChange={(e) => {
@@ -1302,6 +1304,8 @@ export function MessageComposer({
         ref={videoInputRef}
         type="file"
         multiple
+        tabIndex={-1}
+        aria-hidden="true"
         accept={PICKER_ACCEPT.video}
         className="hidden"
         onChange={(e) => {
@@ -1313,6 +1317,8 @@ export function MessageComposer({
         ref={documentInputRef}
         type="file"
         multiple
+        tabIndex={-1}
+        aria-hidden="true"
         accept={PICKER_ACCEPT.document}
         className="hidden"
         onChange={(e) => {
@@ -1386,9 +1392,11 @@ export function MessageComposer({
                 align="start"
                 side="top"
                 sideOffset={8}
+                finalFocus={false}
                 className="min-w-[165px] border-border bg-popover p-[5.5px] ring-foreground/5 duration-150 zoom-in-96 zoom-out-96"
               >
                 <DropdownMenuItem
+                  onPointerDown={(e) => e.preventDefault()}
                   onClick={() => {
                     imageInputRef.current?.click();
                   }}
@@ -1398,6 +1406,7 @@ export function MessageComposer({
                   {t("photo")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
+                  onPointerDown={(e) => e.preventDefault()}
                   onClick={() => {
                     videoInputRef.current?.click();
                   }}
@@ -1407,6 +1416,7 @@ export function MessageComposer({
                   {t("video")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
+                  onPointerDown={(e) => e.preventDefault()}
                   onClick={() => {
                     documentInputRef.current?.click();
                   }}
