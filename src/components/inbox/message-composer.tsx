@@ -44,6 +44,7 @@ import {
   isQuickTimeVideo,
   convertMovToMp4ViaWebCodecs,
 } from "@/lib/media/transcode-mov-webcodecs";
+import { autoOrientImage } from "@/lib/media/auto-orient-image";
 import { ReplyQuote } from "./reply-quote";
 import { DocumentFullscreenPreview } from "./document-fullscreen-preview";
 import { useTranslations } from "next-intl";
@@ -642,7 +643,9 @@ export function MessageComposer({
       // clip converted in 24.9s; the old ffmpeg.wasm path could hang
       // indefinitely on the same class of file).
       let file = pickedFile;
-      if (kind === "video" && isQuickTimeVideo(file)) {
+      if (kind === "image") {
+        file = await autoOrientImage(file);
+      } else if (kind === "video" && isQuickTimeVideo(file)) {
         setBusy(true);
         try {
           file = await convertMovToMp4ViaWebCodecs(file);
@@ -717,7 +720,9 @@ export function MessageComposer({
   const uploadAndSend = useCallback(
     async (kind: Exclude<ComposerMediaKind, "audio">, pickedFile: File) => {
       let file = pickedFile;
-      if (kind === "video" && isQuickTimeVideo(file)) {
+      if (kind === "image") {
+        file = await autoOrientImage(file);
+      } else if (kind === "video" && isQuickTimeVideo(file)) {
         try {
           file = await convertMovToMp4ViaWebCodecs(file);
         } catch (err) {

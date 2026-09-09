@@ -58,6 +58,12 @@ describe("isR2MediaKey", () => {
     expect(isR2MediaKey("/api/whatsapp/media/abc123")).toBe(false);
   });
 
+  it("rejects blob: and data: URLs", () => {
+    expect(isR2MediaKey("blob:https://crmronaldomeira.com/39f0183b-316e-44db-99e9-7435f3dfd7f8")).toBe(false);
+    expect(isR2MediaKey("blob:http://localhost:3000/39f0183b-316e-44db-99e9-7435f3dfd7f8")).toBe(false);
+    expect(isR2MediaKey("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")).toBe(false);
+  });
+
   it("rejects null/undefined/empty", () => {
     expect(isR2MediaKey(null)).toBe(false);
     expect(isR2MediaKey(undefined)).toBe(false);

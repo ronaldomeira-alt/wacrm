@@ -19,6 +19,7 @@ export type R2MediaKey = string & { readonly __brand?: "R2MediaKey" };
 export function isR2MediaKey(value: string | null | undefined): value is R2MediaKey {
   if (!value) return false;
   if (value.startsWith("http://") || value.startsWith("https://")) return false;
+  if (value.startsWith("blob:") || value.startsWith("data:")) return false;
   if (value.startsWith("/api/whatsapp/media/")) return false;
   return true;
 }
