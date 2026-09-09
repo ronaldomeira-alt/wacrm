@@ -1122,7 +1122,7 @@ function InboxPageInner() {
       )}
 
       <div
-        className="flex flex-1 overflow-hidden"
+        className="relative flex flex-1 overflow-hidden"
         {...(inboxTransition !== "idle"
           ? { "data-inbox-transition": inboxTransition }
           : undefined)}
@@ -1178,15 +1178,14 @@ function InboxPageInner() {
             list can occupy the full width. Always visible on lg+
             (shows its own empty-state if no thread is picked yet).
 
-            `min-w-0` is load-bearing: without it, a single wide piece
-            of content inside the thread (long quote preview, very
-            long URL in a message body) forces the flex child past
-            its share and pushes the contact-sidebar panel off-screen
-            on the right. Issue #165. */}
+            On mobile (<lg), positioned absolutely (inset-0 z-10) over
+            the container so it never participates as a sibling in the
+            flex-row layout pass during transition lifecycle. On lg+,
+            reverts to standard static flex-1 split-view child. */}
         <div
           data-inbox-panel="thread"
           className={cn(
-            "flex h-full min-w-0 flex-1 lg:flex",
+            "absolute inset-0 z-10 flex h-full w-full min-w-0 lg:static lg:z-auto lg:flex-1",
             hasActiveConv ? "flex" : "hidden lg:flex",
           )}
         >
