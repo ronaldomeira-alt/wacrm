@@ -1023,7 +1023,6 @@ export function MessageComposer({
         if (micPhase !== "idle") return;
         e.preventDefault();
         startRecordingGesture();
-        textareaRef.current?.focus();
         return;
       }
 
@@ -1032,7 +1031,6 @@ export function MessageComposer({
       // still pending (micPhase only flips once the timer actually fires).
       if (micPhase !== "idle" || longPressTimerRef.current !== null) return;
       e.preventDefault();
-      textareaRef.current?.focus();
       micButtonRef.current?.setPointerCapture(e.pointerId);
       gestureRef.current = { startY: e.clientY };
       longPressStartRef.current = { x: e.clientX, y: e.clientY };
@@ -1103,12 +1101,10 @@ export function MessageComposer({
       gestureRef.current = null;
       if (longPressTimerRef.current !== null) {
         clearLongPressTimer();
-        textareaRef.current?.focus();
         return;
       }
       if (locked) return;
       stopRecordingGesture();
-      textareaRef.current?.focus();
     },
     [locked, clearLongPressTimer, stopRecordingGesture],
   );
@@ -1124,7 +1120,6 @@ export function MessageComposer({
       setMicPhase("idle");
       setLocked(false);
       void stopRecorder();
-      textareaRef.current?.focus();
       return;
     }
     if (micPhase === "paused" || micPhase === "failed") {
@@ -1133,7 +1128,6 @@ export function MessageComposer({
       setMicPhase("idle");
       setLocked(false);
       setFailedError(undefined);
-      textareaRef.current?.focus();
       if (id) {
         // Deletes the IndexedDB record and, if it had already made it to
         // Storage, GCs that object too. Fire-and-forget: nothing in the
@@ -1156,7 +1150,6 @@ export function MessageComposer({
       sendOnStopRef.current = true;
       setMicPhase("sending");
       void stopRecorder();
-      textareaRef.current?.focus();
       return;
     }
     if (micPhase === "paused" || micPhase === "failed") {
@@ -1165,7 +1158,6 @@ export function MessageComposer({
       setMicPhase("idle");
       setLocked(false);
       setFailedError(undefined);
-      textareaRef.current?.focus();
       if (id) {
         onRecordAudio(id, replyTo?.id);
         onClearReply?.();
@@ -1371,7 +1363,7 @@ export function MessageComposer({
             )}
           >
             {/* Left — attach media: photo / video / document. */}
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger
                 data-composer-attach
                 disabled={inputsDisabled || busy}
@@ -1382,14 +1374,6 @@ export function MessageComposer({
                       ? undefined
                       : t("attachMedia")
                 }
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  textareaRef.current?.focus();
-                }}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  textareaRef.current?.focus();
-                }}
                 className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
@@ -1400,14 +1384,13 @@ export function MessageComposer({
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="start"
+                side="top"
+                sideOffset={8}
                 className="min-w-[165px] border-border bg-popover p-[5.5px] ring-foreground/5 duration-150 zoom-in-96 zoom-out-96"
               >
                 <DropdownMenuItem
-                  onPointerDown={(e) => e.preventDefault()}
-                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     imageInputRef.current?.click();
-                    textareaRef.current?.focus();
                   }}
                   className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
@@ -1415,11 +1398,8 @@ export function MessageComposer({
                   {t("photo")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  onPointerDown={(e) => e.preventDefault()}
-                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     videoInputRef.current?.click();
-                    textareaRef.current?.focus();
                   }}
                   className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
@@ -1427,11 +1407,8 @@ export function MessageComposer({
                   {t("video")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  onPointerDown={(e) => e.preventDefault()}
-                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     documentInputRef.current?.click();
-                    textareaRef.current?.focus();
                   }}
                   className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
                 >
@@ -1589,7 +1566,6 @@ export function MessageComposer({
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   handleDiscardRecording();
-                  textareaRef.current?.focus();
                 }}
                 aria-label={t("discardRecording")}
                 disabled={micPhase === "sending"}
