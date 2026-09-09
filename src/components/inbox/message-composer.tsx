@@ -1593,31 +1593,6 @@ export function MessageComposer({
                 <Trash2 className="h-4 w-4" />
               </button>
 
-              {/* Desktop's "click again to stop": the mic button itself is
-                  hidden the instant recording starts (see the `invisible`
-                  row above), so this is the reachable second click —
-                  same centralized stopRecordingGesture a touch release
-                  calls. Only meaningful while actively capturing (not
-                  once already paused, and not while locked — a locked
-                  hands-free take still stops here on an explicit click,
-                  only the passive finger-release ignores `locked`). */}
-              {micPhase === "recording" && (
-                <button
-                  type="button"
-                  onPointerDown={(e) => e.preventDefault()}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    stopRecordingGesture();
-                    textareaRef.current?.focus();
-                  }}
-                  aria-label={t("stopRecording")}
-                  title={t("stopRecording")}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-500 transition-colors hover:bg-red-500/10"
-                >
-                  <Mic className="h-4 w-4" />
-                </button>
-              )}
-
               <div className="flex flex-1 items-center justify-center gap-2.5">
                 {locked && (
                   // The above-bar hint just disappears the instant this
