@@ -24,12 +24,6 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { GatedButton } from "@/components/ui/gated-button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
@@ -350,9 +344,33 @@ export function MessageComposer({
   // draft preview.
   const [draft, setDraft] = useState<MediaDraft | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
+
+  // Closes attachment popup on outside interaction or Escape without shifting focus
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    const handleOutside = (e: MouseEvent | TouchEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setAttachMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setAttachMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handleOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handleOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [attachMenuOpen]);
+
   // Mirror of `draft` for the unmount cleanup, which can't read render
   // state. Kept in sync below so navigating away with a staged-but-unsent
   // attachment GCs the orphaned object.
@@ -1369,8 +1387,9 @@ export function MessageComposer({
             )}
           >
             {/* Left — attach media: photo / video / document. */}
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger
+            <div ref={attachMenuRef} className="relative inline-flex shrink-0">
+              <button
+                type="button"
                 data-composer-attach
                 disabled={inputsDisabled || busy}
                 title={
@@ -1380,8 +1399,14 @@ export function MessageComposer({
                       ? undefined
                       : t("attachMedia")
                 }
+                aria-label={t("attachMedia")}
+                aria-expanded={attachMenuOpen}
                 onPointerDown={(e) => e.preventDefault()}
                 onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  if (inputsDisabled || busy) return;
+                  setAttachMenuOpen((prev) => !prev);
+                }}
                 className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
@@ -1389,46 +1414,58 @@ export function MessageComposer({
                 ) : (
                   <Paperclip className="h-[21px] w-[21px]" />
                 )}
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                side="top"
-                sideOffset={8}
-                finalFocus={false}
-                className="min-w-[165px] border-border bg-popover p-[5.5px] ring-foreground/5 duration-150 zoom-in-96 zoom-out-96"
-              >
-                <DropdownMenuItem
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    imageInputRef.current?.click();
-                  }}
-                  className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
+              </button>
+
+              {attachMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute bottom-full left-0 z-50 mb-2.5 min-w-[165px] rounded-lg border border-border bg-popover p-[5.5px] shadow-md ring-1 ring-foreground/10 duration-150 animate-in fade-in-0 zoom-in-95"
                 >
-                  <ImageIcon className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
-                  {t("photo")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    videoInputRef.current?.click();
-                  }}
-                  className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
-                >
-                  <Video className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
-                  {t("video")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    documentInputRef.current?.click();
-                  }}
-                  className="gap-[13px] px-[8.5px] py-[5px] text-[16.75px] font-normal transition-colors duration-150 ease-out active:bg-primary/15"
-                >
-                  <FileText className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
-                  {t("document")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onPointerDown={(e) => e.preventDefault()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setAttachMenuOpen(false);
+                      imageInputRef.current?.click();
+                    }}
+                    className="flex w-full items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
+                  >
+                    <ImageIcon className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
+                    {t("photo")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onPointerDown={(e) => e.preventDefault()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setAttachMenuOpen(false);
+                      videoInputRef.current?.click();
+                    }}
+                    className="flex w-full items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
+                  >
+                    <Video className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
+                    {t("video")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onPointerDown={(e) => e.preventDefault()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setAttachMenuOpen(false);
+                      documentInputRef.current?.click();
+                    }}
+                    className="flex w-full items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
+                  >
+                    <FileText className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
+                    {t("document")}
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Center — the text field takes all remaining width. Font
                 size is 16px (text-base): below that, focusing an <input>/
