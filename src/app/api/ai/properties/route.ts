@@ -27,11 +27,15 @@ export async function GET() {
       .select('*')
       .eq('account_id', accountId);
 
-    if (ctxErr) throw ctxErr;
+    if (ctxErr) {
+      console.warn('[ai/properties GET] property_ai_contexts query failed (table may be pending migration):', ctxErr);
+    }
 
     const contextByPropertyId = new Map<string, PropertyAiContext>();
-    for (const ctx of (contexts ?? []) as PropertyAiContext[]) {
-      contextByPropertyId.set(ctx.property_id, ctx);
+    if (!ctxErr && contexts) {
+      for (const ctx of contexts as PropertyAiContext[]) {
+        contextByPropertyId.set(ctx.property_id, ctx);
+      }
     }
 
     const items: PropertyWithAiContext[] = (properties ?? []).map((p) => ({
