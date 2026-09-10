@@ -42,3 +42,69 @@ export async function GET() {
     return toErrorResponse(err);
   }
 }
+
+/**
+ * POST /api/ai/properties (agent+)
+ *
+ * Creates a new property and initializes its `property_ai_contexts` row.
+ */
+export async function POST(req: Request) {
+  try {
+    const { supabase, accountId, userId } = await requireRole('agent');
+    const body = await req.json().catch(() => ({}));
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+
+    if (!name) {
+      return NextResponse.json(
+        { error: 'Nome do empreendimento é obrigatório' },
+        { status: 400 },
+      );
+    }
+
+    const stage = ['lancamento', 'na_planta', 'em_construcao', 'pronto'].includes(body.stage)
+      ? body.stage
+      : 'lancamento';
+    const subjectiveKnowledge =
+      typeof body.subjective_knowledge === 'string' && body.subjective_knowledge.trim()
+        ? body.subjective_knowledge.trim()
+        : null;
+
+    // 1. Insert property
+    const { data: property, error: propErr } = await supabase
+      .from('properties')
+      .insert({
+        account_id: accountId,
+        user_id: userId,
+        name,
+      })
+      .select('*')
+      .single();
+
+    if (propErr) throw propErr;
+
+    // 2. Insert property_ai_contexts
+    const { data: aiContext, error: ctxErr } = await supabase
+      .from('property_ai_contexts')
+      .insert({
+        account_id: accountId,
+        property_id: property.id,
+        stage,
+        subjective_knowledge: subjectiveKnowledge,
+      })
+      .select('*')
+      .single();
+
+    if (ctxErr) {
+      console.error('[properties.POST] failed inserting property_ai_contexts:', ctxErr);
+    }
+
+    const item: PropertyWithAiContext = {
+      ...property,
+      ai_context: aiContext ?? null,
+    };
+
+    return NextResponse.json({ property: item }, { status: 201 });
+  } catch (err) {
+    return toErrorResponse(err);
+  }
+}

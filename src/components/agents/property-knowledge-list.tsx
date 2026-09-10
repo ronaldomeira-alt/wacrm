@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Loader2,
   RefreshCw,
+  Plus,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -18,6 +19,7 @@ import {
   PropertyKnowledgeDetailDialog,
   STAGE_LABELS,
 } from './property-knowledge-detail-dialog';
+import { PropertyCreateDialog } from './property-create-dialog';
 import type { PropertyWithAiContext, PropertyStage } from '@/types';
 
 export function PropertyKnowledgeList() {
@@ -27,6 +29,7 @@ export function PropertyKnowledgeList() {
   const [stageFilter, setStageFilter] = useState<string>('all');
   const [selectedProperty, setSelectedProperty] = useState<PropertyWithAiContext | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
 
   const loadProperties = useCallback(async () => {
     setLoading(true);
@@ -68,7 +71,7 @@ export function PropertyKnowledgeList() {
 
   return (
     <div className="space-y-4">
-      {/* Search & Filter Header */}
+      {/* Search, Filter & Add Header */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -104,6 +107,15 @@ export function PropertyKnowledgeList() {
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
+
+          <Button
+            size="sm"
+            onClick={() => setCreateDialogOpen(true)}
+            className="h-9 gap-1.5 font-medium shadow-sm"
+          >
+            <Plus className="h-4 w-4" />
+            Novo Empreendimento
+          </Button>
         </div>
       </div>
 
@@ -121,8 +133,18 @@ export function PropertyKnowledgeList() {
           <p className="text-xs text-muted-foreground mt-1 max-w-md">
             {search.trim()
               ? 'Tente ajustar os filtros ou termo de busca.'
-              : 'Cadastre empreendimentos no menu Imóveis/Empreendimentos para configurar seus Books e anotações.'}
+              : 'Cadastre seus empreendimentos para anexar Books em PDF e anotações do corretor para a IA.'}
           </p>
+          {!search.trim() && (
+            <Button
+              size="sm"
+              onClick={() => setCreateDialogOpen(true)}
+              className="mt-4 gap-1.5"
+            >
+              <Plus className="h-4 w-4" />
+              Adicionar Primeiro Empreendimento
+            </Button>
+          )}
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -208,6 +230,13 @@ export function PropertyKnowledgeList() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onSaved={loadProperties}
+      />
+
+      {/* Create Dialog */}
+      <PropertyCreateDialog
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        onCreated={loadProperties}
       />
     </div>
   );

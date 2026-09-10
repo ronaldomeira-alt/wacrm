@@ -19,8 +19,9 @@ export async function GET() {
     const { supabase, accountId } = await getCurrentAccount()
     const { data, error } = await supabase
       .from('ai_knowledge_documents')
-      .select('id, title, updated_at')
+      .select('id, title, content, updated_at, created_at, source_type')
       .eq('account_id', accountId)
+      .is('property_id', null)
       .order('updated_at', { ascending: false })
     if (error) {
       console.error('[ai/knowledge GET] error:', error)
@@ -36,14 +37,14 @@ export async function GET() {
 }
 
 /**
- * POST /api/ai/knowledge  (admin+)
+ * POST /api/ai/knowledge  (agent+)
  *
  * Create a document, then chunk + (optionally) embed it. If indexing
  * fails the document is still saved so the admin can retry via reindex.
  */
 export async function POST(request: Request) {
   try {
-    const { supabase, accountId, userId } = await requireRole('admin')
+    const { supabase, accountId, userId } = await requireRole('agent')
     const limit = checkRateLimit(`ai-kb:${userId}`, RATE_LIMITS.adminAction)
     if (!limit.success) return rateLimitResponse(limit)
 

@@ -286,19 +286,21 @@ function AgentsPageInner() {
 
         {/* Tab 1: Conhecimento */}
         <TabsContent value="knowledge" className="space-y-8">
-          <GlobalKnowledgeSection />
-          
-          <div className="space-y-3 pt-4 border-t border-border">
+          <div className="space-y-3">
             <div>
               <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
                 <Building2 className="h-4 w-4 text-primary" />
-                Empreendimentos & Books
+                Empreendimentos & Books Técnicos
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Configure o Book técnico (PDF) e as anotações práticas do corretor para cada empreendimento. O conhecimento é isolado por imóvel no RAG.
+                Cadastre seus empreendimentos, faça upload dos Books em PDF e adicione anotações práticas do corretor. O conhecimento é 100% isolado por imóvel no RAG.
               </p>
             </div>
             <PropertyKnowledgeList />
+          </div>
+
+          <div className="space-y-3 pt-6 border-t border-border">
+            <GlobalKnowledgeSection />
           </div>
         </TabsContent>
 
