@@ -20,7 +20,7 @@ import {
   STAGE_LABELS,
 } from './property-knowledge-detail-dialog';
 import { PropertyCreateDialog } from './property-create-dialog';
-import type { PropertyWithAiContext, PropertyStage } from '@/types';
+import type { PropertyWithAiContext } from '@/types';
 
 export function PropertyKnowledgeList() {
   const [properties, setProperties] = useState<PropertyWithAiContext[]>([]);
@@ -40,8 +40,9 @@ export function PropertyKnowledgeList() {
         throw new Error(data.error || 'Falha ao carregar empreendimentos');
       }
       setProperties(data.properties || []);
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao carregar lista de empreendimentos');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao carregar lista de empreendimentos';
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

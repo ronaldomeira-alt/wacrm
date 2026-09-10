@@ -21,7 +21,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { AiSuggestion } from '@/types';
 
 interface LearningPayload {
@@ -137,8 +137,9 @@ export function AiEvolutionDashboard() {
       }
 
       fetchSuggestions();
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao processar ação');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao processar ação';
+      toast.error(msg);
     } finally {
       setProcessingId(null);
     }
@@ -161,7 +162,7 @@ export function AiEvolutionDashboard() {
           </p>
         </div>
 
-        <Tabs value={subTab} onValueChange={(v) => setSubTab(v as any)}>
+        <Tabs value={subTab} onValueChange={(v) => setSubTab(v as 'pending' | 'history')}>
           <TabsList className="h-9">
             <TabsTrigger value="pending" className="text-xs gap-1.5">
               <Sparkles className="h-3.5 w-3.5" />

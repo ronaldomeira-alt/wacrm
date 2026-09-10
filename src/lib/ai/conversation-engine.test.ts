@@ -464,8 +464,8 @@ describe('Stage 4 — Behavioral Engine, Boundaries and Decision Engine', () => 
       const fakeDb = {
         from: (table: string) => ({
           select: () => ({
-            eq: (_col1: string, val1: string) => ({
-              eq: (_col2: string, _val2: string) => ({
+            eq: () => ({
+              eq: () => ({
                 maybeSingle: () => {
                   if (table === 'contacts') {
                     return Promise.resolve({

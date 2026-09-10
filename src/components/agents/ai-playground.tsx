@@ -16,12 +16,9 @@ import {
   ShieldAlert,
   BookOpen,
   Zap,
-  Eye,
   SlidersHorizontal,
-  ChevronRight,
   Code2,
   CheckCircle2,
-  AlertCircle,
   HelpCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -42,7 +39,7 @@ interface TurnDiagnostic {
   retrievedKnowledge?: string[];
   propertyInfo?: { id: string; name: string; stage?: string | null } | null;
   businessHoursContext?: { isBusinessHours: boolean; startHour: string; endHour: string; instructionForModel: string };
-  leadContext?: any;
+  leadContext?: Record<string, unknown> | null;
   systemPrompt?: string;
   usage?: AiUsage | null;
   latencyMs?: number;
@@ -128,7 +125,7 @@ const BOUNDARY_LABELS: Record<string, string> = {
   custom_never_rule: 'Regra Proibitiva (Nunca Fazer)',
 };
 
-export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
+export function AiPlayground() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -148,7 +145,7 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
       .then((data) => {
         if (data.properties) {
           setProperties(
-            data.properties.map((p: any) => ({
+            data.properties.map((p: { id: string; name?: string; title?: string }) => ({
               id: p.id,
               name: p.name || p.title || 'Empreendimento',
             })),
@@ -279,7 +276,7 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
                 </span>
                 <select
                   value={simulatedHours}
-                  onChange={(e) => setSimulatedHours(e.target.value as any)}
+                  onChange={(e) => setSimulatedHours(e.target.value as 'real_time' | 'business_hours' | 'off_hours')}
                   className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
                   <option value="business_hours">🟢 Horário Comercial (14h30)</option>
@@ -520,7 +517,7 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
                   <div>
                     <span className="text-muted-foreground text-[11px]">Motivo da Decisão:</span>
                     <p className="text-foreground mt-0.5 italic">
-                      "{activeDiagnostic.decision.reason}"
+                      &ldquo;{activeDiagnostic.decision.reason}&rdquo;
                     </p>
                   </div>
                 )}

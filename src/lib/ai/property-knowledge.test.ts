@@ -9,8 +9,6 @@ vi.mock('./embeddings', () => ({
 
 import {
   retrievePropertyKnowledge,
-  replacePropertyBook,
-  removePropertyBook,
   replacePropertySubjectiveKnowledge,
 } from './knowledge';
 
@@ -121,15 +119,15 @@ describe('Property Knowledge Isolation and Management', () => {
 
   describe('replacePropertySubjectiveKnowledge', () => {
     it('upserts property context and creates an isolated subjective document', async () => {
-      const insertedDocs: any[] = [];
-      const upsertedContexts: any[] = [];
-      const deletedFilters: any[] = [];
+      const insertedDocs: Record<string, unknown>[] = [];
+      const upsertedContexts: Record<string, unknown>[] = [];
+      const deletedFilters: Record<string, unknown>[] = [];
 
       const db = {
         from: (table: string) => {
           if (table === 'property_ai_contexts') {
             return {
-              upsert: (payload: any) => {
+              upsert: (payload: Record<string, unknown>) => {
                 upsertedContexts.push(payload);
                 return Promise.resolve({ error: null });
               },
@@ -147,7 +145,7 @@ describe('Property Knowledge Isolation and Management', () => {
                   }),
                 }),
               }),
-              insert: (payload: any) => {
+              insert: (payload: Record<string, unknown>) => {
                 insertedDocs.push(payload);
                 return {
                   select: () => ({

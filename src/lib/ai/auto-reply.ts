@@ -7,6 +7,7 @@ import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { sendPushToAccount } from '@/lib/push/send'
 import { resolvePropertyForConversation } from './property-resolution'
+import type { CtwaReferral } from '@/lib/whatsapp/ctwa-referral'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -99,7 +100,7 @@ export async function dispatchInboundToAiReply(
         accountId,
         conversationId,
         currentPropertyId: null,
-        referral: (conv.ctwa_referral as any) || null,
+        referral: (conv.ctwa_referral as unknown as CtwaReferral) || null,
         firstUserMessage: firstUserMsg,
       })
       if (resolution.propertyId) {

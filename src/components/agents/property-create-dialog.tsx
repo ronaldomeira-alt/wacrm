@@ -10,7 +10,6 @@ import {
   Loader2,
   X,
   Plus,
-  CheckCircle2,
 } from 'lucide-react';
 import {
   Dialog,
@@ -172,8 +171,9 @@ export function PropertyCreateDialog({
       resetForm();
       onOpenChange(false);
       onCreated(createdProperty);
-    } catch (err: any) {
-      toast.error(err.message || 'Falha ao cadastrar empreendimento');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao cadastrar empreendimento';
+      toast.error(msg);
     } finally {
       setSaving(false);
       setStepLabel(null);

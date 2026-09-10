@@ -4,8 +4,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   Globe,
-  Plus,
-  Trash2,
   Loader2,
   CheckCircle2,
   FileText,
@@ -122,8 +120,9 @@ export function GlobalKnowledgeSection() {
 
       toast.success('Conhecimento global transversal salvo e indexado com sucesso!');
       loadDocs();
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao salvar');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao salvar';
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -165,8 +164,9 @@ export function GlobalKnowledgeSection() {
       toast.success(`Fragmentos consolidados com sucesso em um único documento transversal!`);
       setCleanupDialogOpen(false);
       loadDocs();
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao consolidar fragmentos');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao consolidar fragmentos';
+      toast.error(msg);
     } finally {
       setCleaningUp(false);
     }

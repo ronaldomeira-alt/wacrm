@@ -126,8 +126,9 @@ export function PropertyKnowledgeDetailDialog({
       toast.success('Conhecimento do empreendimento atualizado com sucesso!');
       onSaved();
       onOpenChange(false);
-    } catch (err: any) {
-      toast.error(err.message || 'Falha ao salvar');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao salvar';
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -164,8 +165,9 @@ export function PropertyKnowledgeDetailDialog({
 
       toast.success(`Book PDF processado com sucesso! (${data.pages ?? 1} páginas extraídas)`);
       onSaved();
-    } catch (err: any) {
-      toast.error(err.message || 'Erro no upload do Book');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro no upload do Book';
+      toast.error(msg);
     } finally {
       setUploadingBook(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -190,8 +192,9 @@ export function PropertyKnowledgeDetailDialog({
 
       toast.success('Book PDF removido com sucesso!');
       onSaved();
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao remover Book');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao remover Book';
+      toast.error(msg);
     } finally {
       setRemovingBook(false);
     }
@@ -222,8 +225,9 @@ export function PropertyKnowledgeDetailDialog({
       setNewAdName('');
       setShowAddAd(false);
       loadAdMappings(property.id);
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao vincular anúncio');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao vincular anúncio';
+      toast.error(msg);
     } finally {
       setAddingAd(false);
     }
@@ -242,8 +246,9 @@ export function PropertyKnowledgeDetailDialog({
 
       toast.success('Vínculo do anúncio removido');
       loadAdMappings(property.id);
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao desvincular');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao desvincular';
+      toast.error(msg);
     }
   };
 

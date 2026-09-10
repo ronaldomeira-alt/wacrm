@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   resolvePropertyForConversation,
-  normalizeTextForMatching,
 } from './property-resolution'
 import { buildConversationalSystemPrompt } from './prompt-builder'
 import { executeConversationalTurn } from './conversation-engine'
@@ -48,7 +47,7 @@ describe('Stage 7 — CTWA, Property Resolution & Qualification Integration', ()
   describe('5-Level Cascade Property Resolution', () => {
     it('1. Priority 1: Uses existing valid property_id on conversation directly', async () => {
       const db = {
-        from: (table: string) => ({
+        from: () => ({
           select: () => ({
             eq: () => ({
               eq: () => ({

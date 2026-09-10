@@ -53,7 +53,7 @@ export async function getLeadContext(
 
     const tagList: string[] = [];
     if (tagsRes.data && Array.isArray(tagsRes.data)) {
-      for (const row of tagsRes.data as any[]) {
+      for (const row of tagsRes.data as Array<{ tags?: { name?: string; category?: string } | null }>) {
         const tag = row.tags;
         if (tag?.name) {
           tagList.push(tag.category ? `${tag.category}:${tag.name}` : tag.name);

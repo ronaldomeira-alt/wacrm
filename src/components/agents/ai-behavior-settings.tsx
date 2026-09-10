@@ -3,15 +3,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
-  Sparkles,
   ShieldAlert,
   Clock,
   UserCheck,
   Bot,
-  AlertTriangle,
   Loader2,
   Save,
-  CheckCircle2,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -110,8 +107,9 @@ export function AiBehaviorSettings() {
       }
 
       toast.success('Comportamento e regras da IA salvos com sucesso!');
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao salvar');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao salvar';
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
