@@ -15,6 +15,7 @@ import {
   ChevronUp,
   Trash2,
   AlertTriangle,
+  MoreVertical,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -27,6 +28,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface GlobalDoc {
   id: string;
@@ -51,6 +58,7 @@ export function GlobalKnowledgeSection() {
   const [unifyDraft, setUnifyDraft] = useState('');
   const [expandedFragmentIds, setExpandedFragmentIds] = useState<Set<string>>(new Set());
   const [deletingFragmentId, setDeletingFragmentId] = useState<string | null>(null);
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<GlobalDoc | null>(null);
 
   // Every doc other than the one loaded into the editable `content` above —
   // these still feed the AI's retrieval (any global doc is used in every
@@ -419,17 +427,46 @@ export function GlobalKnowledgeSection() {
                     const isExpanded = expandedFragmentIds.has(d.id);
                     return (
                       <div key={d.id} className="min-w-0 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs">
-                        <button
-                          type="button"
-                          onClick={() => toggleFragmentExpanded(d.id)}
-                          className="flex w-full min-w-0 items-center justify-between gap-2 text-left cursor-pointer"
-                        >
-                          <span className="min-w-0 flex-1 truncate font-medium text-foreground">{d.title}</span>
-                          <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
-                            {(d.content || '').trim().length.toLocaleString('pt-BR')} caracteres
-                            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                          </span>
-                        </button>
+                        <div className="flex w-full min-w-0 items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleFragmentExpanded(d.id)}
+                            className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left cursor-pointer"
+                          >
+                            <span className="min-w-0 flex-1 truncate font-medium text-foreground">{d.title}</span>
+                            <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                              {(d.content || '').trim().length.toLocaleString('pt-BR')} caracteres
+                              {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                            </span>
+                          </button>
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              type="button"
+                              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none"
+                              aria-label="Ações do fragmento"
+                            >
+                              <MoreVertical className="h-3.5 w-3.5" />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuItem
+                                onClick={() => toggleFragmentExpanded(d.id)}
+                                className="text-xs cursor-pointer"
+                              >
+                                <Eye className="mr-2 h-3.5 w-3.5" />
+                                {isExpanded ? 'Recolher' : 'Ver detalhes'}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onClick={() => setConfirmDeleteDoc(d)}
+                                className="text-xs cursor-pointer text-destructive focus:text-destructive"
+                              >
+                                <Trash2 className="mr-2 h-3.5 w-3.5 text-destructive" />
+                                Excluir fragmento
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                         {isExpanded && (
                           <p className="mt-2 min-w-0 border-t border-border/40 pt-2 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere] leading-relaxed">
                             {d.content}
@@ -668,6 +705,58 @@ export function GlobalKnowledgeSection() {
             >
               {cleaningUp && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Unificar e Limpar Base
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Single Fragment Confirmation Dialog */}
+      <Dialog open={!!confirmDeleteDoc} onOpenChange={(open) => !open && setConfirmDeleteDoc(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="h-5 w-5" />
+              Excluir fragmento?
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground pt-1">
+              Tem certeza que deseja excluir o fragmento{' '}
+              <strong className="text-foreground">&ldquo;{confirmDeleteDoc?.title}&rdquo;</strong>? Essa ação
+              removerá o conteúdo do RAG e não poderá ser desfeita.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmDeleteDoc(null)}
+              disabled={deletingFragmentId !== null}
+              className="h-9 text-xs"
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletingFragmentId !== null || !confirmDeleteDoc}
+              onClick={async () => {
+                if (!confirmDeleteDoc) return;
+                const idToDelete = confirmDeleteDoc.id;
+                await handleDeleteFragment(idToDelete);
+                setConfirmDeleteDoc(null);
+              }}
+              className="h-9 text-xs font-medium"
+            >
+              {deletingFragmentId === confirmDeleteDoc?.id ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Excluindo...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-1.5 h-4 w-4" />
+                  Excluir Fragmento
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
