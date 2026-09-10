@@ -21,6 +21,13 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -29,6 +36,20 @@ import {
 } from '@/components/ui/dialog';
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor';
 import type { AiDecision, AiUsage } from '@/lib/ai/types';
+
+// Base UI's Select reserves the empty string for "no selection" internally,
+// so "no property" needs its own sentinel value instead of ''.
+const NO_PROPERTY_VALUE = '__none__';
+
+const SIMULATED_HOURS_OPTIONS: Array<{
+  value: 'business_hours' | 'off_hours' | 'real_time';
+  label: string;
+  dotClassName: string;
+}> = [
+  { value: 'business_hours', label: 'Horário Comercial (14h30)', dotClassName: 'bg-emerald-500' },
+  { value: 'off_hours', label: 'Fora do Horário / Plantão (22h30)', dotClassName: 'bg-amber-400' },
+  { value: 'real_time', label: 'Horário Real Atual', dotClassName: 'bg-primary' },
+];
 
 interface TurnDiagnostic {
   decision?: AiDecision;
@@ -331,63 +352,105 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   return (
     <div className="space-y-4">
       {/* Simulation Controls Bar */}
-      <div className="rounded-xl border border-border bg-card p-3 shadow-xs">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-stretch">
+          {/* Contexto da IA */}
+          <div className="flex shrink-0 items-start gap-2.5 border-b border-border/60 px-4 py-3 sm:max-w-[200px] sm:border-r sm:border-b-0 sm:py-3.5">
+            <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold leading-tight text-foreground">Contexto da IA</p>
+              <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+                Empreendimento e cenário da simulação.
+              </p>
+            </div>
+          </div>
+
+          {/* Selectors */}
+          <div className="flex flex-1 flex-wrap items-center gap-2.5 px-4 py-3">
             {/* 1. Property Selector */}
-            <div className="flex items-center gap-1.5">
-              <Building2 className="h-4 w-4 text-primary shrink-0" />
-              <div className="flex flex-col">
-                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <div className="flex min-w-0 items-center gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Building2 className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
                   Empreendimento
-                </span>
-                <select
-                  value={selectedPropertyId}
-                  onChange={(e) => {
-                    setSelectedPropertyId(e.target.value);
+                </p>
+                <Select
+                  value={selectedPropertyId || NO_PROPERTY_VALUE}
+                  onValueChange={(val) => {
+                    setSelectedPropertyId(val === NO_PROPERTY_VALUE ? '' : val ?? '');
                     setTurns([]); // reset context to avoid mixing properties
                   }}
-                  className="h-8 max-w-[220px] truncate rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <option value="">Nenhum / Desconhecido</option>
-                  {properties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      🏢 {p.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="mt-0.5 h-auto min-w-0 max-w-[190px] gap-1 border-0 bg-transparent p-0 text-sm font-semibold text-foreground shadow-none hover:bg-transparent focus-visible:ring-0 data-[size=default]:h-auto">
+                    <SelectValue className="truncate">
+                      {selectedPropertyName ?? 'Nenhum / Desconhecido'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="w-auto min-w-56">
+                    <SelectItem value={NO_PROPERTY_VALUE}>Nenhum / Desconhecido</SelectItem>
+                    {properties.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
             {/* 2. Simulated Hours */}
-            <div className="flex items-center gap-1.5 sm:border-l sm:border-border/60 sm:pl-3">
-              <Clock className="h-4 w-4 text-primary shrink-0" />
-              <div className="flex flex-col">
-                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <div className="flex min-w-0 items-center gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Clock className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
                   Horário Simulado
-                </span>
-                <select
+                </p>
+                <Select
                   value={simulatedHours}
-                  onChange={(e) => setSimulatedHours(e.target.value as 'real_time' | 'business_hours' | 'off_hours')}
-                  className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  onValueChange={(val) => val && setSimulatedHours(val as typeof simulatedHours)}
                 >
-                  <option value="business_hours">🟢 Horário Comercial (14h30)</option>
-                  <option value="off_hours">🌙 Fora do Horário / Plantão (22h30)</option>
-                  <option value="real_time">⏱️ Horário Real Atual</option>
-                </select>
+                  <SelectTrigger className="mt-0.5 h-auto min-w-0 max-w-[220px] gap-1 border-0 bg-transparent p-0 text-sm font-semibold text-foreground shadow-none hover:bg-transparent focus-visible:ring-0 data-[size=default]:h-auto">
+                    <SelectValue className="min-w-0">
+                      {(() => {
+                        const opt = SIMULATED_HOURS_OPTIONS.find((o) => o.value === simulatedHours);
+                        return (
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt?.dotClassName)} />
+                            <span className="truncate">{opt?.label}</span>
+                          </span>
+                        );
+                      })()}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="w-auto min-w-72">
+                    {SIMULATED_HOURS_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt.dotClassName)} />
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReset}
-            disabled={turns.length === 0 || sending}
-            className="h-8 text-xs text-muted-foreground shrink-0"
-          >
-            <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Nova Conversa
-          </Button>
+          {/* Nova Conversa */}
+          <div className="flex items-center justify-end border-t border-border/60 px-4 py-3 sm:border-t-0 sm:border-l">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReset}
+              disabled={turns.length === 0 || sending}
+              className="h-8 text-xs text-muted-foreground shrink-0"
+            >
+              <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Nova Conversa
+            </Button>
+          </div>
         </div>
       </div>
 
