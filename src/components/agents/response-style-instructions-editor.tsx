@@ -147,8 +147,10 @@ export function ResponseStyleInstructionsEditor({
   const isExceptionsMode = mode === 'property_exceptions';
 
   const defaultPlaceholder = isExceptionsMode
-    ? 'Ex.: Neste empreendimento, explique os diferenciais de lazer com mais detalhes.'
-    : 'Ex: Termine cada interação com uma pergunta relevante que ajude o cliente a avançar.';
+    ? (propertyName
+        ? `Ex.: No empreendimento ${propertyName}, destaque os diferenciais de lazer com mais detalhes.`
+        : 'Ex.: Neste empreendimento, explique os diferenciais de lazer com mais detalhes.')
+    : 'Ex.: Responda de forma concisa e cordial, mantendo mensagens de até 3 frases.';
 
   const defaultEmptyLabel = isExceptionsMode
     ? 'Nenhuma exceção de comportamento configurada.'

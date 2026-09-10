@@ -134,16 +134,20 @@ export async function POST(request: Request, { params }: Params) {
         .limit(1)
 
       if (matchedConvs && matchedConvs.length > 0) {
-        const ref = matchedConvs[0].ctwa_referral as Record<string, any>
+        const ref = (matchedConvs[0].ctwa_referral || {}) as Record<string, unknown>
+        const refHeadline = typeof ref.headline === 'string' ? ref.headline : null
+        const refBody = typeof ref.body === 'string' ? ref.body : null
+        const refImageUrl = typeof ref.image_url === 'string' ? ref.image_url : null
+
         return NextResponse.json({
           valid: true,
           confirmed: true,
           source: 'inbound_leads',
           ad_source_id: adSourceId,
-          ad_name: adName || ref.headline || null,
-          referral_headline: ref.headline || null,
-          referral_body: ref.body || null,
-          referral_image_url: ref.image_url || null,
+          ad_name: adName || refHeadline || null,
+          referral_headline: refHeadline,
+          referral_body: refBody,
+          referral_image_url: refImageUrl,
           warning: conflictWarning,
           message: 'Anúncio confirmado através de leads CTWA recebidos recentemente.',
         })

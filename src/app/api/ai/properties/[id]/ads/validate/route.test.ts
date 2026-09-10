@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+const mocks = vi.hoisted(() => ({
+  requireRole: vi.fn(),
+  toErrorResponse: vi.fn((err: unknown) =>
+    Response.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 }),
+  ),
+}))
+
+vi.mock('@/lib/auth/account', () => ({
+  requireRole: mocks.requireRole,
+  toErrorResponse: mocks.toErrorResponse,
+}))
+
 import { POST } from './route'
-import * as authAccount from '@/lib/auth/account'
 
 describe('POST /api/ai/properties/[id]/ads/validate', () => {
   const mockAccountId = 'acc-123'
@@ -11,10 +23,10 @@ describe('POST /api/ai/properties/[id]/ads/validate', () => {
   })
 
   it('rejects empty ad_source_id with 400', async () => {
-    vi.spyOn(authAccount, 'requireRole').mockResolvedValue({
-      supabase: {} as any,
+    mocks.requireRole.mockResolvedValue({
+      supabase: {},
       accountId: mockAccountId,
-      user: { id: 'user-1' } as any,
+      user: { id: 'user-1' },
       role: 'agent',
     })
 
@@ -31,10 +43,10 @@ describe('POST /api/ai/properties/[id]/ads/validate', () => {
   })
 
   it('returns valid: false for non-numeric or too short ad IDs', async () => {
-    vi.spyOn(authAccount, 'requireRole').mockResolvedValue({
-      supabase: {} as any,
+    mocks.requireRole.mockResolvedValue({
+      supabase: {},
       accountId: mockAccountId,
-      user: { id: 'user-1' } as any,
+      user: { id: 'user-1' },
       role: 'agent',
     })
 
@@ -90,10 +102,10 @@ describe('POST /api/ai/properties/[id]/ads/validate', () => {
       }),
     }
 
-    vi.spyOn(authAccount, 'requireRole').mockResolvedValue({
-      supabase: mockSupabase as any,
+    mocks.requireRole.mockResolvedValue({
+      supabase: mockSupabase,
       accountId: mockAccountId,
-      user: { id: 'user-1' } as any,
+      user: { id: 'user-1' },
       role: 'agent',
     })
 
@@ -150,10 +162,10 @@ describe('POST /api/ai/properties/[id]/ads/validate', () => {
       }),
     }
 
-    vi.spyOn(authAccount, 'requireRole').mockResolvedValue({
-      supabase: mockSupabase as any,
+    mocks.requireRole.mockResolvedValue({
+      supabase: mockSupabase,
       accountId: mockAccountId,
-      user: { id: 'user-1' } as any,
+      user: { id: 'user-1' },
       role: 'agent',
     })
 

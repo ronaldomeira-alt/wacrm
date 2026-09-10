@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { executeConversationalTurn } from './conversation-engine';
 import { buildConversationalSystemPrompt } from './prompt-builder';
 import type { AiConfig } from './types';
@@ -73,7 +74,7 @@ const mockDb = {
     };
   }),
   rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
-} as any;
+} as unknown as SupabaseClient;
 
 describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', () => {
   // 1. Verificação das Diretrizes no System Prompt
@@ -128,7 +129,7 @@ describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', (
         ],
         usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await executeConversationalTurn({
       db: mockDb,
@@ -167,7 +168,7 @@ describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', (
         ],
         usage: { prompt_tokens: 120, completion_tokens: 35, total_tokens: 155 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await executeConversationalTurn({
       db: mockDb,
@@ -208,7 +209,7 @@ describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', (
         ],
         usage: { prompt_tokens: 150, completion_tokens: 35, total_tokens: 185 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const result = await executeConversationalTurn({
       db: mockDb,
@@ -247,7 +248,7 @@ describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', (
         ],
         usage: { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 },
       }),
-    } as any);
+    } as unknown as Response);
 
     const draftResult = await executeConversationalTurn({
       db: mockDb,

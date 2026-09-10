@@ -87,7 +87,7 @@ const BOUNDARY_LABELS: Record<string, string> = {
   custom_never_rule: 'Regra Proibitiva (Nunca Fazer)',
 };
 
-interface AiPlaygroundProps {
+export interface AiPlaygroundProps {
   onGoToSetup?: () => void;
 }
 
@@ -451,6 +451,16 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                 <p className="mt-1 text-xs max-w-md text-muted-foreground">
                   Simule perguntas de clientes e ajuste, ao lado, como a IA deve responder.
                 </p>
+                {onGoToSetup && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onGoToSetup}
+                    className="mt-3 text-xs"
+                  >
+                    Configurar IA
+                  </Button>
+                )}
               </div>
             )}
 

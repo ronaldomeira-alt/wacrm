@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import {
   ChevronDown,
   ChevronUp,
@@ -44,13 +44,6 @@ export function ExpandableKnowledgeSection({
   const [isExpanded, setIsExpanded] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [draftValue, setDraftValue] = useState(value)
-
-  // Keep draftValue in sync with value when not editing
-  useEffect(() => {
-    if (!isEditing) {
-      setDraftValue(value)
-    }
-  }, [value, isEditing])
 
   const hasContent = Boolean(value && value.trim().length > 0)
 

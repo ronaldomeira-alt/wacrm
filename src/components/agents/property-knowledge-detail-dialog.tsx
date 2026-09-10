@@ -16,7 +16,6 @@ import {
   AlertCircle,
   ShieldCheck,
   Search,
-  ExternalLink,
 } from 'lucide-react'
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor'
 import { ExpandableKnowledgeSection } from './expandable-knowledge-section'

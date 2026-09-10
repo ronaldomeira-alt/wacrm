@@ -258,8 +258,8 @@ describe('Auditoria Corretiva — 8 Cenários de Teste Obrigatórios', () => {
 
     const db = {
       from: vi.fn().mockImplementation((table: string) => ({
-        select: vi.fn().mockImplementation((cols: string) => ({
-          eq: vi.fn().mockImplementation((col: string, val: string) => {
+        select: vi.fn().mockImplementation(() => ({
+          eq: vi.fn().mockImplementation(() => {
             const queryObj: Record<string, unknown> = {
               maybeSingle: () =>
                 Promise.resolve({
