@@ -596,7 +596,7 @@ describe('Property-specific response style instructions', () => {
     });
 
     expect(result.systemPrompt).toContain('Sempre mencionar a vista para o mar antes de qualquer outro diferencial.');
-    expect(result.systemPrompt).toContain('Estilo específico deste empreendimento');
+    expect(result.systemPrompt).toContain('EXCEÇÕES DE COMPORTAMENTO DESTE EMPREENDIMENTO');
   });
 
   it('never leaks one property own style instructions into a turn for a different (or no) property', async () => {

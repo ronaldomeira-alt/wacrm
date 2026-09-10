@@ -13,6 +13,7 @@ import {
   Clock,
   ShieldCheck,
   ShieldAlert,
+  SlidersHorizontal,
   Code2,
   ChevronRight,
 } from 'lucide-react';
@@ -170,27 +171,27 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const handleAddPropertyInstruction = async (text: string) => {
     try {
       await savePropertyInstructions([...propertyInstructions, text]);
-      toast.success('Instrução do empreendimento adicionada — valendo a partir da próxima mensagem.');
+      toast.success('Exceção de comportamento adicionada — valendo a partir da próxima mensagem.');
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Erro ao salvar instrução de estilo');
+      toast.error(err instanceof Error ? err.message : 'Erro ao salvar exceção de comportamento');
     }
   };
 
   const handleRemovePropertyInstruction = async (index: number) => {
     try {
       await savePropertyInstructions(propertyInstructions.filter((_, i) => i !== index));
-      toast.success('Instrução do empreendimento removida.');
+      toast.success('Exceção de comportamento removida.');
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Erro ao remover instrução de estilo');
+      toast.error(err instanceof Error ? err.message : 'Erro ao remover exceção de comportamento');
     }
   };
 
   const handleEditPropertyInstruction = async (index: number, text: string) => {
     try {
       await savePropertyInstructions(propertyInstructions.map((v, i) => (i === index ? text : v)));
-      toast.success('Instrução do empreendimento atualizada.');
+      toast.success('Exceção de comportamento atualizada.');
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Erro ao editar instrução de estilo');
+      toast.error(err instanceof Error ? err.message : 'Erro ao editar exceção de comportamento');
     }
   };
 
@@ -390,7 +391,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         </div>
       </div>
 
-      {/* Property Response Style Instructions Card */}
+      {/* Exceções de Comportamento Card */}
       <div>
         <button
           type="button"
@@ -405,14 +406,14 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         >
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Building2 className="h-4 w-4" />
+              <SlidersHorizontal className="h-4 w-4" />
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-foreground truncate">Instruções deste Empreendimento</p>
+              <p className="text-xs font-semibold text-foreground truncate">Exceções de Comportamento</p>
               <p className="text-[11px] text-muted-foreground truncate">
                 {selectedPropertyId
                   ? (selectedPropertyName ?? 'Empreendimento selecionado')
-                  : 'Selecione um empreendimento acima para ver e configurar instruções específicas'}
+                  : 'Selecione um empreendimento acima para ver e configurar exceções de comportamento'}
               </p>
             </div>
           </div>
@@ -557,21 +558,23 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           </div>
         </div>
 
-      {/* Response Style Instructions Dialog — Scoped to the Selected Property */}
+      {/* Exceções de Comportamento Dialog — Scoped to the Selected Property */}
       <Dialog open={propertyStyleDialogOpen} onOpenChange={setPropertyStyleDialogOpen}>
         <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90dvh] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6 flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
-              <Building2 className="h-4 w-4 text-primary" />
-              Instruções de Estilo — {selectedPropertyName ?? 'Empreendimento'}
+              <SlidersHorizontal className="h-4 w-4 text-primary" />
+              Exceções de Comportamento — {selectedPropertyName ?? 'Empreendimento'}
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Ajustes de estilo válidos apenas para este empreendimento. Em caso de conflito com as instruções globais, estas prevalecem.
+              Ajustes específicos deste empreendimento que sobrepõem apenas as regras globais com as quais entram em conflito.
             </DialogDescription>
           </DialogHeader>
 
           <div className="flex-1 min-h-0 pt-2">
             <ResponseStyleInstructionsEditor
+              mode="property_exceptions"
+              propertyName={selectedPropertyName}
               instructions={propertyInstructions}
               loading={loadingPropertyStyle}
               onAdd={handleAddPropertyInstruction}

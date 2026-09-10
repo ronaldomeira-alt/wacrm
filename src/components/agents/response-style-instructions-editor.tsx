@@ -113,14 +113,17 @@ export function inferCategoryFromText(text: string): InstructionCategory {
   return bestCategory;
 }
 
-interface ResponseStyleInstructionsEditorProps {
+export interface ResponseStyleInstructionsEditorProps {
   instructions: string[];
   loading?: boolean;
   onAdd: (text: string) => Promise<void>;
   onRemove: (index: number) => Promise<void>;
   onEdit: (index: number, text: string) => Promise<void>;
+  mode?: 'global' | 'property_exceptions';
+  propertyName?: string;
   placeholder?: string;
   emptyLabel?: string;
+  emptySublabel?: string;
   className?: string;
   searchThreshold?: number;
   showCentralPrinciple?: boolean;
@@ -132,12 +135,33 @@ export function ResponseStyleInstructionsEditor({
   onAdd,
   onRemove,
   onEdit,
-  placeholder = 'Ex: Termine cada interação com uma pergunta relevante que ajude o cliente a avançar.',
-  emptyLabel = 'Nenhuma instrução salva ainda.',
+  mode = 'global',
+  propertyName,
+  placeholder,
+  emptyLabel,
+  emptySublabel,
   className,
   searchThreshold = 8,
   showCentralPrinciple = true,
 }: ResponseStyleInstructionsEditorProps) {
+  const isExceptionsMode = mode === 'property_exceptions';
+
+  const defaultPlaceholder = isExceptionsMode
+    ? 'Ex.: Neste empreendimento, explique os diferenciais de lazer com mais detalhes.'
+    : 'Ex: Termine cada interação com uma pergunta relevante que ajude o cliente a avançar.';
+
+  const defaultEmptyLabel = isExceptionsMode
+    ? 'Nenhuma exceção de comportamento configurada.'
+    : 'Nenhuma instrução salva ainda.';
+
+  const defaultEmptySublabel = isExceptionsMode
+    ? 'O comportamento global continua sendo aplicado normalmente.'
+    : undefined;
+
+  const effectivePlaceholder = placeholder ?? defaultPlaceholder;
+  const effectiveEmptyLabel = emptyLabel ?? defaultEmptyLabel;
+  const effectiveEmptySublabel = emptySublabel ?? defaultEmptySublabel;
+
   const [draft, setDraft] = useState('');
   // 'auto' means dynamically calculate from text; otherwise string category ID (manual override)
   const [selectedCategory, setSelectedCategory] = useState<string>('auto');
@@ -294,26 +318,37 @@ export function ResponseStyleInstructionsEditor({
     <div className={cn('space-y-3.5', className)}>
       {/* 1. Central Guiding Principle */}
       {showCentralPrinciple && (
-        <div className="rounded-xl border border-primary/25 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent p-3.5 shadow-xs">
+        <div
+          className={cn(
+            'rounded-xl p-3.5 shadow-xs transition-colors',
+            isExceptionsMode
+              ? 'border border-border/80 bg-muted/30'
+              : 'border border-primary/25 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent',
+          )}
+        >
           <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/20 text-primary">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
               <Sparkles className="h-3.5 w-3.5" />
             </div>
-            <p className="text-xs font-semibold text-primary uppercase tracking-wide">
-              Princípio Central de Atendimento
+            <p className="text-xs font-semibold text-foreground uppercase tracking-wide">
+              {isExceptionsMode ? 'Princípio Central das Exceções' : 'Princípio Central de Atendimento'}
             </p>
           </div>
-          <p className="mt-1.5 text-xs font-medium text-foreground leading-relaxed pl-8">
-            &ldquo;A Clara acolhe, responde, entende, qualifica e conduz o cliente até a equipe.&rdquo;
+          <p className="mt-1.5 text-xs font-medium text-muted-foreground leading-relaxed pl-8">
+            {isExceptionsMode
+              ? '“Exceções só alteram o comportamento global onde houver conflito. Todas as demais regras globais continuam válidas.”'
+              : '“A Clara acolhe, responde, entende, qualifica e conduz o cliente até a equipe.”'}
           </p>
         </div>
       )}
 
-      {/* 2. Add New Instruction Form */}
+      {/* 2. Add New Form */}
       <div className="rounded-xl border border-border/70 bg-card p-3 shadow-xs space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-medium text-foreground">Nova Instrução de Estilo</span>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-semibold text-foreground">
+              {isExceptionsMode ? 'Nova Exceção de Comportamento' : 'Nova Instrução de Estilo'}
+            </span>
             {draft.trim().length > 0 && selectedCategory === 'auto' && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full animate-in fade-in-0 duration-200">
                 <Sparkles className="h-3 w-3" />
@@ -347,7 +382,7 @@ export function ResponseStyleInstructionsEditor({
                   className={cn(
                     'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer',
                     isSelected
-                      ? 'bg-primary text-primary-foreground shadow-xs'
+                      ? 'bg-primary text-primary-foreground shadow-xs font-semibold'
                       : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
                   )}
                 >
@@ -358,6 +393,12 @@ export function ResponseStyleInstructionsEditor({
             })}
           </div>
         </div>
+
+        {isExceptionsMode && (
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            Use apenas quando este empreendimento precisar de um comportamento diferente do padrão global.
+          </p>
+        )}
 
         <div className="flex items-end gap-2">
           <textarea
@@ -370,7 +411,7 @@ export function ResponseStyleInstructionsEditor({
               }
             }}
             disabled={loading}
-            placeholder={placeholder}
+            placeholder={effectivePlaceholder}
             rows={2}
             className="flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs leading-relaxed text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
           />
@@ -398,7 +439,7 @@ export function ResponseStyleInstructionsEditor({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar instrução por palavra-chave..."
+            placeholder={isExceptionsMode ? 'Buscar exceção por palavra-chave...' : 'Buscar instrução por palavra-chave...'}
             className="w-full rounded-lg border border-border bg-background py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
           />
         </div>
@@ -408,13 +449,18 @@ export function ResponseStyleInstructionsEditor({
       <div className="space-y-2">
         {loading ? (
           <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando instruções...
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando...
           </div>
         ) : instructions.length === 0 ? (
-          <p className="p-3 text-center text-xs text-muted-foreground">{emptyLabel}</p>
+          <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 p-5 text-center space-y-1">
+            <p className="text-xs font-semibold text-foreground">{effectiveEmptyLabel}</p>
+            {effectiveEmptySublabel && (
+              <p className="text-[11px] text-muted-foreground">{effectiveEmptySublabel}</p>
+            )}
+          </div>
         ) : totalVisibleItems === 0 ? (
           <p className="p-3 text-center text-xs text-muted-foreground">
-            Nenhuma instrução corresponde à busca.
+            {isExceptionsMode ? 'Nenhuma exceção corresponde à busca.' : 'Nenhuma instrução corresponde à busca.'}
           </p>
         ) : (
           categorizedInstructions.map(({ category, items }) => {
@@ -459,7 +505,9 @@ export function ResponseStyleInstructionsEditor({
                   <div className="border-t border-border/50 bg-background/50 p-2.5 space-y-1.5">
                     {items.length === 0 ? (
                       <p className="py-2 text-center text-[11px] text-muted-foreground italic">
-                        Nenhuma instrução neste grupo ainda. Adicione acima selecionando &quot;{category.name}&quot;.
+                        {isExceptionsMode
+                          ? `Nenhuma exceção neste grupo ainda. Adicione acima selecionando "${category.name}".`
+                          : `Nenhuma instrução neste grupo ainda. Adicione acima selecionando "${category.name}".`}
                       </p>
                     ) : (
                       items.map((item) => {
@@ -540,7 +588,7 @@ export function ResponseStyleInstructionsEditor({
                                 onClick={() => startEdit(item.originalIndex)}
                                 disabled={removingIndex !== null}
                                 className="text-muted-foreground hover:text-primary disabled:opacity-40 cursor-pointer"
-                                title="Editar instrução"
+                                title={isExceptionsMode ? 'Editar exceção' : 'Editar instrução'}
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </button>
@@ -549,7 +597,7 @@ export function ResponseStyleInstructionsEditor({
                                 onClick={() => void handleRemove(item.originalIndex)}
                                 disabled={removingIndex !== null}
                                 className="text-muted-foreground hover:text-destructive disabled:opacity-40 cursor-pointer"
-                                title="Remover instrução"
+                                title={isExceptionsMode ? 'Remover exceção' : 'Remover instrução'}
                               >
                                 {removingIndex === item.originalIndex ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />

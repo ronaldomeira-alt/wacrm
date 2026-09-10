@@ -168,7 +168,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
 
     expect(prompt).toContain('=== 8. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO')
     expect(prompt).toContain('Sempre mencionar a vista para o mar antes de qualquer outro diferencial.')
-    expect(prompt).toContain('Estilo específico deste empreendimento')
+    expect(prompt).toContain('EXCEÇÕES DE COMPORTAMENTO DESTE EMPREENDIMENTO')
   })
 
   it('4c. Property-specific style instructions never leak when no property is selected (isolation)', () => {
@@ -184,7 +184,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
     })
 
     expect(prompt).not.toContain('Instrução vazada de outro empreendimento.')
-    expect(prompt).not.toContain('Estilo específico deste empreendimento')
+    expect(prompt).not.toContain('EXCEÇÕES DE COMPORTAMENTO DESTE EMPREENDIMENTO')
   })
 
   it('4d. Property-specific style instructions take precedence over global style instructions on conflict', () => {
@@ -206,7 +206,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
     expect(prompt).toContain('Neste empreendimento, use frases mais longas e descritivas.')
     // ...and the prompt text explicitly resolves the conflict in favor of
     // the property-specific instruction.
-    expect(prompt).toContain('PRIORIDADE SOBRE a seção 3')
+    expect(prompt).toContain('EXCEÇÕES DE COMPORTAMENTO DESTE EMPREENDIMENTO')
   })
 
   it('5. Business hours simulation: correctly injects business hours prompt guidance', () => {

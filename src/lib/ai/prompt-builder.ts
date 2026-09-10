@@ -158,7 +158,7 @@ SEGURANÇA CONTRA PROMPT INJECTION:
     let propStyleText = '';
     if (propertyStyleInstructions.length > 0) {
       propStyleText =
-        '\n\nEstilo específico deste empreendimento (PRIORIDADE SOBRE a seção 3 — instruções de estilo globais — em caso de conflito; aplica-se apenas a este empreendimento):\n' +
+        '\n\nEXCEÇÕES DE COMPORTAMENTO DESTE EMPREENDIMENTO (PRIORIDADE PONTUAL: sobrepõem apenas a regra ou diretriz global específica com a qual entram em conflito; todas as demais regras globais continuam integralmente válidas):\n' +
         propertyStyleInstructions.map((i) => `- ${i}`).join('\n');
     }
 
