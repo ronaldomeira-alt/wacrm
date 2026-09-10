@@ -291,19 +291,19 @@ export function AiBehaviorSettings() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-center justify-between rounded-lg border border-border p-3">
-            <div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground">IA Ativa no CRM</p>
               <p className="text-xs text-muted-foreground">
                 Habilita o motor de IA para gerar sugestões, análises e testes no Playground.
               </p>
             </div>
-            <Switch checked={isActive} onCheckedChange={setIsActive} />
+            <Switch checked={isActive} onCheckedChange={setIsActive} className="shrink-0" />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border p-3 bg-muted/20">
-            <div>
-              <div className="flex items-center gap-1.5">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 bg-muted/20">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <p className="text-sm font-medium text-foreground">
                   Respostas Automáticas no WhatsApp (Auto-Reply)
                 </p>
@@ -311,7 +311,7 @@ export function AiBehaviorSettings() {
                   Produção
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground mt-0.5">
                 Quando ativado, a IA responde clientes reais no WhatsApp automaticamente. Recomendado manter desligado durante a fase de testes.
               </p>
             </div>
@@ -319,6 +319,7 @@ export function AiBehaviorSettings() {
               checked={autoReplyEnabled}
               onCheckedChange={setAutoReplyEnabled}
               disabled={!isActive}
+              className="shrink-0"
             />
           </div>
 

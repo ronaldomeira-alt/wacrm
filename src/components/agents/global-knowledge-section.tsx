@@ -256,7 +256,7 @@ export function GlobalKnowledgeSection() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+          <div className="flex flex-wrap items-center gap-2 shrink-0 self-end sm:self-center justify-end">
             {docs.length > 1 && (
               <Button
                 size="sm"
@@ -309,7 +309,7 @@ export function GlobalKnowledgeSection() {
 
       {/* View Full Content Dialog */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[85vh] overflow-y-auto p-6">
+        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[85dvh] sm:max-h-[85vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
           <DialogHeader className="space-y-1">
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
@@ -366,7 +366,7 @@ export function GlobalKnowledgeSection() {
 
       {/* Edit Content Dialog */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90dvh] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
           <DialogHeader className="space-y-1">
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">

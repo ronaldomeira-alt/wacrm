@@ -261,24 +261,24 @@ function AgentsPageInner() {
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 max-w-3xl">
-          <TabsTrigger value="knowledge" className="flex items-center gap-1.5">
+        <TabsList className="flex w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:grid sm:grid-cols-5 max-w-3xl justify-start sm:justify-center">
+          <TabsTrigger value="knowledge" className="flex items-center gap-1.5 shrink-0 px-3 sm:px-1.5">
             <BookOpen className="h-4 w-4" />
             <span>Conhecimento</span>
           </TabsTrigger>
-          <TabsTrigger value="playground" className="flex items-center gap-1.5">
+          <TabsTrigger value="playground" className="flex items-center gap-1.5 shrink-0 px-3 sm:px-1.5">
             <Sparkles className="h-4 w-4" />
             <span>Playground</span>
           </TabsTrigger>
-          <TabsTrigger value="evolution" className="flex items-center gap-1.5">
+          <TabsTrigger value="evolution" className="flex items-center gap-1.5 shrink-0 px-3 sm:px-1.5">
             <GraduationCap className="h-4 w-4" />
             <span>Evolução</span>
           </TabsTrigger>
-          <TabsTrigger value="suggestions" className="flex items-center gap-1.5">
+          <TabsTrigger value="suggestions" className="flex items-center gap-1.5 shrink-0 px-3 sm:px-1.5">
             <ListTodo className="h-4 w-4" />
             <span>Sugestões</span>
           </TabsTrigger>
-          <TabsTrigger value="behavior" className="flex items-center gap-1.5">
+          <TabsTrigger value="behavior" className="flex items-center gap-1.5 shrink-0 px-3 sm:px-1.5">
             <Sliders className="h-4 w-4" />
             <span>Comportamento</span>
           </TabsTrigger>
@@ -316,21 +316,22 @@ function AgentsPageInner() {
 
         {/* Tab 4: Sugestões */}
         <TabsContent value="suggestions" className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap gap-1.5">
+          <div className="flex items-center justify-between gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex-wrap pb-1 sm:pb-0">
+            <div className="flex items-center gap-1.5 shrink-0 sm:flex-wrap">
               {STATUS_FILTERS.map((s) => (
                 <Button
                   key={s}
                   size="sm"
                   variant={statusFilter === s ? 'default' : 'outline'}
                   onClick={() => setStatusFilter(s)}
+                  className="shrink-0"
                 >
                   {t(`status.${s}`)}
                 </Button>
               ))}
             </div>
             {pendingPipelineMoves.length > 0 && (
-              <Button size="sm" variant="outline" onClick={() => setBulkConfirmOpen(true)}>
+              <Button size="sm" variant="outline" onClick={() => setBulkConfirmOpen(true)} className="shrink-0">
                 <CheckCheck className="h-3.5 w-3.5" />
                 {t('bulkAcceptButton')}
               </Button>

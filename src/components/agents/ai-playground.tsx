@@ -280,7 +280,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
             </div>
 
             {/* 2. Simulated Hours */}
-            <div className="flex items-center gap-1.5 border-l border-border/60 pl-3">
+            <div className="flex items-center gap-1.5 sm:border-l sm:border-border/60 sm:pl-3">
               <Clock className="h-4 w-4 text-primary shrink-0" />
               <div className="flex flex-col">
                 <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
@@ -314,7 +314,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
       {/* Main Container: Chat (Left/Center) + Style Instructions Composer (Right) */}
       <div className="grid gap-4 lg:grid-cols-12 items-start">
         {/* Chat Stream (7 cols on lg) */}
-        <div className="lg:col-span-7 flex h-[620px] flex-col rounded-xl border border-border bg-card shadow-xs">
+        <div className="lg:col-span-7 flex h-[460px] sm:h-[540px] lg:h-[620px] flex-col rounded-xl border border-border bg-card shadow-xs">
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5 bg-muted/20">
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-primary" />
@@ -444,7 +444,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         </div>
 
         {/* Response Style Composer (5 cols on lg) */}
-        <div className="lg:col-span-5 flex h-[620px] flex-col rounded-xl border border-border bg-card p-4 space-y-3 shadow-xs">
+        <div className="lg:col-span-5 flex h-[380px] sm:h-[460px] lg:h-[620px] flex-col rounded-xl border border-border bg-card p-4 space-y-3 shadow-xs">
           <div className="flex items-center justify-between border-b border-border pb-2.5">
             <div className="flex items-center gap-2">
               <SlidersHorizontal className="h-4 w-4 text-primary" />

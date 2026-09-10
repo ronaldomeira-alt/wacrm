@@ -136,7 +136,7 @@ export function SuggestionCard({
           </div>
 
           {isPending && isFollowup ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 justify-end">
               <Button
                 size="sm"
                 variant="ghost"
@@ -179,7 +179,7 @@ export function SuggestionCard({
               />
             </div>
           ) : isPending && isLearning ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 justify-end">
               <Button
                 size="sm"
                 variant="ghost"
@@ -222,7 +222,7 @@ export function SuggestionCard({
               />
             </div>
           ) : isPending ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 justify-end">
               <Button
                 size="sm"
                 variant="outline"

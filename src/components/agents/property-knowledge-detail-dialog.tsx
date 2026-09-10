@@ -218,7 +218,7 @@ export function PropertyKnowledgeDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90dvh] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
         <DialogHeader className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
@@ -412,11 +412,11 @@ export function PropertyKnowledgeDetailDialog({
                 {adMappings.map((ad) => (
                   <div
                     key={ad.id}
-                    className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                    className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-xs gap-2"
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                      <span className="font-mono font-medium text-foreground">{ad.ad_source_id}</span>
+                      <span className="font-mono font-medium text-foreground truncate">{ad.ad_source_id}</span>
                       {ad.ad_name && (
                         <span className="truncate text-muted-foreground">({ad.ad_name})</span>
                       )}

@@ -110,7 +110,7 @@ export function PropertyCreateDialog({
         }
       }}
     >
-      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90dvh] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
         <DialogHeader className="space-y-1">
           <DialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
             <Building2 className="h-5 w-5 text-primary" />
