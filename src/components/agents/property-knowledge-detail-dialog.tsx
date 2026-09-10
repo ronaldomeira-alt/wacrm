@@ -249,14 +249,14 @@ export function PropertyKnowledgeDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
         <DialogHeader>
           <div className="flex items-center gap-2">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Building2 className="h-5 w-5" />
             </div>
             <div>
-              <DialogTitle className="text-lg font-semibold text-foreground">
+              <DialogTitle className="text-xl font-semibold text-foreground">
                 {property.name}
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
@@ -269,13 +269,13 @@ export function PropertyKnowledgeDetailDialog({
         <div className="space-y-6 py-2">
           {/* Estágio da Obra */}
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Estágio da Obra / Status</Label>
+            <Label className="text-sm font-semibold text-foreground">Estágio da Obra / Status</Label>
             <Select
               value={stage}
               onValueChange={(val) => val && setStage(val as PropertyStage)}
             >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Selecione o estágio" />
+              <SelectTrigger className="w-full h-10 text-sm">
+                <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {Object.entries(STAGE_LABELS).map(([k, label]) => (
@@ -502,25 +502,25 @@ export function PropertyKnowledgeDetailDialog({
             )}
           </div>
 
-          {/* Meu conhecimento sobre este empreendimento */}
+          {/* Meu conhecimento sobre este empreendimento / Visão do Corretor */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-primary" />
-              <Label htmlFor="subjective-knowledge" className="text-sm font-medium">
-                Meu conhecimento sobre este empreendimento
+              <Label htmlFor="subjective-knowledge" className="text-sm font-semibold text-foreground">
+                Visão do Corretor / Conhecimento Subjetivo
               </Label>
             </div>
             <Textarea
               id="subjective-knowledge"
               value={subjectiveKnowledge}
               onChange={(e) => setSubjectiveKnowledge(e.target.value)}
-              placeholder="Ex: Diferenciais reais da planta, incidência solar da manhã na torre A, acabamento de alto padrão na área de lazer, perfil ideal de famílias com filhos pequenos, dicas de negociação e pontos fortes percebidos nas visitas presenciais..."
-              rows={6}
+              placeholder="Digite ou escreva aqui detalhes e dicas práticas que a IA deve saber sobre este empreendimento."
+              rows={5}
               disabled={saving}
               className="text-sm"
             />
             <p className="text-xs text-muted-foreground">
-              Visão prática e percepções do corretor. Este texto é indexado exclusivamente para este empreendimento e consultado pela IA antes de atender clientes.
+              Anotações e percepções práticas que a IA consulta exclusivamente ao atender interessados neste empreendimento.
             </p>
           </div>
         </div>

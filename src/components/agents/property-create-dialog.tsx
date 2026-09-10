@@ -190,23 +190,23 @@ export function PropertyCreateDialog({
         }
       }}
     >
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+          <DialogTitle className="text-xl font-semibold flex items-center gap-2">
             <Building2 className="h-5 w-5 text-primary" />
             Adicionar Novo Empreendimento
           </DialogTitle>
-          <DialogDescription className="text-xs">
+          <DialogDescription className="text-sm text-muted-foreground">
             Cadastre o empreendimento, defina o estágio, adicione as anotações práticas do corretor e anexe o Book Técnico (PDF) para a IA.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
-          {/* Nome e Estágio */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2 space-y-1.5">
-              <Label htmlFor="create-prop-name" className="text-xs font-medium">
-                Nome do Empreendimento <span className="text-destructive">*</span>
+        <div className="space-y-5 py-3">
+          {/* Nome e Estágio alinhados lado a lado */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
+            <div className="md:col-span-8 space-y-1.5">
+              <Label htmlFor="create-prop-name" className="text-xs font-semibold text-foreground flex items-center h-5">
+                Nome do Empreendimento <span className="text-destructive ml-1">*</span>
               </Label>
               <Input
                 id="create-prop-name"
@@ -214,13 +214,13 @@ export function PropertyCreateDialog({
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Ex: Residencial Aurora Bessa"
                 disabled={saving}
-                className="h-9 text-sm"
+                className="h-10 text-sm"
                 autoFocus
               />
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="create-prop-stage" className="text-xs font-medium">
+            <div className="md:col-span-4 space-y-1.5">
+              <Label htmlFor="create-prop-stage" className="text-xs font-semibold text-foreground flex items-center h-5">
                 Estágio do Empreendimento
               </Label>
               <Select
@@ -228,8 +228,8 @@ export function PropertyCreateDialog({
                 onValueChange={(val) => setStage(val as PropertyStage)}
                 disabled={saving}
               >
-                <SelectTrigger id="create-prop-stage" className="h-9 text-sm">
-                  <SelectValue />
+                <SelectTrigger id="create-prop-stage" className="h-10 text-sm">
+                  <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {Object.entries(STAGE_LABELS).map(([k, label]) => (
@@ -242,34 +242,29 @@ export function PropertyCreateDialog({
             </div>
           </div>
 
-          {/* Anotações Práticas / Visão do Corretor */}
+          {/* Visão do Corretor / Conhecimento Subjetivo */}
           <div className="space-y-1.5">
-            <Label htmlFor="create-prop-subjective" className="text-xs font-medium flex items-center gap-1.5">
+            <Label htmlFor="create-prop-subjective" className="text-xs font-semibold text-foreground flex items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 text-primary" />
-              Anotações Práticas / Visão do Corretor (Conhecimento Subjetivo)
+              Visão do Corretor / Conhecimento Subjetivo
             </Label>
             <Textarea
               id="create-prop-subjective"
               value={subjectiveKnowledge}
               onChange={(e) => setSubjectiveKnowledge(e.target.value)}
-              placeholder="Digite dicas e detalhes práticos que a IA deve saber sobre este empreendimento. Exemplo:
-- Previsão de entrega para Dezembro de 2026.
-- A área de lazer é entregue 100% equipada e decorada.
-- Vagas de garagem rotativas com sorteio bienal.
-- Aceita animais de grande porte no pet place.
-- Localizado a 200m da praia do Bessa, próximo a padarias e escolas."
-              rows={5}
+              placeholder="Digite ou escreva aqui detalhes e dicas práticas que a IA deve saber sobre este empreendimento."
+              rows={4}
               disabled={saving}
               className="text-sm resize-y"
             />
             <p className="text-[11px] text-muted-foreground">
-              A IA usa estas notas para esclarecer dúvidas práticas do dia a dia de forma humanizada.
+              Anotações e percepções práticas que a IA consulta exclusivamente ao atender interessados neste empreendimento.
             </p>
           </div>
 
           {/* Upload do Book Técnico (PDF) */}
           <div className="space-y-1.5">
-            <Label className="text-xs font-medium flex items-center gap-1.5">
+            <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
               <FileText className="h-3.5 w-3.5 text-primary" />
               Book Técnico / Apresentação (Arquivo PDF)
             </Label>
@@ -287,13 +282,13 @@ export function PropertyCreateDialog({
             {selectedFile ? (
               <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <FileCheckIcon className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
                     <p className="font-medium text-foreground truncate">{selectedFile.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Pronto para indexar
+                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Pronto para indexar no RAG
                     </p>
                   </div>
                 </div>
@@ -339,7 +334,7 @@ export function PropertyCreateDialog({
           </div>
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0">
+        <DialogFooter className="gap-2 sm:gap-0 pt-2 border-t border-border/50">
           <Button
             type="button"
             variant="ghost"

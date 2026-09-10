@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS property_ai_contexts (
   id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id           uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   property_id          uuid NOT NULL UNIQUE REFERENCES properties(id) ON DELETE CASCADE,
-  stage                text NOT NULL DEFAULT 'na_planta'
-                         CHECK (stage IN ('na_planta', 'em_construcao', 'pronto', 'lancamento')),
+  stage                text NOT NULL DEFAULT 'lancamento'
+                         CHECK (stage IN ('pre_lancamento', 'lancamento', 'pronto', 'na_planta', 'em_construcao')),
   subjective_knowledge text,
   book_storage_path    text,
   book_filename        text,
@@ -90,6 +90,19 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_ai_knowledge_documents_property
   ON ai_knowledge_documents(property_id);
 
+-- Update RLS on ai_knowledge_documents to allow agents to manage knowledge
+DROP POLICY IF EXISTS ai_knowledge_documents_insert ON ai_knowledge_documents;
+CREATE POLICY ai_knowledge_documents_insert ON ai_knowledge_documents FOR INSERT
+  WITH CHECK (is_account_member(account_id, 'agent'));
+
+DROP POLICY IF EXISTS ai_knowledge_documents_update ON ai_knowledge_documents;
+CREATE POLICY ai_knowledge_documents_update ON ai_knowledge_documents FOR UPDATE
+  USING (is_account_member(account_id, 'agent'));
+
+DROP POLICY IF EXISTS ai_knowledge_documents_delete ON ai_knowledge_documents;
+CREATE POLICY ai_knowledge_documents_delete ON ai_knowledge_documents FOR DELETE
+  USING (is_account_member(account_id, 'agent'));
+
 -- ============================================================
 -- 3. Extend ai_knowledge_chunks with property_id
 -- ============================================================
@@ -98,6 +111,19 @@ ALTER TABLE ai_knowledge_chunks
 
 CREATE INDEX IF NOT EXISTS idx_ai_knowledge_chunks_property
   ON ai_knowledge_chunks(property_id);
+
+-- Update RLS on ai_knowledge_chunks to allow agents to manage chunks
+DROP POLICY IF EXISTS ai_knowledge_chunks_insert ON ai_knowledge_chunks;
+CREATE POLICY ai_knowledge_chunks_insert ON ai_knowledge_chunks FOR INSERT
+  WITH CHECK (is_account_member(account_id, 'agent'));
+
+DROP POLICY IF EXISTS ai_knowledge_chunks_update ON ai_knowledge_chunks;
+CREATE POLICY ai_knowledge_chunks_update ON ai_knowledge_chunks FOR UPDATE
+  USING (is_account_member(account_id, 'agent'));
+
+DROP POLICY IF EXISTS ai_knowledge_chunks_delete ON ai_knowledge_chunks;
+CREATE POLICY ai_knowledge_chunks_delete ON ai_knowledge_chunks FOR DELETE
+  USING (is_account_member(account_id, 'agent'));
 
 -- ============================================================
 -- 4. Extend ai_configs with behavior, identity & business hours
