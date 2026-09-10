@@ -181,8 +181,8 @@ export function AiBehaviorSettings() {
             />
           </div>
 
-          <div className="space-y-1.5">
-            <Label className="text-xs">
+          <div className="space-y-2">
+            <Label className="text-xs font-semibold text-foreground">
               Instruções de Estilo de Resposta
             </Label>
             <ResponseStyleInstructionsEditor
@@ -193,8 +193,8 @@ export function AiBehaviorSettings() {
                 setResponseStyleInstructions((prev) => prev.map((v, i) => (i === index ? text : v)))
               }
             />
-            <p className="text-[11px] text-muted-foreground">
-              Ajustes de formato e ritmo da conversa (comprimento, tom, se deve terminar com pergunta, etc.) — não confundir com as proibições abaixo. Adicionar/remover aqui só grava ao clicar em &quot;Salvar Configurações da IA&quot; no final da página; para efeito imediato, ajuste direto pelo Playground.
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Diretrizes de condução, qualificação, ritmo e encaminhamento organizadas por categorias. Adicionar, editar ou remover aqui é gravado ao clicar em &quot;Salvar Configurações da IA&quot; no final da página.
             </p>
           </div>
         </CardContent>
