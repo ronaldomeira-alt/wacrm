@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/select';
 import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor';
+import { GlobalNeverRulesEditor, formatLinesToLegacyRules } from './global-never-rules-editor';
 import type { AccountMember } from '@/types';
 
 const HANDOFF_QUEUE = '__queue__';
@@ -212,22 +213,16 @@ export function AiBehaviorSettings() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="never-rules" className="text-xs">
-              Regras Proibitivas Estritas
-            </Label>
-            <Textarea
-              id="never-rules"
+          <div className="space-y-2">
+            <GlobalNeverRulesEditor
               value={globalNeverRules}
-              onChange={(e) => setGlobalNeverRules(e.target.value)}
-              placeholder="Ex:
-- NUNCA inventar valores, metragens ou prazos de entrega que não constem no material oficial.
-- NUNCA confirmar agendamento de visita sem transferir para a equipe humana.
-- NUNCA conceder ou prometer descontos em nome da construtora.
-- NUNCA insistir caso o cliente informe que não tem interesse."
-              rows={5}
-              className="text-sm font-mono text-xs leading-relaxed"
+              onChange={(updatedRules) => {
+                setGlobalNeverRules(formatLinesToLegacyRules(updatedRules));
+              }}
             />
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Diretrizes inegociáveis de segurança, restrições comerciais, limites de competência e regras de encaminhamento para a equipe. As alterações são salvas ao clicar em &quot;Salvar Configurações da IA&quot; abaixo.
+            </p>
           </div>
         </CardContent>
       </Card>
