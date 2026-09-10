@@ -84,7 +84,11 @@ export function PropertyCreateDialog({
 
       const createdProperty: PropertyWithAiContext = data.property;
 
-      toast.success('Empreendimento cadastrado e conhecimento indexado com sucesso!');
+      if (data.warning) {
+        toast.warning(data.warning);
+      } else {
+        toast.success('Empreendimento cadastrado e conhecimento indexado com sucesso!');
+      }
       resetForm();
       onOpenChange(false);
       onCreated(createdProperty);

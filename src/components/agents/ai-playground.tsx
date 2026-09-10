@@ -175,9 +175,10 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     const text = (customPrompt || input).trim();
     if (!text || sending) return;
 
-    const next: Turn[] = [...turns, { role: 'user', content: text }];
-    setTurns(next);
     if (!customPrompt) setInput('');
+    const userTurn: Turn = { role: 'user', content: text };
+    const currentTurns = [...turns, userTurn];
+    setTurns(currentTurns);
     setSending(true);
 
     try {
@@ -188,7 +189,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           property_id: selectedPropertyId || null,
           simulated_hours: simulatedHours,
           simulated_lead: PRESET_LEADS[selectedLeadPreset]?.data || null,
-          messages: next.map((t) => ({ role: t.role, content: t.content })),
+          messages: currentTurns.map((t) => ({ role: t.role, content: t.content })),
         }),
       });
 
@@ -199,14 +200,19 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         } else {
           toast.error(data.error ?? 'Não foi possível obter resposta da IA.');
         }
-        setTurns(turns);
-        setInput(text);
         return;
       }
 
+      const replyContent =
+        typeof data.reply === 'string' && data.reply.trim()
+          ? data.reply.trim()
+          : typeof data.decision?.response_text === 'string' && data.decision.response_text.trim()
+            ? data.decision.response_text.trim()
+            : 'Compreendi a sua mensagem. Em que mais posso te ajudar?';
+
       const assistantTurn: Turn = {
         role: 'assistant',
-        content: typeof data.reply === 'string' && data.reply.trim() ? data.reply : '',
+        content: replyContent,
         handoff: Boolean(data.handoff),
         diagnostic: {
           decision: data.decision,
@@ -223,11 +229,10 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         },
       };
 
-      setTurns([...next, assistantTurn]);
-    } catch {
+      setTurns((prev) => [...prev, assistantTurn]);
+    } catch (err) {
+      console.error('[playground] send error:', err);
       toast.error('Não foi possível conectar à IA.');
-      setTurns(turns);
-      setInput(text);
     } finally {
       setSending(false);
     }

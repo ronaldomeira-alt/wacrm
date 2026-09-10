@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { daysAgoStart, lastNDayKeys, localDayKey } from '@/lib/dashboard/date-utils'
+import { AI_USAGE_MODES, type AiUsageMode } from '@/lib/ai/usage'
 
 // Rows are aggregated in-process over a bounded window. An active
 // account writes a handful of rows per conversation, so 30 days sits
@@ -12,7 +13,7 @@ const DEFAULT_WINDOW_DAYS = 30
 
 interface UsageRow {
   created_at: string
-  mode: 'auto_reply' | 'draft' | 'lead_analysis' | 'followup' | 'learning'
+  mode: AiUsageMode
   provider: string
   model: string
   prompt_tokens: number
@@ -78,14 +79,13 @@ export async function GET(request: Request) {
     let completionTokens = 0
     let totalTokens = 0
 
-    // Per-mode + per-model tallies.
-    const byMode = {
-      auto_reply: { calls: 0, tokens: 0 },
-      draft: { calls: 0, tokens: 0 },
-      lead_analysis: { calls: 0, tokens: 0 },
-      followup: { calls: 0, tokens: 0 },
-      learning: { calls: 0, tokens: 0 },
-    }
+    // Per-mode + per-model tallies. Built from the single source of truth
+    // (AI_USAGE_MODES) so a mode added to the DB CHECK constraint later
+    // can't silently outrun this object again.
+    const byMode: Record<AiUsageMode, { calls: number; tokens: number }> =
+      Object.fromEntries(
+        AI_USAGE_MODES.map((m) => [m, { calls: 0, tokens: 0 }]),
+      ) as Record<AiUsageMode, { calls: number; tokens: number }>
     const modelMap = new Map<
       string,
       { model: string; provider: string; calls: number; tokens: number }
@@ -104,7 +104,6 @@ export async function GET(request: Request) {
       completionTokens += r.completion_tokens
       totalTokens += r.total_tokens
 
-      // `mode` is DB-CHECK-constrained to these five values.
       byMode[r.mode].calls += 1
       byMode[r.mode].tokens += r.total_tokens
 

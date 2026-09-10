@@ -10,6 +10,9 @@ export interface ProviderArgs {
   systemPrompt: string
   messages: ChatMessage[]
   timeoutMs: number
+  /** When true, the provider must be constrained to return valid JSON
+   *  (the structured handoff-decision format) rather than free text. */
+  structuredOutputRequired?: boolean
 }
 
 /**

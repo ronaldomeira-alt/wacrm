@@ -269,6 +269,48 @@ export async function PATCH(
           applied_target: 'language_style',
           previous_team_presentation: prevPres,
         }
+      } else if (learningType === 'boundary_suggestion') {
+        // A recurring situation where a human consistently takes over is,
+        // functionally, a transfer rule — apply it the same way as
+        // never_rule (appended to global_never_rules, which the prompt
+        // reads as instructions on when to hand off), instead of letting
+        // it fall through to global_knowledge where the AI could recite it
+        // as an institutional fact rather than act on it.
+        const { data: currentConfig } = await supabase
+          .from('ai_configs')
+          .select('global_never_rules')
+          .eq('account_id', accountId)
+          .maybeSingle()
+
+        const prevRules = currentConfig?.global_never_rules || null
+        const updatedRules = prevRules
+          ? `${prevRules}\n• Transferir para humano quando: ${info}`
+          : `• Transferir para humano quando: ${info}`
+
+        await supabase
+          .from('ai_configs')
+          .update({
+            global_never_rules: updatedRules,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId)
+
+        payload = {
+          ...payload,
+          applied_target: 'boundary_suggestion',
+          previous_never_rules: prevRules,
+        }
+      } else if (learningType === 'process_suggestion') {
+        // Operational feedback for the human team (e.g. "confirm the unit
+        // number before the agent's first reply") — it isn't AI behavior
+        // to change, so approving it just records the decision. It must
+        // NOT fall through to global_knowledge: that would let the bot
+        // recite an internal process note to a customer as if it were a
+        // fact about the property.
+        payload = {
+          ...payload,
+          applied_target: 'process_note',
+        }
       } else {
         // Default / global_knowledge
         const contextSummary = typeof payload.context_summary === 'string' ? payload.context_summary : null

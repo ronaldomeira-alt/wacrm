@@ -25,7 +25,7 @@ interface OpenAiResponse {
  * in `generateReply`).
  */
 export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult> {
-  const { apiKey, model, systemPrompt, messages, timeoutMs } = args
+  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired } = args
 
   let res: Response
   try {
@@ -42,6 +42,13 @@ export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult
           ...mergeConsecutive(messages),
         ],
         max_completion_tokens: MAX_OUTPUT_TOKENS,
+        // Constrains the response to syntactically valid JSON when the
+        // engine needs the structured handoff decision — without this the
+        // model can drift into prose or truncate mid-object, silently
+        // losing the transfer_required signal (the prompt's system message
+        // already contains the word "json", which OpenAI requires for this
+        // mode).
+        ...(structuredOutputRequired ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: AbortSignal.timeout(timeoutMs),
     })

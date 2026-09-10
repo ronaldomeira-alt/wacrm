@@ -31,13 +31,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { PropertyWithAiContext, PropertyStage } from '@/types';
-
-export const STAGE_LABELS: Record<PropertyStage, string> = {
-  pre_lancamento: 'Pré-Lançamento',
-  lancamento: 'Lançamento',
-  pronto: 'Pronto para Morar',
-};
+import { STAGE_LABELS, type PropertyWithAiContext, type PropertyStage } from '@/types';
+export { STAGE_LABELS };
 
 interface AdMapping {
   id: string;
@@ -126,7 +121,11 @@ export function PropertyKnowledgeDetailDialog({
         throw new Error(data.error || 'Erro ao salvar conhecimento do empreendimento');
       }
 
-      toast.success('Conhecimento do empreendimento atualizado e indexado com sucesso!');
+      if (data.warning) {
+        toast.warning(data.warning);
+      } else {
+        toast.success('Conhecimento do empreendimento atualizado e indexado com sucesso!');
+      }
       onSaved();
       onOpenChange(false);
     } catch (err: unknown) {

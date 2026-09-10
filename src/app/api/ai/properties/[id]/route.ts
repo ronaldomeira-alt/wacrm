@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { loadEmbeddingsKey } from '@/lib/ai/config';
 import { replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge';
+import { AiError } from '@/lib/ai/types';
 import type { PropertyStage } from '@/types';
 
 interface RouteContext {
@@ -97,11 +98,23 @@ export async function PATCH(req: Request, context: RouteContext) {
     const embeddingsKeyResult = await loadEmbeddingsKey(supabase, accountId);
     const config = { embeddingsApiKey: embeddingsKeyResult.key };
 
-    await replacePropertySubjectiveKnowledge(supabase, accountId, config, propertyId, {
-      subjectiveKnowledge,
-      bookSummary,
-      stage,
-    });
+    // Same reasoning as the POST route: an embedding-only failure shouldn't
+    // surface as a hard error once the underlying data is already written.
+    let indexingWarning: string | undefined;
+    try {
+      await replacePropertySubjectiveKnowledge(supabase, accountId, config, propertyId, {
+        subjectiveKnowledge,
+        bookSummary,
+        stage,
+      });
+    } catch (err) {
+      if (err instanceof AiError) {
+        console.error('[ai/properties PATCH] ingest error:', err);
+        indexingWarning = `Salvo, mas a indexação semântica falhou (${err.message}). A busca por palavra-chave ainda funciona; use Reindexar para tentar novamente.`;
+      } else {
+        throw err;
+      }
+    }
 
     const { data: updatedContext } = await supabase
       .from('property_ai_contexts')
@@ -119,6 +132,7 @@ export async function PATCH(req: Request, context: RouteContext) {
 
     return NextResponse.json({
       success: true,
+      ...(indexingWarning ? { warning: indexingWarning } : {}),
       property: {
         ...updatedProp,
         ai_context: updatedContext,

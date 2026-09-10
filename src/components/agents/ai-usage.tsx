@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { BarChart3, Bot, PencilLine, BrainCircuit, CalendarClock, GraduationCap } from 'lucide-react';
+import { BarChart3, Bot, PencilLine, BrainCircuit, CalendarClock, GraduationCap, Megaphone, FileEdit } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
 import {
@@ -39,6 +39,8 @@ interface UsageResponse {
     lead_analysis: { calls: number; tokens: number };
     followup: { calls: number; tokens: number };
     learning: { calls: number; tokens: number };
+    ctwa_rescue: { calls: number; tokens: number };
+    template_fill: { calls: number; tokens: number };
   };
   by_model: {
     model: string;
@@ -145,7 +147,7 @@ export function AiUsageCard() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-9">
               <Stat label="Total tokens" value={formatCompactNumber(data.totals.total_tokens)} />
               <Stat label="LLM calls" value={String(data.totals.calls)} />
               <Stat
@@ -172,6 +174,16 @@ export function AiUsageCard() {
                 label="Learning"
                 value={formatCompactNumber(data.by_mode.learning.tokens)}
                 icon={GraduationCap}
+              />
+              <Stat
+                label="CTWA rescue"
+                value={formatCompactNumber(data.by_mode.ctwa_rescue.tokens)}
+                icon={Megaphone}
+              />
+              <Stat
+                label="Template fill"
+                value={formatCompactNumber(data.by_mode.template_fill.tokens)}
+                icon={FileEdit}
               />
             </div>
 

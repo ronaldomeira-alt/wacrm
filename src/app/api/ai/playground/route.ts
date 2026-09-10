@@ -148,7 +148,7 @@ export async function POST(request: Request) {
     const latencyMs = Date.now() - startTime
 
     return NextResponse.json({
-      reply: turnResult.responseText,
+      reply: turnResult.responseText || turnResult.decision?.response_text || '',
       handoff: turnResult.handoff,
       decision: turnResult.decision,
       retrievedKnowledgeCount: turnResult.retrievedKnowledgeCount,
@@ -163,6 +163,7 @@ export async function POST(request: Request) {
       provider: config.provider,
     })
   } catch (err) {
+    console.error('[ai/playground POST] error processing turn:', err)
     if (err instanceof AiError) {
       return NextResponse.json(
         { error: err.message, code: err.code },

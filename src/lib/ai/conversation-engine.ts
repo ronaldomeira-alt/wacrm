@@ -3,6 +3,7 @@ import type {
   AiConfig,
   AiDecision,
   AiUsage,
+  BoundaryType,
   ChatMessage,
 } from './types';
 import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults';
@@ -13,8 +14,7 @@ import { latestUserMessage } from './query';
 import { getLeadContext, type FormattedLeadContext } from './lead-context';
 import { getBusinessHoursContext, type BusinessHoursContext } from './business-hours';
 import { buildConversationalSystemPrompt } from './prompt-builder';
-import { STAGE_LABELS } from '@/components/agents/property-knowledge-detail-dialog';
-import type { PropertyStage } from '@/types';
+import { STAGE_LABELS, type PropertyStage } from '@/types';
 
 export interface ConversationalTurnArgs {
   db: SupabaseClient;
@@ -43,32 +43,124 @@ export interface ConversationalTurnResult {
   leadContext: FormattedLeadContext | null;
 }
 
+const VALID_BOUNDARIES = new Set<string>([
+  'price',
+  'payment_terms',
+  'discount_negotiation',
+  'availability_check',
+  'visit_request',
+  'financing_inquiry',
+  'reservation',
+  'commercial_decision',
+  'knowledge_limit',
+  'incompatible_demand',
+  'human_requested',
+  'safety_limit_reached',
+  'custom_never_rule',
+]);
+
+function normalizeBoundaryType(val: unknown, transferRequired: boolean): BoundaryType {
+  if (typeof val === 'string' && VALID_BOUNDARIES.has(val)) {
+    return val as BoundaryType;
+  }
+  return transferRequired ? 'commercial_decision' : null;
+}
+
 /**
  * Parses the raw output from the model, supporting JSON structured decision
  * or graceful fallback to plaintext and [[HANDOFF]] sentinel.
  */
 export function parseStructuredDecision(rawText: string): AiDecision {
-  const stripped = rawText
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
+  if (!rawText || typeof rawText !== 'string') {
+    return {
+      response_text: '',
+      transfer_required: false,
+      boundary_type: null,
+      reason: null,
+      context_summary: null,
+      suggested_next_action: null,
+    };
+  }
+
+  // 1. Try to extract JSON from code block or raw string
+  let candidateJson = rawText.trim();
+
+  const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch && fenceMatch[1]) {
+    candidateJson = fenceMatch[1].trim();
+  } else {
+    const firstBrace = rawText.indexOf('{');
+    const lastBrace = rawText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidateJson = rawText.slice(firstBrace, lastBrace + 1).trim();
+    }
+  }
 
   try {
-    const parsed = JSON.parse(stripped);
-    if (parsed && typeof parsed === 'object') {
+    const parsed = JSON.parse(candidateJson);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>;
+
       const response_text =
-        typeof parsed.response_text === 'string' ? parsed.response_text.trim() : '';
-      const transfer_required = parsed.transfer_required === true;
-      const boundary_type = parsed.boundary_type || (transfer_required ? 'commercial_decision' : null);
-      const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : null;
+        typeof rec.response_text === 'string'
+          ? rec.response_text.trim()
+          : typeof rec.responseText === 'string'
+            ? rec.responseText.trim()
+            : typeof rec.reply === 'string'
+              ? rec.reply.trim()
+              : typeof rec.message === 'string'
+                ? rec.message.trim()
+                : typeof rec.text === 'string'
+                  ? rec.text.trim()
+                  : typeof rec.content === 'string'
+                    ? rec.content.trim()
+                    : typeof rec.resposta === 'string'
+                      ? rec.resposta.trim()
+                      : typeof rec.texto === 'string'
+                        ? rec.texto.trim()
+                        : '';
+
+      const transfer_required =
+        rec.transfer_required === true ||
+        rec.transferRequired === true ||
+        rec.transfer === true ||
+        rec.handoff === true ||
+        (typeof rec.boundary_type === 'string' && rec.boundary_type.length > 0 && rec.boundary_type !== 'none');
+
+      const rawVal = rec.boundary_type ?? rec.boundaryType;
+      const boundary_type = normalizeBoundaryType(rawVal, transfer_required);
+
+      const reason =
+        typeof rec.reason === 'string'
+          ? rec.reason.trim()
+          : typeof rec.motivo === 'string'
+            ? rec.motivo.trim()
+            : null;
+
       const context_summary =
-        typeof parsed.context_summary === 'string' ? parsed.context_summary.trim() : null;
+        typeof rec.context_summary === 'string'
+          ? rec.context_summary.trim()
+          : typeof rec.contextSummary === 'string'
+            ? rec.contextSummary.trim()
+            : typeof rec.resumo === 'string'
+              ? rec.resumo.trim()
+              : null;
+
       const suggested_next_action =
-        typeof parsed.suggested_next_action === 'string' ? parsed.suggested_next_action.trim() : null;
+        typeof rec.suggested_next_action === 'string'
+          ? rec.suggested_next_action.trim()
+          : typeof rec.suggestedNextAction === 'string'
+            ? rec.suggestedNextAction.trim()
+            : typeof rec.proxima_acao === 'string'
+              ? rec.proxima_acao.trim()
+              : null;
 
       return {
-        response_text,
+        response_text:
+          response_text ||
+          (transfer_required
+            ? 'Vou conectar você com nossa equipe de especialistas.'
+            : rawText.split(HANDOFF_SENTINEL).join('').trim()),
         transfer_required,
         boundary_type,
         reason,
@@ -87,7 +179,7 @@ export function parseStructuredDecision(rawText: string): AiDecision {
     response_text: cleanText,
     transfer_required: hasSentinel,
     boundary_type: hasSentinel ? 'commercial_decision' : null,
-    reason: hasSentinel ? 'Boundary detected by sentinel' : null,
+    reason: hasSentinel ? 'Limite comercial identificado na conversa' : null,
     context_summary: null,
     suggested_next_action: hasSentinel ? 'Atendimento humano para continuidade' : null,
   };

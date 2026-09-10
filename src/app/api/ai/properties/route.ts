@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { loadEmbeddingsKey } from '@/lib/ai/config';
 import { replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge';
+import { AiError } from '@/lib/ai/types';
 import type { PropertyWithAiContext, PropertyAiContext, PropertyStage } from '@/types';
 
 /**
@@ -102,17 +103,31 @@ export async function POST(req: Request) {
     const embeddingsKeyResult = await loadEmbeddingsKey(supabase, accountId);
     const config = { embeddingsApiKey: embeddingsKeyResult.key };
 
-    await replacePropertySubjectiveKnowledge(
-      supabase,
-      accountId,
-      config,
-      property.id,
-      {
-        subjectiveKnowledge,
-        bookSummary,
-        stage,
-      },
-    );
+    // The property row above is already committed by this point — if only
+    // the embedding step fails, surface it as a warning (not a hard error)
+    // so the caller doesn't retry and create a duplicate property with the
+    // same name, and so property-create-dialog.tsx still calls onCreated().
+    let indexingWarning: string | undefined;
+    try {
+      await replacePropertySubjectiveKnowledge(
+        supabase,
+        accountId,
+        config,
+        property.id,
+        {
+          subjectiveKnowledge,
+          bookSummary,
+          stage,
+        },
+      );
+    } catch (err) {
+      if (err instanceof AiError) {
+        console.error('[ai/properties POST] ingest error:', err);
+        indexingWarning = `Empreendimento salvo, mas a indexação semântica falhou (${err.message}). A busca por palavra-chave ainda funciona; use Reindexar para tentar novamente.`;
+      } else {
+        throw err;
+      }
+    }
 
     const { data: aiContext } = await supabase
       .from('property_ai_contexts')
@@ -126,7 +141,10 @@ export async function POST(req: Request) {
       ai_context: aiContext ?? null,
     };
 
-    return NextResponse.json({ property: item }, { status: 201 });
+    return NextResponse.json(
+      indexingWarning ? { property: item, warning: indexingWarning } : { property: item },
+      { status: 201 },
+    );
   } catch (err) {
     return toErrorResponse(err);
   }

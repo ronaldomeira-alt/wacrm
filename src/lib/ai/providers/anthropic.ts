@@ -40,7 +40,17 @@ function normalizeForAnthropic(messages: ChatMessage[]): ChatMessage[] {
  * in `generateReply`).
  */
 export async function generateAnthropic(args: ProviderArgs): Promise<ProviderResult> {
-  const { apiKey, model, systemPrompt, messages, timeoutMs } = args
+  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired } = args
+
+  // Anthropic has no `response_format` switch — the standard way to force
+  // valid JSON is an assistant-turn prefill: seed the reply with "{" so the
+  // model has no choice but to continue a JSON object. Safe to append here
+  // because normalizeForAnthropic() guarantees the transcript always ends
+  // on a `user` turn (Anthropic requires that anyway to produce a reply).
+  const conversationMessages = normalizeForAnthropic(messages)
+  const apiMessages = structuredOutputRequired
+    ? [...conversationMessages, { role: 'assistant' as const, content: '{' }]
+    : conversationMessages
 
   let res: Response
   try {
@@ -55,7 +65,7 @@ export async function generateAnthropic(args: ProviderArgs): Promise<ProviderRes
         model,
         system: systemPrompt,
         max_tokens: MAX_OUTPUT_TOKENS,
-        messages: normalizeForAnthropic(messages),
+        messages: apiMessages,
       }),
       signal: AbortSignal.timeout(timeoutMs),
     })
@@ -68,7 +78,7 @@ export async function generateAnthropic(args: ProviderArgs): Promise<ProviderRes
   }
 
   const data = (await res.json().catch(() => null)) as AnthropicResponse | null
-  const text = data?.content
+  let text = data?.content
     ?.filter((b) => b.type === 'text' && typeof b.text === 'string')
     .map((b) => b.text)
     .join('')
@@ -77,6 +87,11 @@ export async function generateAnthropic(args: ProviderArgs): Promise<ProviderRes
     throw new AiError('Anthropic returned an empty response.', {
       code: 'empty_response',
     })
+  }
+  // The prefilled "{" isn't echoed back in the response content — restore
+  // it so the caller sees a complete, parseable JSON object.
+  if (structuredOutputRequired) {
+    text = '{' + text
   }
   // Anthropic reports input/output but no total — normalizeUsage sums.
   const usage = normalizeUsage({

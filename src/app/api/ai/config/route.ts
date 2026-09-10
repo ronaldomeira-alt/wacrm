@@ -77,11 +77,24 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object') return bad('Invalid request body')
 
-    const provider = body.provider as AiProvider
+    // Reuse the stored key/provider/model when the form didn't send them —
+    // fetched up front so partial saves (e.g. the behavior-settings panel,
+    // which only edits identity/tone/business-hours fields and never sends
+    // provider/model) don't get rejected as if they were reconfiguring the
+    // credentials from scratch.
+    const { data: existing } = await supabase
+      .from('ai_configs')
+      .select('id, provider, model, api_key')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    const rawProvider = typeof body.provider === 'string' ? body.provider : ''
+    const provider = (rawProvider || existing?.provider) as AiProvider
     if (provider !== 'openai' && provider !== 'anthropic') {
       return bad('provider must be "openai" or "anthropic"')
     }
-    const model = typeof body.model === 'string' ? body.model.trim() : ''
+    const rawModel = typeof body.model === 'string' ? body.model.trim() : ''
+    const model = rawModel || existing?.model || ''
     if (!model) return bad('model is required')
 
     const systemPrompt =
@@ -124,13 +137,6 @@ export async function POST(request: Request) {
         ? body.embeddings_api_key.trim()
         : ''
     const clearEmbeddingsKey = body.embeddings_api_key === null
-
-    // Reuse the stored key when the form didn't send a fresh one.
-    const { data: existing } = await supabase
-      .from('ai_configs')
-      .select('id, provider, model, api_key')
-      .eq('account_id', accountId)
-      .maybeSingle()
 
     let apiKeyPlain: string
     if (rawKey) {

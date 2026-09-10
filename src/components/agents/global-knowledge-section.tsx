@@ -10,6 +10,7 @@ import {
   Eye,
   Pencil,
   FileText,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -42,6 +43,7 @@ export function GlobalKnowledgeSection() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [cleanupDialogOpen, setCleanupDialogOpen] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
 
   const loadDocs = useCallback(async () => {
     setLoading(true);
@@ -91,6 +93,28 @@ export function GlobalKnowledgeSection() {
     setEditDialogOpen(true);
   };
 
+  // Recovers documents that were saved with a "semantic indexing failed"
+  // warning — this is the only reachable entry point to POST
+  // /api/ai/knowledge/reindex today (it re-chunks + re-embeds every
+  // document in the account, not just the global ones shown here).
+  const handleReindex = async () => {
+    setReindexing(true);
+    try {
+      const res = await fetch('/api/ai/knowledge/reindex', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || 'Falha ao reindexar');
+      }
+      toast.success(`Reindexação concluída: ${data.reindexed} documento(s) atualizados.`);
+      loadDocs();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao reindexar';
+      toast.error(msg);
+    } finally {
+      setReindexing(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -109,13 +133,16 @@ export function GlobalKnowledgeSection() {
         return;
       }
 
+      let warning: string | undefined;
       if (masterDocId) {
         const res = await fetch(`/api/ai/knowledge/${masterDocId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, content: trimmedContent }),
         });
-        if (!res.ok) throw new Error('Falha ao atualizar conhecimento global');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Falha ao atualizar conhecimento global');
+        warning = data.warning;
       } else {
         const res = await fetch('/api/ai/knowledge', {
           method: 'POST',
@@ -125,10 +152,15 @@ export function GlobalKnowledgeSection() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Falha ao salvar');
         if (data.id) setMasterDocId(data.id);
+        warning = data.warning;
       }
 
       setContent(trimmedContent);
-      toast.success('Conhecimento global transversal salvo e indexado no RAG!');
+      if (warning) {
+        toast.warning(warning);
+      } else {
+        toast.success('Conhecimento global transversal salvo e indexado no RAG!');
+      }
       setEditDialogOpen(false);
       loadDocs();
     } catch (err: unknown) {
@@ -145,12 +177,15 @@ export function GlobalKnowledgeSection() {
       const title = 'Conhecimento Global Transversal';
       const trimmedContent = content.trim();
 
+      let warning: string | undefined;
       if (masterDocId) {
-        await fetch(`/api/ai/knowledge/${masterDocId}`, {
+        const res = await fetch(`/api/ai/knowledge/${masterDocId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, content: trimmedContent }),
         });
+        const data = await res.json().catch(() => ({}));
+        warning = data.warning;
       } else {
         const res = await fetch('/api/ai/knowledge', {
           method: 'POST',
@@ -159,6 +194,7 @@ export function GlobalKnowledgeSection() {
         });
         const data = await res.json().catch(() => ({}));
         if (data.id) setMasterDocId(data.id);
+        warning = data.warning;
       }
 
       const others = docs.filter((d) => d.id !== masterDocId);
@@ -170,7 +206,11 @@ export function GlobalKnowledgeSection() {
         }
       }
 
-      toast.success('Fragmentos consolidados com sucesso!');
+      if (warning) {
+        toast.warning(warning);
+      } else {
+        toast.success('Fragmentos consolidados com sucesso!');
+      }
       setCleanupDialogOpen(false);
       loadDocs();
     } catch (err: unknown) {
@@ -241,6 +281,18 @@ export function GlobalKnowledgeSection() {
                 Mostrar
               </Button>
             )}
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleReindex}
+              disabled={reindexing}
+              className="h-8 text-xs gap-1.5"
+              title="Reprocessar embeddings de todos os documentos da conta (recupera indexações que falharam)"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${reindexing ? 'animate-spin' : ''}`} />
+              Reindexar
+            </Button>
 
             <Button
               size="sm"

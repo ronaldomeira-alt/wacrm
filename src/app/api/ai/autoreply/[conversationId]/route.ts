@@ -81,6 +81,14 @@ export async function POST(request: Request, { params }: Params) {
       // a human choosing to re-engage the assistant.
       update.ai_reply_count = 0
       update.ai_handoff_summary = null
+      // A prior handoff leaves ai_transfer_status at 'pending_human' or
+      // 'transferred', which the auto-reply eligibility gate also checks —
+      // without this reset "Resume AI" would clear the pause/assignment but
+      // the bot would still silently refuse to reply on this thread.
+      update.ai_transfer_status = 'none'
+      update.ai_transfer_reason = null
+      update.ai_transfer_boundary_type = null
+      update.ai_transfer_at = null
     }
 
     const { error: upErr } = await supabase

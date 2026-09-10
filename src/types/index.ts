@@ -200,6 +200,13 @@ export type AppointmentStatus = 'scheduled' | 'completed' | 'cancelled';
 
 export type PropertyStage = 'pre_lancamento' | 'lancamento' | 'pronto';
 
+export const STAGE_LABELS: Record<PropertyStage, string> = {
+  pre_lancamento: 'Pré-Lançamento',
+  lancamento: 'Lançamento',
+  pronto: 'Pronto para Morar',
+};
+export const PROPERTY_STAGE_LABELS = STAGE_LABELS;
+
 export interface PropertyAiContext {
   id: string;
   account_id: string;

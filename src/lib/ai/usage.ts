@@ -1,19 +1,30 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AiProvider, AiUsage } from './types'
 
+// Single source of truth for `ai_usage_log.mode` — mirrors the DB CHECK
+// constraint added across migrations 049/050/052/059/073. Any consumer
+// that needs to enumerate all modes (e.g. GET /api/ai/usage's per-mode
+// breakdown) should derive from this array instead of hardcoding a
+// shorter list, which previously drifted and threw a TypeError for any
+// row with a mode added after the initial five.
+export const AI_USAGE_MODES = [
+  'auto_reply',
+  'draft',
+  'lead_analysis',
+  'followup',
+  'learning',
+  'ctwa_rescue',
+  'template_fill',
+] as const
+
+export type AiUsageMode = (typeof AI_USAGE_MODES)[number]
+
 export interface LogAiUsageArgs {
   accountId: string
   /** Null for a draft not tied to one thread, or when the row was
    *  deleted between generation and logging. */
   conversationId: string | null
-  mode:
-    | 'auto_reply'
-    | 'draft'
-    | 'lead_analysis'
-    | 'followup'
-    | 'learning'
-    | 'ctwa_rescue'
-    | 'template_fill'
+  mode: AiUsageMode
   provider: AiProvider
   model: string
   /** Provider usage; a no-op when null (nothing worth recording). */
