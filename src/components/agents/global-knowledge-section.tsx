@@ -6,9 +6,10 @@ import {
   Globe,
   Loader2,
   CheckCircle2,
-  FileText,
   Sparkles,
-  Info,
+  Eye,
+  Pencil,
+  FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -34,8 +35,11 @@ export function GlobalKnowledgeSection() {
   const [docs, setDocs] = useState<GlobalDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [content, setContent] = useState('');
+  const [editContent, setEditContent] = useState('');
   const [masterDocId, setMasterDocId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [cleanupDialogOpen, setCleanupDialogOpen] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
 
@@ -52,13 +56,14 @@ export function GlobalKnowledgeSection() {
           setMasterDocId(list[0].id);
           setContent(list[0].content || '');
         } else if (list.length > 1) {
-          // Find a master doc or combine existing content
-          const master = list.find((d) => d.title.toLowerCase().includes('conhecimento global') || d.title.toLowerCase().includes('manual'));
+          const master = list.find((d) =>
+            d.title.toLowerCase().includes('conhecimento global') ||
+            d.title.toLowerCase().includes('manual'),
+          );
           if (master) {
             setMasterDocId(master.id);
             setContent(master.content || '');
           } else {
-            // Join existing fragments into the editor for review
             const combined = list
               .map((d) => `### ${d.title}\n${d.content}`)
               .join('\n\n');
@@ -69,8 +74,6 @@ export function GlobalKnowledgeSection() {
           setMasterDocId(null);
           setContent('');
         }
-      } else {
-        console.warn('[global-knowledge] GET /api/ai/knowledge error:', data.error);
       }
     } catch (err) {
       console.warn('[global-knowledge] fetch error:', err);
@@ -83,19 +86,25 @@ export function GlobalKnowledgeSection() {
     loadDocs();
   }, [loadDocs]);
 
+  const handleOpenEdit = () => {
+    setEditContent(content);
+    setEditDialogOpen(true);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
       const title = 'Conhecimento Global Transversal';
-      const trimmedContent = content.trim();
+      const trimmedContent = editContent.trim();
 
       if (!trimmedContent) {
-        // If empty, delete master doc if exists
         if (masterDocId) {
           await fetch(`/api/ai/knowledge/${masterDocId}`, { method: 'DELETE' });
           setMasterDocId(null);
         }
+        setContent('');
         toast.success('Conhecimento global limpo com sucesso.');
+        setEditDialogOpen(false);
         loadDocs();
         return;
       }
@@ -118,7 +127,9 @@ export function GlobalKnowledgeSection() {
         if (data.id) setMasterDocId(data.id);
       }
 
-      toast.success('Conhecimento global transversal salvo e indexado com sucesso!');
+      setContent(trimmedContent);
+      toast.success('Conhecimento global transversal salvo e indexado no RAG!');
+      setEditDialogOpen(false);
       loadDocs();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro ao salvar';
@@ -134,7 +145,6 @@ export function GlobalKnowledgeSection() {
       const title = 'Conhecimento Global Transversal';
       const trimmedContent = content.trim();
 
-      // 1. Create or update master doc
       if (masterDocId) {
         await fetch(`/api/ai/knowledge/${masterDocId}`, {
           method: 'PATCH',
@@ -151,125 +161,231 @@ export function GlobalKnowledgeSection() {
         if (data.id) setMasterDocId(data.id);
       }
 
-      // 2. Delete other legacy fragmented docs
       const others = docs.filter((d) => d.id !== masterDocId);
       for (const doc of others) {
         try {
           await fetch(`/api/ai/knowledge/${doc.id}`, { method: 'DELETE' });
         } catch {
-          // ignore individual deletion errors
+          // ignore
         }
       }
 
-      toast.success(`Fragmentos consolidados com sucesso em um único documento transversal!`);
+      toast.success('Fragmentos consolidados com sucesso!');
       setCleanupDialogOpen(false);
       loadDocs();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao consolidar fragmentos';
+      const msg = err instanceof Error ? err.message : 'Erro ao consolidar';
       toast.error(msg);
     } finally {
       setCleaningUp(false);
     }
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
-            <Globe className="h-4 w-4 text-primary" />
-            Conhecimento Global (Informações Transversais)
-          </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Informações transversais que a IA pode utilizar em qualquer conversa, independentemente do empreendimento.
-          </p>
-        </div>
+  const hasContent = Boolean(content.trim());
 
-        <div className="flex items-center gap-2">
-          {docs.length > 1 && (
+  return (
+    <div className="space-y-3">
+      {/* Compact Minimalist Card */}
+      <div className="rounded-xl border border-border bg-card p-4 transition-all hover:border-border/80 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary mt-0.5">
+              <Globe className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Conhecimento Global Transversal
+                </h3>
+                {hasContent ? (
+                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[11px] font-normal gap-1 py-0 h-5">
+                    <CheckCircle2 className="h-3 w-3" />
+                    Ativo • {content.trim().length.toLocaleString('pt-BR')} caracteres
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-muted-foreground text-[11px] font-normal py-0 h-5">
+                    Sem conteúdo cadastrado
+                  </Badge>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">
+                {hasContent
+                  ? content.trim()
+                  : 'Informações institucionais transversais que a IA utiliza em todas as conversas (papéis da equipe, perfil da imobiliária e orientações gerais).'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            {docs.length > 1 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCleanupDialogOpen(true)}
+                className="h-8 text-xs gap-1.5"
+                title="Unificar fragmentos"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                Unificar ({docs.length})
+              </Button>
+            )}
+
+            {hasContent && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setViewDialogOpen(true)}
+                className="h-8 text-xs gap-1.5 font-medium"
+              >
+                <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                Mostrar
+              </Button>
+            )}
+
             <Button
               size="sm"
-              variant="outline"
-              onClick={() => setCleanupDialogOpen(true)}
-              className="h-8 text-xs gap-1.5"
+              onClick={handleOpenEdit}
+              disabled={loading}
+              className="h-8 text-xs gap-1.5 font-medium shadow-xs"
             >
-              <Sparkles className="h-3.5 w-3.5 text-primary" />
-              Unificar {docs.length} fragmentos
+              <Pencil className="h-3.5 w-3.5" />
+              Editar
             </Button>
-          )}
-
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={saving || loading}
-            className="h-8 gap-1.5"
-          >
-            {saving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <CheckCircle2 className="h-3.5 w-3.5" />
-            )}
-            Salvar Conhecimento Global
-          </Button>
+          </div>
         </div>
       </div>
 
-      {/* Concept Clarification Alert */}
-      <div className="rounded-xl border border-border/80 bg-muted/20 p-3.5 text-xs text-muted-foreground space-y-1.5">
-        <div className="flex items-center gap-2 font-medium text-foreground">
-          <Info className="h-4 w-4 text-primary shrink-0" />
-          <span>Critério para este campo:</span>
-        </div>
-        <p>
-          Insira aqui apenas informações que sejam <strong>verdadeiras e aplicáveis a qualquer atendimento</strong> (ex: apresentação institucional da equipe, papéis gerais de Ronaldo e Thatianna).
-        </p>
-        <p className="text-[11px] text-muted-foreground/80">
-          • <em>Detalhes de imóveis (plantas, prazos, lazer)?</em> Cadastre no <strong>Empreendimento</strong> acima.<br />
-          • <em>Regras de conduta, proibições e horário?</em> Configure na aba <strong>Comportamento</strong>.
-        </p>
-      </div>
+      {/* View Full Content Dialog */}
+      <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
+        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[85vh] overflow-y-auto p-6">
+          <DialogHeader className="space-y-1">
+            <div className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
+                <Globe className="h-4 w-4" />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold text-foreground">
+                  Conhecimento Global Transversal
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Informações institucionais aplicadas em todos os atendimentos da IA.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
 
-      {/* Master Editor */}
-      {loading ? (
-        <div className="flex h-40 items-center justify-center rounded-xl border border-border bg-card">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-        </div>
-      ) : (
-        <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-              <FileText className="h-3.5 w-3.5 text-primary" />
-              Conteúdo Transversal Disponível para a IA
-            </span>
-            <Badge variant="outline" className="text-[10px] font-normal">
-              RAG Global Transversal
-            </Badge>
+          <div className="rounded-xl border border-border bg-muted/20 p-4 mt-2">
+            <div className="prose prose-sm dark:prose-invert max-w-none text-xs text-foreground/90 whitespace-pre-wrap font-sans leading-relaxed">
+              {content}
+            </div>
           </div>
 
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Digite aqui as informações institucionais transversais válidas para qualquer atendimento. Exemplo:
-
-- Ronaldo Meira é o corretor responsável pelos atendimentos especializados e visitas.
-- Thatianna é responsável pelo primeiro contato, suporte e acolhimento dos leads.
-- Atuamos como corretores associados especialistas em lançamentos no litoral paraibano."
-            rows={8}
-            className="text-sm font-sans resize-y"
-            disabled={saving}
-          />
-
-          <div className="flex items-center justify-between pt-2 border-t border-border/50 text-[11px] text-muted-foreground">
-            <span>
-              {content.trim() ? `${content.trim().length} caracteres cadastrados` : 'Nenhum conhecimento global cadastrado (opcional)'}
+          <DialogFooter className="flex items-center justify-between sm:justify-between w-full pt-2">
+            <span className="text-xs text-muted-foreground">
+              {content.trim().length.toLocaleString('pt-BR')} caracteres • Indexado no RAG
             </span>
-            <span>Indexado automaticamente no RAG transversal</span>
-          </div>
-        </div>
-      )}
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setViewDialogOpen(false);
+                  handleOpenEdit();
+                }}
+                className="h-8 text-xs gap-1.5"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Editar Conteúdo
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setViewDialogOpen(false)}
+                className="h-8 text-xs"
+              >
+                Fechar
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {/* Cleanup / Consolidate Dialog */}
+      {/* Edit Content Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+          <DialogHeader className="space-y-1">
+            <div className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
+                <FileText className="h-4 w-4" />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold text-foreground">
+                  Editar Conhecimento Global Transversal
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Defina as diretrizes institucionais válidas para qualquer cliente e empreendimento.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-border/80 bg-muted/20 p-3 text-xs text-muted-foreground">
+              <p>
+                <strong>Critério:</strong> Insira informações institucionais verdadeiras para qualquer atendimento (ex: papéis de Ronaldo e Thatianna, acolhimento da IA). Detalhes de imóveis devem ser cadastrados no respectivo <strong>Empreendimento</strong>.
+              </p>
+            </div>
+
+            <Textarea
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              placeholder="Digite aqui o conhecimento institucional transversal..."
+              rows={12}
+              className="text-xs font-sans leading-relaxed resize-y"
+              disabled={saving}
+            />
+
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>{editContent.trim().length.toLocaleString('pt-BR')} caracteres digitados</span>
+              <span>Indexado automaticamente no RAG transversal</span>
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0 pt-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setEditDialogOpen(false)}
+              disabled={saving}
+              className="h-9 text-xs"
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="h-9 text-xs font-medium"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Salvando e Indexando...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                  Salvar Conhecimento Global
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cleanup Dialog */}
       <Dialog open={cleanupDialogOpen} onOpenChange={setCleanupDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -283,7 +399,7 @@ export function GlobalKnowledgeSection() {
           </DialogHeader>
 
           <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
-            <p>✓ Todo o texto visível no editor acima será mantido como o Conhecimento Global oficial.</p>
+            <p>✓ Todo o texto visível no editor será mantido como o Conhecimento Global oficial.</p>
             <p>✓ Os registros soltos antigos serão limpos, deixando a base organizada e sem poluição.</p>
           </div>
 
