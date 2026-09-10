@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import {
   Globe,
@@ -11,6 +11,10 @@ import {
   Pencil,
   FileText,
   RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -44,6 +48,28 @@ export function GlobalKnowledgeSection() {
   const [cleanupDialogOpen, setCleanupDialogOpen] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
   const [reindexing, setReindexing] = useState(false);
+  const [unifyDraft, setUnifyDraft] = useState('');
+  const [expandedFragmentIds, setExpandedFragmentIds] = useState<Set<string>>(new Set());
+  const [deletingFragmentId, setDeletingFragmentId] = useState<string | null>(null);
+
+  // Every doc other than the one loaded into the editable `content` above —
+  // these still feed the AI's retrieval (any global doc is used in every
+  // conversation) but are otherwise invisible in this card. Surfacing them
+  // is the whole point of the fragment list below: before merging, the
+  // user needs to actually read what's in them.
+  const otherDocs = useMemo(
+    () => docs.filter((d) => d.id !== masterDocId),
+    [docs, masterDocId],
+  );
+
+  const toggleFragmentExpanded = (id: string) => {
+    setExpandedFragmentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const loadDocs = useCallback(async () => {
     setLoading(true);
@@ -91,6 +117,38 @@ export function GlobalKnowledgeSection() {
   const handleOpenEdit = () => {
     setEditContent(content);
     setEditDialogOpen(true);
+  };
+
+  // Builds the merge draft from EVERY fragment's own content — not just
+  // the master's — so opening this dialog never starts from a text that
+  // has already silently dropped the other N-1 documents.
+  const handleOpenCleanup = () => {
+    const master = docs.find((d) => d.id === masterDocId);
+    const parts: string[] = [];
+    if (master) parts.push(master.content || '');
+    for (const d of otherDocs) {
+      parts.push(`### ${d.title}\n${d.content || ''}`);
+    }
+    setUnifyDraft(parts.filter((p) => p.trim()).join('\n\n'));
+    setExpandedFragmentIds(new Set());
+    setCleanupDialogOpen(true);
+  };
+
+  const handleDeleteFragment = async (docId: string) => {
+    setDeletingFragmentId(docId);
+    try {
+      const res = await fetch(`/api/ai/knowledge/${docId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Falha ao remover fragmento');
+      }
+      toast.success('Fragmento removido.');
+      await loadDocs();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao remover fragmento');
+    } finally {
+      setDeletingFragmentId(null);
+    }
   };
 
   // Recovers documents that were saved with a "semantic indexing failed"
@@ -172,10 +230,15 @@ export function GlobalKnowledgeSection() {
   };
 
   const handleConsolidateAndCleanup = async () => {
+    const trimmedContent = unifyDraft.trim();
+    if (!trimmedContent) {
+      toast.error('O texto unificado não pode ficar vazio — isso apagaria todo o conhecimento global.');
+      return;
+    }
+
     setCleaningUp(true);
     try {
       const title = 'Conhecimento Global Transversal';
-      const trimmedContent = content.trim();
 
       let warning: string | undefined;
       if (masterDocId) {
@@ -253,6 +316,12 @@ export function GlobalKnowledgeSection() {
                   ? content.trim()
                   : 'Informações institucionais transversais que a IA utiliza em todas as conversas (papéis da equipe, perfil da imobiliária e orientações gerais).'}
               </p>
+              {otherDocs.length > 0 && (
+                <p className="mt-1 flex items-center gap-1 text-[11px] text-amber-600">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  +{otherDocs.length} fragmento{otherDocs.length > 1 ? 's' : ''} adicional{otherDocs.length > 1 ? 'is' : ''} não exibido{otherDocs.length > 1 ? 's' : ''} acima — também usado{otherDocs.length > 1 ? 's' : ''} pela IA. Clique em Unificar para revisar.
+                </p>
+              )}
             </div>
           </div>
 
@@ -261,9 +330,9 @@ export function GlobalKnowledgeSection() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setCleanupDialogOpen(true)}
+                onClick={handleOpenCleanup}
                 className="h-8 text-xs gap-1.5"
-                title="Unificar fragmentos"
+                title="Revisar e unificar fragmentos"
               >
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 Unificar ({docs.length})
@@ -331,6 +400,53 @@ export function GlobalKnowledgeSection() {
               {content}
             </div>
           </div>
+
+          {otherDocs.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {otherDocs.length} fragmento{otherDocs.length > 1 ? 's' : ''} adicional{otherDocs.length > 1 ? 'is' : ''} — também usado{otherDocs.length > 1 ? 's' : ''} pela IA, mas fora do texto acima
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2">
+                {otherDocs.map((d) => {
+                  const isExpanded = expandedFragmentIds.has(d.id);
+                  return (
+                    <div key={d.id} className="min-w-0 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => toggleFragmentExpanded(d.id)}
+                        className="flex w-full min-w-0 items-center justify-between gap-2 text-left cursor-pointer"
+                      >
+                        <span className="min-w-0 flex-1 truncate font-medium text-foreground">{d.title}</span>
+                        <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                          {(d.content || '').trim().length.toLocaleString('pt-BR')} caracteres
+                          {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                        </span>
+                      </button>
+                      {isExpanded && (
+                        <p className="mt-2 whitespace-pre-wrap leading-relaxed text-foreground/90 border-t border-border/40 pt-2 break-words">
+                          {d.content}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setViewDialogOpen(false);
+                  handleOpenCleanup();
+                }}
+                className="h-8 text-xs gap-1.5"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                Revisar e Unificar Fragmentos
+              </Button>
+            </div>
+          )}
 
           <DialogFooter className="flex items-center justify-between sm:justify-between w-full pt-2">
             <span className="text-xs text-muted-foreground">
@@ -437,22 +553,95 @@ export function GlobalKnowledgeSection() {
         </DialogContent>
       </Dialog>
 
-      {/* Cleanup Dialog */}
+      {/* Cleanup Dialog — review every fragment before merging, since
+          confirming permanently deletes everything except the merged
+          text below. */}
       <Dialog open={cleanupDialogOpen} onOpenChange={setCleanupDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90dvh] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
+          <DialogHeader className="min-w-0">
             <DialogTitle className="text-base font-semibold flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-primary" />
-              Unificar Fragmentos em Documento Único
+              Revisar e Unificar Fragmentos
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Você possui <strong>{docs.length} registros fragmentados</strong> na base de conhecimento. Deseja unificá-los neste documento único e remover os fragmentos soltos?
+              Você possui <strong>{docs.length} registros</strong> na base. Leia cada um abaixo antes de decidir.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
-            <p>✓ Todo o texto visível no editor será mantido como o Conhecimento Global oficial.</p>
-            <p>✓ Os registros soltos antigos serão limpos, deixando a base organizada e sem poluição.</p>
+          <div className="min-w-0 space-y-3 py-2">
+            <div>
+              <p className="text-xs font-medium text-foreground mb-1.5">
+                Fragmentos atuais ({docs.length}) — clique para ler o conteúdo de cada um
+              </p>
+              <div className="max-h-56 overflow-y-auto space-y-1.5 rounded-lg border border-border bg-muted/20 p-2">
+                {docs.map((d) => {
+                  const isExpanded = expandedFragmentIds.has(d.id);
+                  const isMaster = d.id === masterDocId;
+                  return (
+                    <div key={d.id} className="min-w-0 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleFragmentExpanded(d.id)}
+                          className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left cursor-pointer"
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span className="min-w-0 truncate font-medium text-foreground">{d.title}</span>
+                            {isMaster && (
+                              <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 shrink-0">
+                                atual
+                              </Badge>
+                            )}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                            {(d.content || '').trim().length.toLocaleString('pt-BR')} caracteres
+                            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteFragment(d.id)}
+                          disabled={deletingFragmentId !== null}
+                          className="shrink-0 text-muted-foreground hover:text-destructive disabled:opacity-40 cursor-pointer"
+                          title="Remover apenas este fragmento (sem unificar os demais)"
+                        >
+                          {deletingFragmentId === d.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed text-foreground/90 border-t border-border/40 pt-2">
+                          {d.content}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-medium text-foreground mb-1.5">
+                Texto unificado que ficará salvo (edite antes de confirmar)
+              </p>
+              <Textarea
+                value={unifyDraft}
+                onChange={(e) => setUnifyDraft(e.target.value)}
+                rows={10}
+                className="text-xs font-sans leading-relaxed resize-y"
+                disabled={cleaningUp}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {unifyDraft.trim().length.toLocaleString('pt-BR')} caracteres — pré-preenchido com o conteúdo de todos os fragmentos acima; remova duplicidades antes de confirmar.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+              Ao confirmar, os {docs.length} registros acima são apagados e substituídos por um único documento com o texto revisado.
+            </div>
           </div>
 
           <DialogFooter>
@@ -467,7 +656,7 @@ export function GlobalKnowledgeSection() {
             <Button
               type="button"
               onClick={handleConsolidateAndCleanup}
-              disabled={cleaningUp}
+              disabled={cleaningUp || !unifyDraft.trim()}
             >
               {cleaningUp && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Unificar e Limpar Base
