@@ -46,8 +46,8 @@ const SIMULATED_HOURS_OPTIONS: Array<{
   label: string;
   dotClassName: string;
 }> = [
-  { value: 'business_hours', label: 'Horário Comercial (14h30)', dotClassName: 'bg-emerald-500' },
-  { value: 'off_hours', label: 'Fora do Horário / Plantão (22h30)', dotClassName: 'bg-amber-400' },
+  { value: 'business_hours', label: 'Horário Comercial', dotClassName: 'bg-emerald-500' },
+  { value: 'off_hours', label: 'Fora do Horário Comercial', dotClassName: 'bg-amber-400' },
   { value: 'real_time', label: 'Horário Real Atual', dotClassName: 'bg-primary' },
 ];
 
@@ -376,20 +376,20 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               }}
             >
               <SelectTrigger className="h-auto min-w-[200px] sm:min-w-[220px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto [&_svg]:ml-auto">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Building2 className="h-4 w-4" />
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Building2 className="size-4 shrink-0 block" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
                     Empreendimento
                   </p>
                   <SelectValue className="mt-0.5 truncate text-sm font-semibold text-foreground">
-                    {selectedPropertyName ?? 'Nenhum / Desconhecido'}
+                    {selectedPropertyName ?? 'Geral'}
                   </SelectValue>
                 </div>
               </SelectTrigger>
               <SelectContent className="w-(--anchor-width) min-w-[200px]">
-                <SelectItem value={NO_PROPERTY_VALUE}>Nenhum / Desconhecido</SelectItem>
+                <SelectItem value={NO_PROPERTY_VALUE}>Geral</SelectItem>
                 {properties.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name}
@@ -404,8 +404,8 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               onValueChange={(val) => val && setSimulatedHours(val as typeof simulatedHours)}
             >
               <SelectTrigger className="h-auto min-w-[230px] sm:min-w-[250px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto [&_svg]:ml-auto">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Clock className="h-4 w-4" />
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Clock className="size-4 shrink-0 block" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
@@ -415,9 +415,9 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                     {(() => {
                       const opt = SIMULATED_HOURS_OPTIONS.find((o) => o.value === simulatedHours);
                       return (
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt?.dotClassName)} />
-                          <span className="truncate">{opt?.label}</span>
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <span className={cn('size-2 shrink-0 rounded-full inline-block', opt?.dotClassName)} />
+                          <span className="truncate leading-none">{opt?.label}</span>
                         </span>
                       );
                     })()}
@@ -427,8 +427,10 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               <SelectContent className="w-(--anchor-width) min-w-[230px]">
                 {SIMULATED_HOURS_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
-                    <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt.dotClassName)} />
-                    {opt.label}
+                    <span className="inline-flex items-center gap-2 leading-none">
+                      <span className={cn('size-2 shrink-0 rounded-full inline-block', opt.dotClassName)} />
+                      <span>{opt.label}</span>
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
