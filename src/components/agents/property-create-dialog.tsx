@@ -190,23 +190,26 @@ export function PropertyCreateDialog({
         }
       }}
     >
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="text-xl font-semibold flex items-center gap-2">
+      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+        <DialogHeader className="space-y-1">
+          <DialogTitle className="text-base font-semibold flex items-center gap-2 text-foreground">
             <Building2 className="h-5 w-5 text-primary" />
             Adicionar Novo Empreendimento
           </DialogTitle>
-          <DialogDescription className="text-sm text-muted-foreground">
+          <DialogDescription className="text-xs text-muted-foreground">
             Cadastre o empreendimento, defina o estágio, adicione as anotações práticas do corretor e anexe o Book Técnico (PDF) para a IA.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 py-3">
-          {/* Nome e Estágio alinhados lado a lado */}
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
-            <div className="md:col-span-8 space-y-1.5">
-              <Label htmlFor="create-prop-name" className="text-xs font-semibold text-foreground flex items-center h-5">
-                Nome do Empreendimento <span className="text-destructive ml-1">*</span>
+        <div className="space-y-4 py-2">
+          {/* Nome e Estágio rigorosamente alinhados lado a lado com mesma altura */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
+            <div className="sm:col-span-7 space-y-1.5">
+              <Label
+                htmlFor="create-prop-name"
+                className="text-xs font-medium text-foreground flex items-center h-5 leading-none"
+              >
+                Nome do Empreendimento <span className="text-destructive ml-0.5">*</span>
               </Label>
               <Input
                 id="create-prop-name"
@@ -214,13 +217,16 @@ export function PropertyCreateDialog({
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Ex: Residencial Aurora Bessa"
                 disabled={saving}
-                className="h-10 text-sm"
+                className="h-9 text-sm"
                 autoFocus
               />
             </div>
 
-            <div className="md:col-span-4 space-y-1.5">
-              <Label htmlFor="create-prop-stage" className="text-xs font-semibold text-foreground flex items-center h-5">
+            <div className="sm:col-span-5 space-y-1.5">
+              <Label
+                htmlFor="create-prop-stage"
+                className="text-xs font-medium text-foreground flex items-center h-5 leading-none whitespace-nowrap"
+              >
                 Estágio do Empreendimento
               </Label>
               <Select
@@ -228,7 +234,7 @@ export function PropertyCreateDialog({
                 onValueChange={(val) => setStage(val as PropertyStage)}
                 disabled={saving}
               >
-                <SelectTrigger id="create-prop-stage" className="h-10 text-sm">
+                <SelectTrigger id="create-prop-stage" className="h-9 text-sm w-full">
                   <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
@@ -244,7 +250,10 @@ export function PropertyCreateDialog({
 
           {/* Visão do Corretor / Conhecimento Subjetivo */}
           <div className="space-y-1.5">
-            <Label htmlFor="create-prop-subjective" className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+            <Label
+              htmlFor="create-prop-subjective"
+              className="text-xs font-medium text-foreground flex items-center gap-1.5"
+            >
               <Sparkles className="h-3.5 w-3.5 text-primary" />
               Visão do Corretor / Conhecimento Subjetivo
             </Label>
@@ -264,7 +273,7 @@ export function PropertyCreateDialog({
 
           {/* Upload do Book Técnico (PDF) */}
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+            <Label className="text-xs font-medium text-foreground flex items-center gap-1.5">
               <FileText className="h-3.5 w-3.5 text-primary" />
               Book Técnico / Apresentação (Arquivo PDF)
             </Label>
@@ -282,7 +291,7 @@ export function PropertyCreateDialog({
             {selectedFile ? (
               <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <FileCheckIcon className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
@@ -311,22 +320,22 @@ export function PropertyCreateDialog({
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-all ${
+                className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-5 text-center cursor-pointer transition-all ${
                   isDragging
                     ? 'border-primary bg-primary/10'
                     : 'border-border bg-muted/20 hover:border-primary/50 hover:bg-primary/5'
                 }`}
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary mb-2">
-                  <Upload className="h-5 w-5" />
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary mb-2">
+                  <Upload className="h-4 w-4" />
                 </div>
                 <p className="text-xs font-semibold text-foreground">
                   Clique para selecionar o Book em PDF ou arraste o arquivo aqui
                 </p>
-                <p className="text-[11px] text-muted-foreground mt-1">
+                <p className="text-[11px] text-muted-foreground mt-0.5">
                   Plantas, metragens, acabamento e ficha técnica (arquivo PDF de até 50MB)
                 </p>
-                <span className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium text-foreground shadow-sm">
+                <span className="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium text-foreground shadow-sm">
                   <Plus className="h-3.5 w-3.5 text-primary" /> Escolher Arquivo PDF
                 </span>
               </label>
@@ -334,16 +343,17 @@ export function PropertyCreateDialog({
           </div>
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0 pt-2 border-t border-border/50">
+        <DialogFooter className="gap-2 sm:gap-0 pt-2">
           <Button
             type="button"
             variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving}
+            className="h-9 text-xs"
           >
             Cancelar
           </Button>
-          <Button type="button" onClick={handleSubmit} disabled={saving}>
+          <Button type="button" onClick={handleSubmit} disabled={saving} className="h-9 text-xs font-medium">
             {saving ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

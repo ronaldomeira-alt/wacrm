@@ -254,14 +254,14 @@ export function PropertyKnowledgeDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+        <DialogHeader className="space-y-1">
           <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Building2 className="h-5 w-5" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Building2 className="h-4 w-4" />
             </div>
             <div>
-              <DialogTitle className="text-xl font-semibold text-foreground">
+              <DialogTitle className="text-base font-semibold text-foreground">
                 {property.name}
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
@@ -271,15 +271,15 @@ export function PropertyKnowledgeDetailDialog({
           </div>
         </DialogHeader>
 
-        <div className="space-y-6 py-2">
+        <div className="space-y-5 py-2">
           {/* Estágio da Obra */}
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold text-foreground">Estágio da Obra / Status</Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium text-foreground">Estágio da Obra / Status</Label>
             <Select
               value={stage}
               onValueChange={(val) => val && setStage(val as PropertyStage)}
             >
-              <SelectTrigger className="w-full h-10 text-sm">
+              <SelectTrigger className="w-full h-9 text-sm">
                 <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
@@ -508,10 +508,10 @@ export function PropertyKnowledgeDetailDialog({
           </div>
 
           {/* Meu conhecimento sobre este empreendimento / Visão do Corretor */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-primary" />
-              <Label htmlFor="subjective-knowledge" className="text-sm font-semibold text-foreground">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              <Label htmlFor="subjective-knowledge" className="text-xs font-medium text-foreground">
                 Visão do Corretor / Conhecimento Subjetivo
               </Label>
             </div>
@@ -520,22 +520,23 @@ export function PropertyKnowledgeDetailDialog({
               value={subjectiveKnowledge}
               onChange={(e) => setSubjectiveKnowledge(e.target.value)}
               placeholder="Digite ou escreva aqui detalhes e dicas práticas que a IA deve saber sobre este empreendimento."
-              rows={5}
+              rows={4}
               disabled={saving}
-              className="text-sm"
+              className="text-sm resize-y"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[11px] text-muted-foreground">
               Anotações e percepções práticas que a IA consulta exclusivamente ao atender interessados neste empreendimento.
             </p>
           </div>
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0">
+        <DialogFooter className="gap-2 sm:gap-0 pt-2">
           <Button
             type="button"
             variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving || uploadingBook}
+            className="h-9 text-xs"
           >
             Cancelar
           </Button>
@@ -543,6 +544,7 @@ export function PropertyKnowledgeDetailDialog({
             type="button"
             onClick={handleSave}
             disabled={saving || uploadingBook}
+            className="h-9 text-xs font-medium"
           >
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Salvar Conhecimento
