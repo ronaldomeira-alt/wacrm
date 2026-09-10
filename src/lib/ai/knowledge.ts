@@ -162,28 +162,36 @@ export async function removePropertyBook(
 }
 
 /**
- * Save/replace a property's subjective knowledge (the broker's free-form insights)
- * and indexes its chunks for isolated RAG retrieval.
+/**
+ * Save/replace a property's knowledge (both technical book summary and broker insights)
+ * and indexes their chunks for isolated RAG retrieval.
  */
-export async function replacePropertySubjectiveKnowledge(
+export async function replacePropertyKnowledge(
   db: SupabaseClient,
   accountId: string,
   config: Pick<AiConfig, 'embeddingsApiKey'>,
   propertyId: string,
   args: {
     subjectiveKnowledge?: string | null
+    bookSummary?: string | null
     stage?: PropertyStage
   },
 ): Promise<void> {
-  const { subjectiveKnowledge, stage } = args
-  const trimmed = (subjectiveKnowledge || '').trim()
+  const { subjectiveKnowledge, bookSummary, stage } = args
+  const trimmedSubj = (subjectiveKnowledge || '').trim()
+  const hasBookSummary = bookSummary !== undefined
+  const trimmedBook = (bookSummary || '').trim()
 
   // 1. Upsert property_ai_contexts
   const updatePayload: Record<string, unknown> = {
     account_id: accountId,
     property_id: propertyId,
-    subjective_knowledge: trimmed || null,
+    subjective_knowledge: trimmedSubj || null,
     updated_at: new Date().toISOString(),
+  }
+  if (hasBookSummary) {
+    updatePayload.book_extracted_text = trimmedBook || null
+    updatePayload.book_indexed_at = trimmedBook ? new Date().toISOString() : null
   }
   if (stage) updatePayload.stage = stage
 
@@ -193,7 +201,7 @@ export async function replacePropertySubjectiveKnowledge(
 
   if (ctxErr) throw ctxErr
 
-  // 2. Delete prior subjective document for this property
+  // 2. Index subjective knowledge document
   await db
     .from('ai_knowledge_documents')
     .delete()
@@ -201,15 +209,14 @@ export async function replacePropertySubjectiveKnowledge(
     .eq('property_id', propertyId)
     .eq('source_type', 'subjective_text')
 
-  // 3. If there is text, index it as an isolated document
-  if (trimmed) {
+  if (trimmedSubj) {
     const { data: doc, error: docErr } = await db
       .from('ai_knowledge_documents')
       .insert({
         account_id: accountId,
         property_id: propertyId,
-        title: 'Conhecimento Subjetivo do Corretor',
-        content: trimmed,
+        title: 'Visão do Corretor',
+        content: trimmedSubj,
         source_type: 'subjective_text',
       })
       .select('id')
@@ -217,8 +224,53 @@ export async function replacePropertySubjectiveKnowledge(
 
     if (docErr || !doc) throw docErr || new Error('Failed to create subjective document')
 
-    await ingestDocument(db, accountId, config, doc.id, trimmed, propertyId)
+    await ingestDocument(db, accountId, config, doc.id, trimmedSubj, propertyId)
   }
+
+  // 3. Index book summary document if provided
+  if (hasBookSummary) {
+    await db
+      .from('ai_knowledge_documents')
+      .delete()
+      .eq('account_id', accountId)
+      .eq('property_id', propertyId)
+      .eq('source_type', 'pdf_book')
+
+    if (trimmedBook) {
+      const { data: doc, error: docErr } = await db
+        .from('ai_knowledge_documents')
+        .insert({
+          account_id: accountId,
+          property_id: propertyId,
+          title: 'Ficha Técnica / Resumo do Book',
+          content: trimmedBook,
+          source_type: 'pdf_book',
+        })
+        .select('id')
+        .single()
+
+      if (docErr || !doc) throw docErr || new Error('Failed to create book summary document')
+
+      await ingestDocument(db, accountId, config, doc.id, trimmedBook, propertyId)
+    }
+  }
+}
+
+/**
+ * Backward-compatible alias for replacePropertyKnowledge
+ */
+export async function replacePropertySubjectiveKnowledge(
+  db: SupabaseClient,
+  accountId: string,
+  config: Pick<AiConfig, 'embeddingsApiKey'>,
+  propertyId: string,
+  args: {
+    subjectiveKnowledge?: string | null
+    bookSummary?: string | null
+    stage?: PropertyStage
+  },
+): Promise<void> {
+  return replacePropertyKnowledge(db, accountId, config, propertyId, args)
 }
 
 /**

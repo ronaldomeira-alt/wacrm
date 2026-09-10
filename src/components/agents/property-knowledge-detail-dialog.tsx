@@ -1,15 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import {
   Building2,
   FileText,
-  Upload,
   Trash2,
   Loader2,
   Sparkles,
-  CheckCircle2,
   Megaphone,
   Plus,
   Tag,
@@ -33,7 +31,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Badge } from '@/components/ui/badge';
 import type { PropertyWithAiContext, PropertyStage } from '@/types';
 
 export const STAGE_LABELS: Record<PropertyStage, string> = {
@@ -62,12 +59,12 @@ export function PropertyKnowledgeDetailDialog({
   onOpenChange,
   onSaved,
 }: PropertyKnowledgeDetailDialogProps) {
+  const [name, setName] = useState('');
   const [stage, setStage] = useState<PropertyStage>('lancamento');
+  const [bookSummary, setBookSummary] = useState('');
   const [subjectiveKnowledge, setSubjectiveKnowledge] = useState('');
   const [saving, setSaving] = useState(false);
-  const [uploadingBook, setUploadingBook] = useState(false);
-  const [removingBook, setRemovingBook] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // CTWA Ad Mappings
   const [adMappings, setAdMappings] = useState<AdMapping[]>([]);
@@ -80,7 +77,9 @@ export function PropertyKnowledgeDetailDialog({
   // Sync state when property changes
   useEffect(() => {
     if (property) {
+      setName(property.name || '');
       setStage(property.ai_context?.stage || 'lancamento');
+      setBookSummary(property.ai_context?.book_extracted_text || '');
       setSubjectiveKnowledge(property.ai_context?.subjective_knowledge || '');
       loadAdMappings(property.id);
     }
@@ -103,17 +102,21 @@ export function PropertyKnowledgeDetailDialog({
 
   if (!property) return null;
 
-  const ctx = property.ai_context;
-  const hasBook = Boolean(ctx?.book_filename || ctx?.book_indexed_at);
-
   const handleSave = async () => {
+    if (!name.trim()) {
+      toast.error('O nome do empreendimento não pode ficar vazio.');
+      return;
+    }
+
     setSaving(true);
     try {
       const res = await fetch(`/api/ai/properties/${property.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          name: name.trim(),
           stage,
+          book_summary: bookSummary.trim() || null,
           subjective_knowledge: subjectiveKnowledge.trim() || null,
         }),
       });
@@ -123,7 +126,7 @@ export function PropertyKnowledgeDetailDialog({
         throw new Error(data.error || 'Erro ao salvar conhecimento do empreendimento');
       }
 
-      toast.success('Conhecimento do empreendimento atualizado com sucesso!');
+      toast.success('Conhecimento do empreendimento atualizado e indexado com sucesso!');
       onSaved();
       onOpenChange(false);
     } catch (err: unknown) {
@@ -134,69 +137,31 @@ export function PropertyKnowledgeDetailDialog({
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleDeleteProperty = async () => {
+    const confirmDelete = window.confirm(
+      `Tem certeza que deseja excluir o empreendimento "${property.name}"?\n\nTodas as anotações, fichas técnicas, índices da IA e vínculos de anúncios associados serão excluídos permanentemente.`,
+    );
+    if (!confirmDelete) return;
 
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      toast.error('Por favor, selecione um arquivo PDF válido.');
-      return;
-    }
-
-    if (file.size > 30 * 1024 * 1024) {
-      toast.error('O arquivo PDF deve ter no máximo 30MB.');
-      return;
-    }
-
-    setUploadingBook(true);
-    const formData = new FormData();
-    formData.append('file', file);
-
+    setDeleting(true);
     try {
-      const res = await fetch(`/api/ai/properties/${property.id}/book`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Falha ao processar o Book PDF');
-      }
-
-      toast.success(`Book PDF processado com sucesso! (${data.pages ?? 1} páginas extraídas)`);
-      onSaved();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro no upload do Book';
-      toast.error(msg);
-    } finally {
-      setUploadingBook(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  const handleRemoveBook = async () => {
-    if (!confirm('Deseja realmente remover o Book PDF deste empreendimento? Os fragmentos indexados na IA serão removidos.')) {
-      return;
-    }
-
-    setRemovingBook(true);
-    try {
-      const res = await fetch(`/api/ai/properties/${property.id}/book`, {
+      const res = await fetch(`/api/ai/properties/${property.id}`, {
         method: 'DELETE',
       });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.error || 'Falha ao remover o Book');
+        throw new Error(data.error || 'Falha ao excluir empreendimento');
       }
 
-      toast.success('Book PDF removido com sucesso!');
+      toast.success(`Empreendimento "${property.name}" excluído com sucesso!`);
       onSaved();
+      onOpenChange(false);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao remover Book';
+      const msg = err instanceof Error ? err.message : 'Erro ao excluir empreendimento';
       toast.error(msg);
     } finally {
-      setRemovingBook(false);
+      setDeleting(false);
     }
   };
 
@@ -256,46 +221,119 @@ export function PropertyKnowledgeDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto p-6">
         <DialogHeader className="space-y-1">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Building2 className="h-4 w-4" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
+                <Building2 className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <DialogTitle className="text-base font-semibold text-foreground truncate">
+                  {property.name}
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Configuração de Conhecimento e Ficha Técnica da IA
+                </DialogDescription>
+              </div>
             </div>
-            <div>
-              <DialogTitle className="text-base font-semibold text-foreground">
-                {property.name}
-              </DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground">
-                Empreendimento Imobiliário
-              </DialogDescription>
-            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleDeleteProperty}
+              disabled={saving || deleting}
+              className="h-8 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0 gap-1.5"
+            >
+              {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              Excluir Empreendimento
+            </Button>
           </div>
         </DialogHeader>
 
-        <div className="space-y-5 py-2">
-          {/* Estágio da Obra */}
+        <div className="space-y-4 py-2">
+          {/* Nome e Estágio */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
+            <div className="sm:col-span-7 space-y-1.5">
+              <Label htmlFor="edit-prop-name" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
+                Nome do Empreendimento
+              </Label>
+              <Input
+                id="edit-prop-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={saving || deleting}
+                className="h-9 text-sm"
+              />
+            </div>
+
+            <div className="sm:col-span-5 space-y-1.5">
+              <Label htmlFor="edit-prop-stage" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
+                Estágio do Empreendimento
+              </Label>
+              <Select
+                value={stage}
+                onValueChange={(val) => val && setStage(val as PropertyStage)}
+                disabled={saving || deleting}
+              >
+                <SelectTrigger id="edit-prop-stage" className="w-full h-9 text-sm">
+                  <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(STAGE_LABELS).map(([k, label]) => (
+                    <SelectItem key={k} value={k} className="text-sm">
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Ficha Técnica / Resumo do Book */}
           <div className="space-y-1.5">
-            <Label className="text-xs font-medium text-foreground">Estágio da Obra / Status</Label>
-            <Select
-              value={stage}
-              onValueChange={(val) => val && setStage(val as PropertyStage)}
-            >
-              <SelectTrigger className="w-full h-9 text-sm">
-                <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(STAGE_LABELS).map(([k, label]) => (
-                  <SelectItem key={k} value={k}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Ajuda a IA a contextualizar as respostas (ex: se está pronto para morar ou previsão de entrega).
+            <div className="flex items-center gap-1.5">
+              <FileText className="h-3.5 w-3.5 text-primary" />
+              <Label htmlFor="edit-book-summary" className="text-xs font-medium text-foreground">
+                Ficha Técnica / Resumo do Book Técnico
+              </Label>
+            </div>
+            <Textarea
+              id="edit-book-summary"
+              value={bookSummary}
+              onChange={(e) => setBookSummary(e.target.value)}
+              placeholder="Cole aqui o resumo gerado pela IA ou a ficha técnica completa: localização exata, tipologias, metragens, quantidade de quartos/suítes, itens da área de lazer, acabamentos, diferenciais construtivos e previsão de entrega."
+              rows={6}
+              disabled={saving || deleting}
+              className="text-sm resize-y"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              A IA usa estes dados técnicos para responder aos interessados sobre características, lazer, metragens e previsão da obra.
             </p>
           </div>
 
-          {/* Anúncios CTWA Vinculados */}
+          {/* Visão do Corretor / Dicas Práticas */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              <Label htmlFor="edit-subjective-knowledge" className="text-xs font-medium text-foreground">
+                Visão do Corretor / Dicas Práticas
+              </Label>
+            </div>
+            <Textarea
+              id="edit-subjective-knowledge"
+              value={subjectiveKnowledge}
+              onChange={(e) => setSubjectiveKnowledge(e.target.value)}
+              placeholder="Digite argumentos de venda, perfil do comprador ideal (investidor, família, veraneio), pontos fortes da região, dicas para quebrar objeções e orientações práticas para a IA."
+              rows={3}
+              disabled={saving || deleting}
+              className="text-sm resize-y"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Anotações e percepções comerciais consultadas exclusivamente no atendimento aos interessados neste empreendimento.
+            </p>
+          </div>
+
+          {/* Anúncios CTWA Vinculados (Meta Ads) */}
           <div className="rounded-xl border border-border bg-card/50 p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -404,138 +442,14 @@ export function PropertyKnowledgeDetailDialog({
               )
             )}
           </div>
-
-          {/* Book do Empreendimento (PDF) */}
-          <div className="rounded-xl border border-border bg-card/50 p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-primary" />
-                <Label className="text-sm font-medium">Book do Empreendimento (PDF)</Label>
-              </div>
-
-              {hasBook && (
-                <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 text-xs">
-                  <CheckCircle2 className="mr-1 h-3 w-3" />
-                  Pronto {ctx?.book_page_count ? `(${ctx.book_page_count} págs)` : ''}
-                </Badge>
-              )}
-            </div>
-
-            {hasBook ? (
-              <div className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
-                <div className="min-w-0 flex-1 pr-2">
-                  <p className="truncate text-sm font-medium text-foreground">
-                    {ctx?.book_filename || 'Book do Empreendimento.pdf'}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {ctx?.book_page_count ? `${ctx.book_page_count} páginas extraídas` : 'PDF processado'}{' '}
-                    {ctx?.book_indexed_at && `• ${new Date(ctx.book_indexed_at).toLocaleDateString('pt-BR')}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="application/pdf,.pdf"
-                    className="hidden"
-                    onChange={handleFileUpload}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={uploadingBook || removingBook}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    {uploadingBook ? (
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Upload className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    Substituir
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    disabled={uploadingBook || removingBook}
-                    onClick={handleRemoveBook}
-                  >
-                    {removingBook ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-background/50 p-6 text-center">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  className="hidden"
-                  onChange={handleFileUpload}
-                />
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  {uploadingBook ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <Upload className="h-5 w-5" />
-                  )}
-                </div>
-                <p className="mt-2 text-sm font-medium text-foreground">
-                  {uploadingBook ? 'Processando e indexando PDF...' : 'Nenhum Book PDF anexado'}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground max-w-sm">
-                  Faça upload do Book comercial (PDF até 30MB) para que a IA extraia informações técnicas, plantas, tipologias e diferenciais.
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="mt-3"
-                  disabled={uploadingBook}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Upload className="mr-1.5 h-3.5 w-3.5" />
-                  Selecionar PDF
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {/* Meu conhecimento sobre este empreendimento / Visão do Corretor */}
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 text-primary" />
-              <Label htmlFor="subjective-knowledge" className="text-xs font-medium text-foreground">
-                Visão do Corretor / Conhecimento Subjetivo
-              </Label>
-            </div>
-            <Textarea
-              id="subjective-knowledge"
-              value={subjectiveKnowledge}
-              onChange={(e) => setSubjectiveKnowledge(e.target.value)}
-              placeholder="Digite ou escreva aqui detalhes e dicas práticas que a IA deve saber sobre este empreendimento."
-              rows={4}
-              disabled={saving}
-              className="text-sm resize-y"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Anotações e percepções práticas que a IA consulta exclusivamente ao atender interessados neste empreendimento.
-            </p>
-          </div>
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0 pt-2">
+        <DialogFooter className="gap-2 sm:gap-0 pt-2 flex items-center justify-between sm:justify-between w-full">
           <Button
             type="button"
             variant="ghost"
             onClick={() => onOpenChange(false)}
-            disabled={saving || uploadingBook}
+            disabled={saving || deleting}
             className="h-9 text-xs"
           >
             Cancelar
@@ -543,7 +457,7 @@ export function PropertyKnowledgeDetailDialog({
           <Button
             type="button"
             onClick={handleSave}
-            disabled={saving || uploadingBook}
+            disabled={saving || deleting}
             className="h-9 text-xs font-medium"
           >
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

@@ -78,6 +78,13 @@ export async function POST(req: Request) {
         ? body.subjective_knowledge.trim()
         : null;
 
+    const bookSummary =
+      typeof body.book_summary === 'string' && body.book_summary.trim()
+        ? body.book_summary.trim()
+        : typeof body.book_extracted_text === 'string' && body.book_extracted_text.trim()
+          ? body.book_extracted_text.trim()
+          : null;
+
     // 1. Insert property
     const { data: property, error: propErr } = await supabase
       .from('properties')
@@ -91,7 +98,7 @@ export async function POST(req: Request) {
 
     if (propErr) throw propErr;
 
-    // 2. Initialize or save context with subjective knowledge & stage
+    // 2. Initialize or save context with subjective knowledge, book summary & stage
     const embeddingsKeyResult = await loadEmbeddingsKey(supabase, accountId);
     const config = { embeddingsApiKey: embeddingsKeyResult.key };
 
@@ -102,6 +109,7 @@ export async function POST(req: Request) {
       property.id,
       {
         subjectiveKnowledge,
+        bookSummary,
         stage,
       },
     );

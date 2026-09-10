@@ -11,6 +11,7 @@ import {
   Loader2,
   RefreshCw,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -65,9 +66,37 @@ export function PropertyKnowledgeList() {
     });
   }, [properties, search, stageFilter]);
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const handleOpenDetail = (prop: PropertyWithAiContext) => {
     setSelectedProperty(prop);
     setDialogOpen(true);
+  };
+
+  const handleDeleteProperty = async (e: React.MouseEvent, prop: PropertyWithAiContext) => {
+    e.stopPropagation();
+    const confirmDelete = window.confirm(
+      `Deseja realmente excluir o empreendimento "${prop.name}"?\n\nEsta ação apagará todas as fichas técnicas, anotações e fragmentos de IA deste empreendimento.`,
+    );
+    if (!confirmDelete) return;
+
+    setDeletingId(prop.id);
+    try {
+      const res = await fetch(`/api/ai/properties/${prop.id}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao excluir empreendimento');
+      }
+      toast.success(`Empreendimento "${prop.name}" excluído com sucesso!`);
+      loadProperties();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao excluir';
+      toast.error(msg);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   return (
@@ -134,7 +163,7 @@ export function PropertyKnowledgeList() {
           <p className="text-xs text-muted-foreground mt-1 max-w-md">
             {search.trim()
               ? 'Tente ajustar os filtros ou termo de busca.'
-              : 'Cadastre seus empreendimentos para anexar Books em PDF e anotações do corretor para a IA.'}
+              : 'Cadastre seus empreendimentos com fichas técnicas e anotações do corretor para a IA.'}
           </p>
           {!search.trim() && (
             <Button
@@ -152,9 +181,9 @@ export function PropertyKnowledgeList() {
           {filteredProperties.map((prop) => {
             const ctx = prop.ai_context;
             const stage = ctx?.stage || 'lancamento';
-            const hasBook = Boolean(ctx?.book_filename || ctx?.book_indexed_at);
-            const isBookReady = Boolean(ctx?.book_indexed_at);
+            const hasBookSummary = Boolean(ctx?.book_extracted_text?.trim() || ctx?.book_indexed_at);
             const hasSubjective = Boolean(ctx?.subjective_knowledge?.trim());
+            const isDeleting = deletingId === prop.id;
 
             return (
               <div
@@ -172,30 +201,41 @@ export function PropertyKnowledgeList() {
                         Empreendimento Imobiliário
                       </p>
                     </div>
-                    <Badge variant="outline" className="shrink-0 text-[11px] font-normal">
-                      {STAGE_LABELS[stage] || stage}
-                    </Badge>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Badge variant="outline" className="text-[11px] font-normal">
+                        {STAGE_LABELS[stage] || stage}
+                      </Badge>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={isDeleting}
+                        onClick={(e) => handleDeleteProperty(e, prop)}
+                        className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md"
+                        title="Excluir empreendimento"
+                      >
+                        {isDeleting ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-destructive" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Status Badges */}
                   <div className="mt-4 flex flex-wrap items-center gap-1.5">
-                    {/* Book Status */}
-                    {hasBook ? (
-                      isBookReady ? (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Book pronto {ctx?.book_page_count ? `(${ctx.book_page_count}p)` : ''}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                          <FileText className="h-3 w-3" />
-                          Book anexado
-                        </span>
-                      )
+                    {/* Ficha Técnica / Book Status */}
+                    {hasBookSummary ? (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
+                        <CheckCircle2 className="h-3 w-3" />
+                        Ficha Técnica
+                      </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground/60">
                         <FileText className="h-3 w-3 opacity-60" />
-                        Sem Book PDF
+                        Sem ficha técnica
                       </span>
                     )}
 

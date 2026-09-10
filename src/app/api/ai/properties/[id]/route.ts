@@ -77,13 +77,29 @@ export async function PATCH(req: Request, context: RouteContext) {
     const stage = body.stage as PropertyStage | undefined;
     const subjectiveKnowledge = typeof body.subjective_knowledge === 'string'
       ? body.subjective_knowledge
-      : '';
+      : undefined;
+
+    const bookSummary = typeof body.book_summary === 'string'
+      ? body.book_summary
+      : typeof body.book_extracted_text === 'string'
+        ? body.book_extracted_text
+        : undefined;
+
+    // Optional name update on properties table
+    if (typeof body.name === 'string' && body.name.trim()) {
+      await supabase
+        .from('properties')
+        .update({ name: body.name.trim() })
+        .eq('id', propertyId)
+        .eq('account_id', accountId);
+    }
 
     const embeddingsKeyResult = await loadEmbeddingsKey(supabase, accountId);
     const config = { embeddingsApiKey: embeddingsKeyResult.key };
 
     await replacePropertySubjectiveKnowledge(supabase, accountId, config, propertyId, {
       subjectiveKnowledge,
+      bookSummary,
       stage,
     });
 
@@ -94,10 +110,72 @@ export async function PATCH(req: Request, context: RouteContext) {
       .eq('account_id', accountId)
       .single();
 
+    const { data: updatedProp } = await supabase
+      .from('properties')
+      .select('*')
+      .eq('id', propertyId)
+      .eq('account_id', accountId)
+      .single();
+
     return NextResponse.json({
       success: true,
-      ai_context: updatedContext,
+      property: {
+        ...updatedProp,
+        ai_context: updatedContext,
+      },
     });
+  } catch (err) {
+    return toErrorResponse(err);
+  }
+}
+
+/**
+ * DELETE /api/ai/properties/[id] (agent+)
+ *
+ * Deletes a property and all associated AI context, documents, chunks, and ad mappings.
+ */
+export async function DELETE(_req: Request, context: RouteContext) {
+  try {
+    const { id: propertyId } = await context.params;
+    const { supabase, accountId } = await requireRole('agent');
+
+    // 1. Delete associated AI knowledge chunks & documents for this property
+    await supabase
+      .from('ai_knowledge_chunks')
+      .delete()
+      .eq('property_id', propertyId)
+      .eq('account_id', accountId);
+
+    await supabase
+      .from('ai_knowledge_documents')
+      .delete()
+      .eq('property_id', propertyId)
+      .eq('account_id', accountId);
+
+    // 2. Delete ad mappings for this property
+    await supabase
+      .from('property_ad_mappings')
+      .delete()
+      .eq('property_id', propertyId)
+      .eq('account_id', accountId);
+
+    // 3. Delete AI context
+    await supabase
+      .from('property_ai_contexts')
+      .delete()
+      .eq('property_id', propertyId)
+      .eq('account_id', accountId);
+
+    // 4. Delete the property itself
+    const { error: delErr } = await supabase
+      .from('properties')
+      .delete()
+      .eq('id', propertyId)
+      .eq('account_id', accountId);
+
+    if (delErr) throw delErr;
+
+    return NextResponse.json({ success: true, message: 'Empreendimento excluído com sucesso' });
   } catch (err) {
     return toErrorResponse(err);
   }
