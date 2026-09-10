@@ -17,25 +17,12 @@ import { AiError } from '@/lib/ai/types'
 export async function GET() {
   try {
     const { supabase, accountId } = await getCurrentAccount()
-    let { data, error } = await supabase
+    const { data, error } = await supabase
       .from('ai_knowledge_documents')
       .select('id, title, content, updated_at, created_at, source_type, property_id')
       .eq('account_id', accountId)
       .is('property_id', null)
       .order('updated_at', { ascending: false })
-
-    // Fallback if property_id / source_type column does not exist yet
-    if (error) {
-      console.warn('[ai/knowledge GET] querying with property_id failed, falling back to base columns:', error)
-      const fallback = await supabase
-        .from('ai_knowledge_documents')
-        .select('id, title, content, updated_at, created_at')
-        .eq('account_id', accountId)
-        .order('updated_at', { ascending: false })
-
-      data = fallback.data
-      error = fallback.error
-    }
 
     if (error) {
       console.error('[ai/knowledge GET] error:', error)

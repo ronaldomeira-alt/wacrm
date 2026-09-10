@@ -39,7 +39,15 @@ interface TurnDiagnostic {
   retrievedKnowledge?: string[];
   propertyInfo?: { id: string; name: string; stage?: string | null } | null;
   businessHoursContext?: { isBusinessHours: boolean; startHour: string; endHour: string; instructionForModel: string };
-  leadContext?: Record<string, unknown> | null;
+  leadContext?: {
+    contactName?: string;
+    summary?: {
+      purpose?: string[];
+      location?: string[];
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  } | null;
   systemPrompt?: string;
   usage?: AiUsage | null;
   latencyMs?: number;
@@ -125,7 +133,11 @@ const BOUNDARY_LABELS: Record<string, string> = {
   custom_never_rule: 'Regra Proibitiva (Nunca Fazer)',
 };
 
-export function AiPlayground() {
+interface AiPlaygroundProps {
+  onGoToSetup?: () => void;
+}
+
+export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
