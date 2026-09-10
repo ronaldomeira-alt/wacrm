@@ -38,7 +38,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
     toneStyle: 'consultative_warm',
     teamPresentation: 'Somos a equipe de atendimento do Ronaldo e da Thatianna.',
     globalNeverRules: 'NUNCA negociar valores, prometer descontos ou inventar especificações não documentadas.',
-    responseStyleInstructions: 'Responda em no máximo 2 frases curtas. Sempre termine com uma pergunta.',
+    responseStyleInstructions: ['Responda em no máximo 2 frases curtas.', 'Sempre termine com uma pergunta.'],
     businessHoursStart: '08:00',
     businessHoursEnd: '18:00',
     businessDays: [1, 2, 3, 4, 5, 6],

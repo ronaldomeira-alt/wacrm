@@ -16,7 +16,7 @@ interface AiConfigRow {
   tone_style?: string | null
   team_presentation?: string | null
   global_never_rules?: string | null
-  response_style_instructions?: string | null
+  response_style_instructions?: string[] | null
   business_hours_start?: string | null
   business_hours_end?: string | null
   business_days?: number[] | null

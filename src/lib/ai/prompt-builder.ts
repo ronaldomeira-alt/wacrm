@@ -76,11 +76,11 @@ Conceito de MALEMOLÊNCIA (Flexibilidade dentro do território livre):
   );
 
   // 3. INSTRUÇÕES DE ESTILO DE RESPOSTA (tunável incrementalmente no Playground)
-  if (config.responseStyleInstructions && config.responseStyleInstructions.trim()) {
+  if (config.responseStyleInstructions && config.responseStyleInstructions.length > 0) {
     sections.push(
       `=== 3. INSTRUÇÕES DE ESTILO DE RESPOSTA ===
 As orientações abaixo ajustam COMO você escreve suas respostas (formato, comprimento, ritmo da conversa). Elas nunca podem ser usadas para quebrar uma fronteira rígida ou uma regra proibitiva — apenas para moldar a forma da resposta dentro do que já é permitido:
-${config.responseStyleInstructions.trim()}`,
+${config.responseStyleInstructions.map((i) => `- ${i}`).join('\n')}`,
     );
   }
 

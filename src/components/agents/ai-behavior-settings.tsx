@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor';
 import type { AccountMember } from '@/types';
 
 const HANDOFF_QUEUE = '__queue__';
@@ -37,7 +38,7 @@ export function AiBehaviorSettings() {
   const [identityName, setIdentityName] = useState('');
   const [toneStyle, setToneStyle] = useState('consultative_warm');
   const [teamPresentation, setTeamPresentation] = useState('');
-  const [responseStyleInstructions, setResponseStyleInstructions] = useState('');
+  const [responseStyleInstructions, setResponseStyleInstructions] = useState<string[]>([]);
   const [globalNeverRules, setGlobalNeverRules] = useState('');
   const [businessHoursStart, setBusinessHoursStart] = useState('08:00');
   const [businessHoursEnd, setBusinessHoursEnd] = useState('18:00');
@@ -61,7 +62,7 @@ export function AiBehaviorSettings() {
         setIdentityName(data.identity_name || '');
         setToneStyle(data.tone_style || 'consultative_warm');
         setTeamPresentation(data.team_presentation || '');
-        setResponseStyleInstructions(data.response_style_instructions || '');
+        setResponseStyleInstructions(Array.isArray(data.response_style_instructions) ? data.response_style_instructions : []);
         setGlobalNeverRules(data.global_never_rules || '');
         setBusinessHoursStart(data.business_hours_start || '08:00');
         setBusinessHoursEnd(data.business_hours_end || '18:00');
@@ -92,7 +93,7 @@ export function AiBehaviorSettings() {
           identity_name: identityName.trim() || null,
           tone_style: toneStyle,
           team_presentation: teamPresentation.trim() || null,
-          response_style_instructions: responseStyleInstructions.trim() || null,
+          response_style_instructions: responseStyleInstructions,
           global_never_rules: globalNeverRules.trim() || null,
           business_hours_start: businessHoursStart,
           business_hours_end: businessHoursEnd,
@@ -181,22 +182,16 @@ export function AiBehaviorSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="response-style" className="text-xs">
+            <Label className="text-xs">
               Instruções de Estilo de Resposta
             </Label>
-            <Textarea
-              id="response-style"
-              value={responseStyleInstructions}
-              onChange={(e) => setResponseStyleInstructions(e.target.value)}
-              placeholder="Ex:
-- Responda em no máximo 2 frases curtas.
-- Sempre termine a resposta com uma pergunta que avance a conversa.
-- Evite emojis."
-              rows={3}
-              className="text-sm"
+            <ResponseStyleInstructionsEditor
+              instructions={responseStyleInstructions}
+              onAdd={async (text) => setResponseStyleInstructions((prev) => [...prev, text])}
+              onRemove={async (index) => setResponseStyleInstructions((prev) => prev.filter((_, i) => i !== index))}
             />
             <p className="text-[11px] text-muted-foreground">
-              Ajustes de formato e ritmo da conversa (comprimento, tom, se deve terminar com pergunta, etc.) — não confundir com as proibições abaixo. Também pode ser ajustado direto pelo Playground, testando ao vivo.
+              Ajustes de formato e ritmo da conversa (comprimento, tom, se deve terminar com pergunta, etc.) — não confundir com as proibições abaixo. Adicionar/remover aqui só grava ao clicar em &quot;Salvar Configurações da IA&quot; no final da página; para efeito imediato, ajuste direto pelo Playground.
             </p>
           </div>
         </CardContent>

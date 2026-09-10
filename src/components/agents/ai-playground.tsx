@@ -15,7 +15,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Code2,
-  Save,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor';
 import type { AiDecision, AiUsage } from '@/lib/ai/types';
 
 interface TurnDiagnostic {
@@ -79,17 +80,14 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const [selectedTurnForInspect, setSelectedTurnForInspect] = useState<Turn | null>(null);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
 
-  // Response-style instructions — the box below is for the NEXT new
-  // instruction only; saving appends it to `activeInstructions` (the
-  // accumulated text stored in ai_configs.response_style_instructions,
-  // the same field the "Comportamento" tab reads/writes) and clears the
-  // box so the next one can be typed. Takes effect on the very next
-  // message sent in this same Playground session, and on real production
-  // auto-replies too, since both read the same live config row.
-  const [newInstruction, setNewInstruction] = useState('');
-  const [activeInstructions, setActiveInstructions] = useState('');
+  // Response-style instructions — each entry is its own item (array), so
+  // removing one "I changed my mind" instruction is a single click here
+  // instead of hand-editing a text blob. Same field the "Comportamento"
+  // tab reads/writes; every add/remove saves immediately and takes effect
+  // on the very next message sent in this Playground session, and on real
+  // production auto-replies too, since both read the same live config row.
+  const [activeInstructions, setActiveInstructions] = useState<string[]>([]);
   const [loadingStyle, setLoadingStyle] = useState(true);
-  const [savingStyle, setSavingStyle] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -115,8 +113,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     fetch('/api/ai/config')
       .then((res) => res.json())
       .then((data) => {
-        const value = typeof data.response_style_instructions === 'string' ? data.response_style_instructions : '';
-        setActiveInstructions(value);
+        setActiveInstructions(Array.isArray(data.response_style_instructions) ? data.response_style_instructions : []);
       })
       .catch((err) => {
         console.error('[ai-playground] failed to load style instructions:', err);
@@ -129,33 +126,34 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns, sending]);
 
-  const addInstruction = async () => {
-    const trimmed = newInstruction.trim();
-    if (!trimmed) return;
+  const saveInstructions = async (next: string[]) => {
+    const res = await fetch('/api/ai/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response_style_instructions: next }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao salvar instrução de estilo');
+    }
+    setActiveInstructions(next);
+  };
 
-    const combined = activeInstructions.trim()
-      ? `${activeInstructions.trim()}\n${trimmed}`
-      : trimmed;
-
-    setSavingStyle(true);
+  const handleAddInstruction = async (text: string) => {
     try {
-      const res = await fetch('/api/ai/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ response_style_instructions: combined }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Falha ao salvar instrução de estilo');
-      }
-      setActiveInstructions(combined);
-      setNewInstruction('');
+      await saveInstructions([...activeInstructions, text]);
       toast.success('Instrução adicionada — valendo a partir da próxima mensagem.');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao salvar instrução de estilo';
-      toast.error(msg);
-    } finally {
-      setSavingStyle(false);
+      toast.error(err instanceof Error ? err.message : 'Erro ao salvar instrução de estilo');
+    }
+  };
+
+  const handleRemoveInstruction = async (index: number) => {
+    try {
+      await saveInstructions(activeInstructions.filter((_, i) => i !== index));
+      toast.success('Instrução removida.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao remover instrução de estilo');
     }
   };
 
@@ -455,52 +453,19 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Digite uma orientação (ex: &quot;responda em frases curtas&quot;) e clique em Adicionar. Ela entra na
-            lista abaixo, a caixa limpa para a próxima, e já vale a partir da próxima mensagem — no chat ao
-            lado e nas respostas reais do WhatsApp (fica armazenado na aba Comportamento).
+            Digite uma orientação (ex: &quot;responda em frases curtas&quot;) e clique em Adicionar. Ela salva
+            na hora e já vale a partir da próxima mensagem — no chat ao lado e nas respostas reais do
+            WhatsApp. Mudou de ideia? Clique no <X className="inline h-3 w-3 align-text-top" /> para remover
+            uma instrução específica, sem afetar as outras.
           </p>
 
-          <div className="flex items-end gap-2">
-            <textarea
-              value={newInstruction}
-              onChange={(e) => setNewInstruction(e.target.value)}
-              disabled={loadingStyle}
-              placeholder={'Ex: Responda em no máximo 2 frases curtas.'}
-              rows={2}
-              className="flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs leading-relaxed text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
-            />
-            <Button
-              size="sm"
-              onClick={addInstruction}
-              disabled={savingStyle || loadingStyle || !newInstruction.trim()}
-              className="h-9 text-xs shrink-0"
-            >
-              {savingStyle ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Save className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Adicionar
-            </Button>
-          </div>
-
-          <div className="flex-1 flex flex-col min-h-0 border-t border-border/60 pt-3">
-            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-              Instruções Ativas
-            </span>
-            <div className="flex-1 overflow-y-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-xs font-mono leading-relaxed text-foreground whitespace-pre-wrap">
-              {loadingStyle ? (
-                <span className="text-muted-foreground">Carregando...</span>
-              ) : activeInstructions.trim() ? (
-                activeInstructions
-              ) : (
-                <span className="text-muted-foreground">Nenhuma instrução salva ainda.</span>
-              )}
-            </div>
-            <p className="mt-1.5 text-[11px] text-muted-foreground">
-              Para editar ou remover uma instrução já salva, use a aba Comportamento.
-            </p>
-          </div>
+          <ResponseStyleInstructionsEditor
+            instructions={activeInstructions}
+            loading={loadingStyle}
+            onAdd={handleAddInstruction}
+            onRemove={handleRemoveInstruction}
+            className="flex-1 flex flex-col min-h-0"
+          />
         </div>
       </div>
 

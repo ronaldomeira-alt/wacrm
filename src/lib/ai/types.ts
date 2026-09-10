@@ -33,10 +33,12 @@ export interface AiConfig {
   toneStyle?: string | null
   teamPresentation?: string | null
   globalNeverRules?: string | null
-  /** Free-text style/formatting guidance (response length, whether to end
-   *  on a question, etc.) — distinct from globalNeverRules, which is only
-   *  for hard prohibitions. Tuned incrementally from the Playground. */
-  responseStyleInstructions?: string | null
+  /** Style/formatting guidance (response length, whether to end on a
+   *  question, etc.) as discrete instructions — distinct from
+   *  globalNeverRules, which is only for hard prohibitions. Each entry is
+   *  independently addable/removable from the Playground or Comportamento,
+   *  so reversing one doesn't require hand-editing a text blob. */
+  responseStyleInstructions?: string[] | null
   businessHoursStart?: string | null
   businessHoursEnd?: string | null
   businessDays?: number[] | null
