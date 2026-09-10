@@ -375,9 +375,9 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                 setTurns([]); // reset context to avoid mixing properties
               }}
             >
-              <SelectTrigger className="h-auto min-w-[200px] sm:min-w-[220px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto [&_svg]:ml-auto">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Building2 className="size-4 shrink-0 block" />
+              <SelectTrigger className="h-auto min-w-[200px] sm:min-w-[220px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto">
+                <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                  <Building2 className="!size-4 !m-0 p-0 block shrink-0" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
@@ -403,9 +403,9 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               value={simulatedHours}
               onValueChange={(val) => val && setSimulatedHours(val as typeof simulatedHours)}
             >
-              <SelectTrigger className="h-auto min-w-[230px] sm:min-w-[250px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto [&_svg]:ml-auto">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Clock className="size-4 shrink-0 block" />
+              <SelectTrigger className="h-auto min-w-[230px] sm:min-w-[250px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto">
+                <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                  <Clock className="!size-4 !m-0 p-0 block shrink-0" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
