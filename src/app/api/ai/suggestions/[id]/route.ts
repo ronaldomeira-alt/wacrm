@@ -17,45 +17,31 @@ interface PipelineMovePayload {
 }
 
 interface LearningPayload {
+  type?: unknown
   info?: unknown
   context_summary?: unknown
   application?: unknown
+  property_id?: unknown
+  property_name?: unknown
+  applied_target?: unknown
+  applied_property_id?: unknown
+  previous_subjective_knowledge?: unknown
+  previous_never_rules?: unknown
+  previous_team_presentation?: unknown
+  knowledge_document_id?: unknown
   [key: string]: unknown
 }
 
 /**
  * PATCH /api/ai/suggestions/[id]  (agent+)
  *
- * Moves a suggestion through its status lifecycle (pending →
- * approved/rejected/ignored/done). Open to any agent+ — resolving a
- * suggestion is operational work, not an account setting (mirrors
- * ai_suggestions_update RLS, which allows any member).
- *
- * `snoozed_until` ("Adiar", BLOCO 3/4) rides along on a `status:
- * 'pending'` request — a snoozed suggestion isn't resolved, just
- * hidden from the default pending view until that timestamp (see the
- * list route). Absent = leave unchanged; explicit `null` clears it.
- * Resolving a suggestion to any non-pending status always clears it.
- *
- * A `pipeline_move` suggestion being approved ("Aceitar" in the
- * Central de IA) additionally EXECUTES the move: it updates the
- * deal's stage_id to `payload.to_stage_id` before flipping the
- * suggestion's status, using the same RLS-scoped write path as the
- * Pipeline board's drag-and-drop (deals_update requires agent+, same
- * as this route). If the deal move fails, the suggestion is left
- * untouched — never mark "approved" without having actually moved the
- * lead. `resolved_by`/`resolved_at` (already on the row from BLOCO
- * 1/4) plus the untouched `payload` (from_stage/to_stage/score/
- * justification) are the permanent audit trail — the row is never
- * deleted, so nothing here needs a separate history table.
- *
- * A `learning` suggestion supports `learning_edit` ("Editar", BLOCO
- * 4/4) — corrections merged into `payload` independent of `status` —
- * and being approved writes it into the account's EXISTING knowledge
- * base (`ai_knowledge_documents` + `ingestDocument`, same path as
- * Settings > Agentes de IA's knowledge editor), never a new store.
- * That write requires admin+ (the KB's own INSERT policy), stricter
- * than this route's normal agent+ floor — reject/edit stay agent+.
+ * Moves a suggestion through its status lifecycle (pending → approved/rejected/ignored/done).
+ * For 'learning' category:
+ *   - 'property_subjective': Appends to property_ai_contexts.subjective_knowledge
+ *   - 'never_rule': Appends to ai_configs.global_never_rules
+ *   - 'language_style': Updates ai_configs.team_presentation
+ *   - 'global_knowledge': Inserts into ai_knowledge_documents
+ * Supports 'action: revert' for full rollback of approved learning suggestions.
  */
 export async function PATCH(
   request: Request,
@@ -71,8 +57,9 @@ export async function PATCH(
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object') return bad('Invalid request body')
 
-    const status = body.status as AiSuggestionStatus
-    if (!AI_SUGGESTION_STATUSES.includes(status)) {
+    const isRevertAction = body.action === 'revert'
+    const status = (body.status as AiSuggestionStatus) || (isRevertAction ? 'ignored' : 'pending')
+    if (!isRevertAction && !AI_SUGGESTION_STATUSES.includes(status)) {
       return bad(`status must be one of: ${AI_SUGGESTION_STATUSES.join(', ')}`)
     }
 
@@ -83,30 +70,81 @@ export async function PATCH(
       if (Number.isNaN(parsed.getTime())) return bad('snoozed_until must be a valid date or null')
       snoozedUntil = parsed.toISOString()
     }
-    if (status !== 'pending') snoozedUntil = null // resolving always clears a snooze
+    if (status !== 'pending') snoozedUntil = null
 
     const { data: existing, error: fetchError } = await supabase
       .from('ai_suggestions')
-      .select('id, category, title, payload')
+      .select('id, category, title, payload, status')
       .eq('id', id)
       .eq('account_id', accountId)
       .maybeSingle()
     if (fetchError) {
       console.error('[ai/suggestions PATCH] fetch error:', fetchError)
-      return NextResponse.json(
-        { error: 'Failed to load AI suggestion' },
-        { status: 500 },
-      )
+      return NextResponse.json({ error: 'Failed to load AI suggestion' }, { status: 500 })
     }
     if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    // "Editar" (BLOCO 4/4, learning only): corrections to the proposed
-    // knowledge, independent of status — the same call can edit and
-    // approve together, or just edit and leave it pending for someone
-    // else to approve later. Applied to `existing.payload` before
-    // anything below reads it, so an edit+approve in one request uses
-    // the corrected text.
     let payload = (existing.payload ?? {}) as LearningPayload
+
+    // ============================================================
+    // ROLLBACK / REVERT ACTION FOR APPROVED LEARNING SUGGESTIONS
+    // ============================================================
+    if (isRevertAction || (existing.status === 'approved' && (status === 'rejected' || status === 'ignored'))) {
+      if (!hasMinRole(role, 'admin')) {
+        return bad('Reverting an approved suggestion requires an account admin', 403)
+      }
+
+      const appliedTarget = payload.applied_target
+      if (appliedTarget === 'property_subjective' && payload.applied_property_id) {
+        await supabase
+          .from('property_ai_contexts')
+          .update({
+            subjective_knowledge: payload.previous_subjective_knowledge ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('property_id', payload.applied_property_id)
+          .eq('account_id', accountId)
+      } else if (appliedTarget === 'never_rule') {
+        await supabase
+          .from('ai_configs')
+          .update({
+            global_never_rules: payload.previous_never_rules ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId)
+      } else if (appliedTarget === 'language_style') {
+        await supabase
+          .from('ai_configs')
+          .update({
+            team_presentation: payload.previous_team_presentation ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId)
+      } else if (appliedTarget === 'global_knowledge' && payload.knowledge_document_id) {
+        await supabase
+          .from('ai_knowledge_chunks')
+          .delete()
+          .eq('document_id', payload.knowledge_document_id)
+          .eq('account_id', accountId)
+
+        await supabase
+          .from('ai_knowledge_documents')
+          .delete()
+          .eq('id', payload.knowledge_document_id)
+          .eq('account_id', accountId)
+      }
+
+      payload = {
+        ...payload,
+        applied_target: null,
+        reverted_at: new Date().toISOString(),
+        reverted_by: userId,
+      }
+    }
+
+    // ============================================================
+    // EDIT LEARNING SUGGESTION
+    // ============================================================
     if (
       existing.category === 'learning' &&
       body.learning_edit &&
@@ -134,48 +172,139 @@ export async function PATCH(
       }
     }
 
-    if (status === 'approved' && existing.category === 'learning') {
-      // The knowledge base (ai_knowledge_documents) is admin-managed —
-      // its own INSERT policy requires admin+ (migration 030) — so
-      // approving a learning needs the same bar, even though this
-      // route otherwise only requires agent+.
+    // ============================================================
+    // APPROVE LEARNING SUGGESTION (SUPERVISED EVOLUTION)
+    // ============================================================
+    if (status === 'approved' && existing.category === 'learning' && existing.status !== 'approved') {
       if (!hasMinRole(role, 'admin')) {
         return bad('Approving a learning requires an account admin', 403)
       }
+
       const info = typeof payload.info === 'string' && payload.info.trim() ? payload.info.trim() : existing.title
-      const contextSummary = typeof payload.context_summary === 'string' ? payload.context_summary : null
-      const application = typeof payload.application === 'string' ? payload.application : null
-      const content = [
-        info,
-        contextSummary ? `Contexto: ${contextSummary}` : null,
-        application ? `Aplicação sugerida: ${application}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n\n')
+      const learningType = String(payload.type || '').trim()
 
-      const { data: doc, error: docError } = await supabase
-        .from('ai_knowledge_documents')
-        .insert({ account_id: accountId, created_by: userId, title: info.slice(0, 200), content })
-        .select('id')
-        .single()
-      if (docError || !doc) {
-        console.error('[ai/suggestions PATCH] knowledge insert error:', docError)
-        return bad('Failed to save the learning to the knowledge base', 500)
+      if (learningType === 'property_subjective') {
+        // Resolve property
+        let propId = typeof payload.property_id === 'string' ? payload.property_id : null
+        if (!propId && typeof payload.property_name === 'string') {
+          const { data: foundProp } = await supabase
+            .from('properties')
+            .select('id')
+            .eq('account_id', accountId)
+            .ilike('name', `%${payload.property_name}%`)
+            .maybeSingle()
+          if (foundProp) propId = foundProp.id
+        }
+
+        if (propId) {
+          const { data: currentCtx } = await supabase
+            .from('property_ai_contexts')
+            .select('subjective_knowledge')
+            .eq('property_id', propId)
+            .eq('account_id', accountId)
+            .maybeSingle()
+
+          const prevKnowledge = currentCtx?.subjective_knowledge || null
+          const updatedKnowledge = prevKnowledge ? `${prevKnowledge}\n\n• ${info}` : `• ${info}`
+
+          await supabase
+            .from('property_ai_contexts')
+            .upsert({
+              property_id: propId,
+              account_id: accountId,
+              subjective_knowledge: updatedKnowledge,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'property_id' })
+
+          payload = {
+            ...payload,
+            applied_target: 'property_subjective',
+            applied_property_id: propId,
+            previous_subjective_knowledge: prevKnowledge,
+          }
+        }
+      } else if (learningType === 'never_rule') {
+        const { data: currentConfig } = await supabase
+          .from('ai_configs')
+          .select('global_never_rules')
+          .eq('account_id', accountId)
+          .maybeSingle()
+
+        const prevRules = currentConfig?.global_never_rules || null
+        const updatedRules = prevRules ? `${prevRules}\n• ${info}` : `• ${info}`
+
+        await supabase
+          .from('ai_configs')
+          .update({
+            global_never_rules: updatedRules,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId)
+
+        payload = {
+          ...payload,
+          applied_target: 'never_rule',
+          previous_never_rules: prevRules,
+        }
+      } else if (learningType === 'language_style') {
+        const { data: currentConfig } = await supabase
+          .from('ai_configs')
+          .select('team_presentation')
+          .eq('account_id', accountId)
+          .maybeSingle()
+
+        const prevPres = currentConfig?.team_presentation || null
+        const updatedPres = prevPres ? `${prevPres}\n\n[Estilo]: ${info}` : info
+
+        await supabase
+          .from('ai_configs')
+          .update({
+            team_presentation: updatedPres,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', accountId)
+
+        payload = {
+          ...payload,
+          applied_target: 'language_style',
+          previous_team_presentation: prevPres,
+        }
+      } else {
+        // Default / global_knowledge
+        const contextSummary = typeof payload.context_summary === 'string' ? payload.context_summary : null
+        const application = typeof payload.application === 'string' ? payload.application : null
+        const content = [
+          info,
+          contextSummary ? `Contexto: ${contextSummary}` : null,
+          application ? `Aplicação sugerida: ${application}` : null,
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+
+        const { data: doc, error: docError } = await supabase
+          .from('ai_knowledge_documents')
+          .insert({ account_id: accountId, created_by: userId, title: info.slice(0, 200), content })
+          .select('id')
+          .single()
+
+        if (docError || !doc) {
+          console.error('[ai/suggestions PATCH] knowledge insert error:', docError)
+          return bad('Failed to save learning to global knowledge base', 500)
+        }
+
+        try {
+          const { key: embeddingsApiKey } = await loadEmbeddingsKey(supabase, accountId)
+          await ingestDocument(supabase, accountId, { embeddingsApiKey }, doc.id, content)
+        } catch (err) {
+          console.error('[ai/suggestions PATCH] knowledge ingest error:', err)
+        }
+
+        payload = {
+          ...payload,
+          applied_target: 'global_knowledge',
+          knowledge_document_id: doc.id,
+        }
       }
-
-      // Best-effort indexing, same tolerance as POST /api/ai/knowledge:
-      // the document is already saved and lexically searchable even if
-      // embedding fails (e.g. no/expired embeddings key) — approval
-      // still succeeds, it just doesn't block on semantic indexing.
-      try {
-        const { key: embeddingsApiKey } = await loadEmbeddingsKey(supabase, accountId)
-        await ingestDocument(supabase, accountId, { embeddingsApiKey }, doc.id, content)
-      } catch (err) {
-        console.error('[ai/suggestions PATCH] knowledge ingest error:', err)
-      }
-
-      payload = { ...payload, knowledge_document_id: doc.id }
-      await supabase.from('ai_suggestions').update({ payload }).eq('id', id).eq('account_id', accountId)
     }
 
     if (status === 'approved' && existing.category === 'pipeline_move') {
@@ -207,6 +336,7 @@ export async function PATCH(
     const resolved = status !== 'pending'
     const update: Record<string, unknown> = {
       status,
+      payload,
       resolved_by: resolved ? userId : null,
       resolved_at: resolved ? new Date().toISOString() : null,
     }
@@ -222,10 +352,7 @@ export async function PATCH(
 
     if (error) {
       console.error('[ai/suggestions PATCH] update error:', error)
-      return NextResponse.json(
-        { error: 'Failed to update AI suggestion' },
-        { status: 500 },
-      )
+      return NextResponse.json({ error: 'Failed to update AI suggestion' }, { status: 500 })
     }
     if (!data) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
@@ -254,10 +381,7 @@ export async function DELETE(
 
     if (error) {
       console.error('[ai/suggestions DELETE] error:', error)
-      return NextResponse.json(
-        { error: 'Failed to delete AI suggestion' },
-        { status: 500 },
-      )
+      return NextResponse.json({ error: 'Failed to delete AI suggestion' }, { status: 500 })
     }
 
     return NextResponse.json({ success: true })

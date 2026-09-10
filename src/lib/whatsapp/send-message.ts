@@ -761,13 +761,24 @@ export async function sendMessageToConversation(
       ? interactivePayloadPreviewText(interactivePayload!)
       : contentText || `[${messageType}]`;
 
+  const convPatch: Record<string, unknown> = {
+    last_message_text: lastMessageText,
+    last_message_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  // Human takeover rule: whenever a human agent sends a message, immediately
+  // and permanently disable AI auto-reply on this conversation.
+  if (senderId) {
+    convPatch.ai_autoreply_disabled = true;
+    if (conversation.ai_transfer_status === 'pending_human') {
+      convPatch.ai_transfer_status = 'transferred';
+    }
+  }
+
   await db
     .from('conversations')
-    .update({
-      last_message_text: lastMessageText,
-      last_message_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
+    .update(convPatch)
     .eq('id', conversationId);
 
   // Pause any active Flow run for this contact — the agent stepping in

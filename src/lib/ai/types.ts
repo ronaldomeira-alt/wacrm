@@ -29,6 +29,40 @@ export interface AiConfig {
    *  knowledge base is embedded and semantic retrieval turns on; when
    *  null, retrieval falls back to lexical full-text search. */
   embeddingsApiKey: string | null
+  identityName?: string | null
+  toneStyle?: string | null
+  teamPresentation?: string | null
+  globalNeverRules?: string | null
+  businessHoursStart?: string | null
+  businessHoursEnd?: string | null
+  businessDays?: number[] | null
+  offHoursInstructions?: string | null
+  safetyMessageLimit?: number | null
+}
+
+export type BoundaryType =
+  | 'price'
+  | 'payment_terms'
+  | 'discount_negotiation'
+  | 'availability_check'
+  | 'visit_request'
+  | 'financing_inquiry'
+  | 'reservation'
+  | 'commercial_decision'
+  | 'knowledge_limit'
+  | 'incompatible_demand'
+  | 'human_requested'
+  | 'safety_limit_reached'
+  | 'custom_never_rule'
+  | null
+
+export interface AiDecision {
+  response_text: string
+  transfer_required: boolean
+  boundary_type: BoundaryType
+  reason: string | null
+  context_summary: string | null
+  suggested_next_action: string | null
 }
 
 /** A single conversation turn in the shape both providers accept. */

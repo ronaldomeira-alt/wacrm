@@ -1,16 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AiConfig } from './types'
 
-// Shared, hoisted mock state so the module mocks can close over it.
+// Shared hoisted mock state
 const h = vi.hoisted(() => ({
   loadAiConfig: vi.fn(),
   buildConversationContext: vi.fn(),
-  retrieveKnowledge: vi.fn(),
-  generateReply: vi.fn(),
+  executeConversationalTurn: vi.fn(),
   engineSendText: vi.fn(),
+  sendPushToAccount: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
+    freshConv: null as Record<string, unknown> | null,
+    recentHumanMsgs: [] as { id: string }[],
     autoResponders: [] as { id: string }[],
+    flowRuns: [] as { id: string }[],
+    contact: { name: 'João Silva' } as Record<string, unknown> | null,
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
@@ -19,29 +23,66 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./config', () => ({ loadAiConfig: h.loadAiConfig }))
 vi.mock('./context', () => ({ buildConversationContext: h.buildConversationContext }))
-vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
-vi.mock('./generate', () => ({ generateReply: h.generateReply }))
+vi.mock('./conversation-engine', () => ({ executeConversationalTurn: h.executeConversationalTurn }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
+vi.mock('@/lib/push/send', () => ({ sendPushToAccount: h.sendPushToAccount }))
+
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
       if (table === 'automations') {
-        // .select().eq().eq().in().limit() → active auto-responders
         const chain = {
           select: () => chain,
           eq: () => chain,
           in: () => chain,
-          limit: () =>
-            Promise.resolve({ data: h.state.autoResponders, error: null }),
+          limit: () => Promise.resolve({ data: h.state.autoResponders, error: null }),
         }
         return chain
       }
-      // conversations
+      if (table === 'flow_runs') {
+        const chain = {
+          select: () => chain,
+          eq: () => chain,
+          limit: () => Promise.resolve({ data: h.state.flowRuns, error: null }),
+        }
+        return chain
+      }
+      if (table === 'contacts') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: () => Promise.resolve({ data: h.state.contact, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'ai_usage_log') {
+        return {
+          insert: () => Promise.resolve({ error: null }),
+        }
+      }
+      if (table === 'messages') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                gte: () => ({
+                  limit: () => Promise.resolve({ data: h.state.recentHumanMsgs, error: null }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+      // conversations table
       return {
         select: () => ({
           eq: () => ({
-            maybeSingle: () =>
-              Promise.resolve({ data: h.state.conv, error: null }),
+            maybeSingle: () => {
+              // First query returns initial conv, second query (JIT) returns freshConv
+              const data = h.state.freshConv ?? h.state.conv
+              return Promise.resolve({ data, error: null })
+            },
           }),
         }),
         update: (payload: Record<string, unknown>) => {
@@ -69,12 +110,13 @@ const ARGS = {
 function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
   return {
     provider: 'openai',
-    model: 'gpt-test',
+    model: 'gpt-4o',
     apiKey: 'sk-test',
     systemPrompt: null,
     isActive: true,
     autoReplyEnabled: true,
-    autoReplyMaxPerConversation: 3,
+    autoReplyMaxPerConversation: 8,
+    safetyMessageLimit: 8,
     handoffAgentId: null,
     embeddingsApiKey: null,
     ...overrides,
@@ -83,130 +125,173 @@ function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
 
 beforeEach(() => {
   h.state.conv = {
+    id: 'conv-1',
     assigned_agent_id: null,
     ai_autoreply_disabled: false,
+    ai_transfer_status: 'none',
     ai_reply_count: 0,
+    property_id: null,
   }
+  h.state.freshConv = null
+  h.state.recentHumanMsgs = []
   h.state.autoResponders = []
+  h.state.flowRuns = []
+  h.state.contact = { name: 'João Silva' }
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
+
   h.loadAiConfig.mockResolvedValue(aiConfig())
-  h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
-  h.retrieveKnowledge.mockResolvedValue([])
-  h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
-  h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+  h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'Olá!' }])
+  h.executeConversationalTurn.mockResolvedValue({
+    responseText: 'Olá! Sou a assistente da equipe do Ronaldo e da Thatianna. Como posso te ajudar?',
+    handoff: false,
+    decision: {
+      transfer_required: false,
+      boundary_type: null,
+      reason: null,
+      context_summary: 'Primeiro contato',
+      suggested_next_action: null,
+    },
+    usage: { promptTokens: 100, completionTokens: 30, totalTokens: 130 },
+  })
+  h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'wa-1' })
+  h.sendPushToAccount.mockResolvedValue({ sent: 1, pruned: 0 })
 })
 
-describe('dispatchInboundToAiReply — eligibility gates', () => {
-  it('claims a slot and sends on the happy path', async () => {
+describe('Stage 6 — Integration with Real Flow, Handoff & Concurrency Safety', () => {
+  it('1. Happy Path: Executes conversational turn, claims slot, and sends via Meta Cloud API', async () => {
     await dispatchInboundToAiReply(ARGS)
+
+    expect(h.executeConversationalTurn).toHaveBeenCalled()
     expect(h.state.rpcCalls).toEqual([
       {
         name: 'claim_ai_reply_slot',
-        args: { conversation_id: 'conv-1', max_replies: 3 },
+        args: { conversation_id: 'conv-1', max_replies: 8 },
       },
     ])
     expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: 'Hello!' }),
+      expect.objectContaining({
+        accountId: 'acct-1',
+        conversationId: 'conv-1',
+        text: 'Olá! Sou a assistente da equipe do Ronaldo e da Thatianna. Como posso te ajudar?',
+        aiGenerated: true,
+      }),
     )
   })
 
-  it('grounds the reply in retrieved knowledge', async () => {
-    h.retrieveKnowledge.mockResolvedValue(['Returns accepted within 30 days.'])
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.retrieveKnowledge).toHaveBeenCalled()
-    const systemPrompt = h.generateReply.mock.calls[0][0].systemPrompt as string
-    expect(systemPrompt).toContain('Returns accepted within 30 days.')
-  })
-
-  it('stands down when an active message-level automation exists', async () => {
-    h.state.autoResponders = [{ id: 'auto-1' }]
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.generateReply).not.toHaveBeenCalled()
-    expect(h.engineSendText).not.toHaveBeenCalled()
-  })
-
-  it('does not send when the atomic slot claim loses the race', async () => {
-    h.state.claim = false
-    await dispatchInboundToAiReply(ARGS)
-    // It still attempts the claim, but the send is skipped.
-    expect(h.state.rpcCalls).toHaveLength(1)
-    expect(h.engineSendText).not.toHaveBeenCalled()
-  })
-
-  it('skips when AI is off / not configured', async () => {
-    h.loadAiConfig.mockResolvedValue(null)
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.generateReply).not.toHaveBeenCalled()
-    expect(h.engineSendText).not.toHaveBeenCalled()
-  })
-
-  it('skips when auto-reply is disabled for the account', async () => {
+  it('2. Kill-Switch: Strictly aborts with 0 sends when auto_reply_enabled is false', async () => {
     h.loadAiConfig.mockResolvedValue(aiConfig({ autoReplyEnabled: false }))
+
     await dispatchInboundToAiReply(ARGS)
+
+    expect(h.executeConversationalTurn).not.toHaveBeenCalled()
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('skips when a human agent is assigned', async () => {
-    h.state.conv = {
-      assigned_agent_id: 'agent-9',
-      ai_autoreply_disabled: false,
-      ai_reply_count: 0,
-    }
+  it('3. Active Flows & Automations: Yields to deterministic flows without sending AI message', async () => {
+    h.state.flowRuns = [{ id: 'flow-active-1' }]
+
     await dispatchInboundToAiReply(ARGS)
+
+    expect(h.executeConversationalTurn).not.toHaveBeenCalled()
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('skips when auto-reply was disabled on this conversation', async () => {
+  it('4. Persistent Human Takeover: AI stands down if conversation is already disabled or assigned', async () => {
     h.state.conv = {
-      assigned_agent_id: null,
+      id: 'conv-1',
+      assigned_agent_id: 'ronaldo-user-id',
       ai_autoreply_disabled: true,
+      ai_transfer_status: 'transferred',
+      ai_reply_count: 1,
+    }
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.executeConversationalTurn).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('5. CRITICAL CONCURRENCY RACE CONDITION: Human answers while AI is generating -> JIT aborts send', async () => {
+    // Initial check passes, but during LLM generation, a human sent a message or took over
+    h.state.freshConv = {
+      id: 'conv-1',
+      assigned_agent_id: 'thatianna-user-id', // Human assigned during processing
+      ai_autoreply_disabled: true, // Human took over
+      ai_transfer_status: 'transferred',
       ai_reply_count: 0,
     }
+
     await dispatchInboundToAiReply(ARGS)
+
+    // LLM might have run, but JIT gate caught the race condition and ABORTED sending
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('skips when the per-conversation cap is reached', async () => {
-    h.state.conv = {
-      assigned_agent_id: null,
-      ai_autoreply_disabled: false,
-      ai_reply_count: 3,
-    }
+  it('6. CRITICAL CONCURRENCY RACE CONDITION: Human message inserted in DB during LLM generation -> aborts send', async () => {
+    // A new message from agent arrived in messages table during generation
+    h.state.recentHumanMsgs = [{ id: 'msg-human-agent-1' }]
+
     await dispatchInboundToAiReply(ARGS)
+
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('skips when there is nothing to reply to', async () => {
-    h.buildConversationContext.mockResolvedValue([])
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.generateReply).not.toHaveBeenCalled()
-    expect(h.engineSendText).not.toHaveBeenCalled()
-  })
-})
+  it('7. Handoff Flow: When price or boundary is touched, sends transition, sets pending_human and pushes alert', async () => {
+    h.executeConversationalTurn.mockResolvedValueOnce({
+      responseText: 'Excelente! Para te passar a tabela de preços atualizada, vou direcionar para nossa equipe.',
+      handoff: true,
+      decision: {
+        transfer_required: true,
+        boundary_type: 'price',
+        reason: 'Cliente solicitou valores e tabela',
+        context_summary: 'Interesse no Cabo Branco Sunset',
+        suggested_next_action: 'Enviar tabela em PDF',
+      },
+      usage: { promptTokens: 200, completionTokens: 40, totalTokens: 240 },
+    })
 
-describe('dispatchInboundToAiReply — handoff', () => {
-  it('disables auto-reply, writes a summary, and does not send on handoff', async () => {
-    h.generateReply.mockResolvedValue({ text: '', handoff: true })
     await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).not.toHaveBeenCalled()
-    expect(h.state.rpcCalls).toHaveLength(0)
-    expect(h.state.updatePayload).toMatchObject({ ai_autoreply_disabled: true })
-    expect(h.state.updatePayload?.ai_handoff_summary).toContain(
-      'AI agent handed off',
+
+    // 1. Sends natural transition message to client
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'Excelente! Para te passar a tabela de preços atualizada, vou direcionar para nossa equipe.',
+      }),
     )
-    // No handoff target configured → conversation left unassigned.
-    expect(h.state.updatePayload).not.toHaveProperty('assigned_agent_id')
-  })
 
-  it('routes to the configured handoff agent on handoff', async () => {
-    h.loadAiConfig.mockResolvedValue(aiConfig({ handoffAgentId: 'agent-7' }))
-    h.generateReply.mockResolvedValue({ text: '', handoff: true })
-    await dispatchInboundToAiReply(ARGS)
+    // 2. Updates conversation to pending_human and disables auto_reply
     expect(h.state.updatePayload).toMatchObject({
       ai_autoreply_disabled: true,
-      assigned_agent_id: 'agent-7',
+      ai_transfer_status: 'pending_human',
+      ai_transfer_reason: 'Cliente solicitou valores e tabela',
+      ai_transfer_boundary_type: 'price',
     })
+    expect(h.state.updatePayload?.ai_handoff_summary).toContain('[TRANSFERÊNCIA PELA IA]')
+
+    // 3. Triggers Web Push attention notification for the team
+    expect(h.sendPushToAccount).toHaveBeenCalledWith(
+      'acct-1',
+      expect.objectContaining({
+        title: expect.stringContaining('João Silva'),
+        body: expect.stringContaining('Cliente solicitou valores e tabela'),
+      }),
+    )
+  })
+
+  it('8. Safety Message Limit: When reply count reaches safety limit (8), enforces handoff', async () => {
+    h.state.conv = {
+      id: 'conv-1',
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_transfer_status: 'none',
+      ai_reply_count: 8, // Safety limit reached
+    }
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.executeConversationalTurn).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
   })
 })

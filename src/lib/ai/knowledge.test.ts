@@ -30,9 +30,15 @@ function makeDb() {
   const db = {
     rpc: (name: string) => {
       state.rpcCalls.push(name)
-      if (name === 'match_ai_knowledge_semantic')
+      if (
+        name === 'match_property_ai_knowledge_semantic' ||
+        name === 'match_ai_knowledge_semantic'
+      )
         return Promise.resolve({ data: state.semantic, error: null })
-      if (name === 'match_ai_knowledge_fts')
+      if (
+        name === 'match_property_ai_knowledge_fts' ||
+        name === 'match_ai_knowledge_fts'
+      )
         return Promise.resolve({ data: state.fts, error: null })
       return Promise.resolve({ data: null, error: null })
     },
@@ -84,7 +90,7 @@ describe('retrieveKnowledge', () => {
     state.fts = [{ id: 'f1', content: 'F1' }]
     const out = await retrieveKnowledge(db, 'acct', { embeddingsApiKey: null }, 'q')
     expect(out).toEqual(['F1'])
-    expect(state.rpcCalls).toEqual(['match_ai_knowledge_fts'])
+    expect(state.rpcCalls).toEqual(['match_property_ai_knowledge_fts'])
     expect(h.embedTexts).not.toHaveBeenCalled()
   })
 
@@ -99,7 +105,7 @@ describe('retrieveKnowledge', () => {
     expect(out).toEqual(['S1', 'S2', 'S3'])
     expect(h.embedTexts).toHaveBeenCalledTimes(1)
     // Enough semantic hits → no FTS top-up.
-    expect(state.rpcCalls).toEqual(['match_ai_knowledge_semantic'])
+    expect(state.rpcCalls).toEqual(['match_property_ai_knowledge_semantic'])
   })
 
   it('tops up with FTS and dedupes when semantic is short', async () => {
@@ -115,8 +121,8 @@ describe('retrieveKnowledge', () => {
     const out = await retrieveKnowledge(db, 'acct', { embeddingsApiKey: 'sk-x' }, 'q', 3)
     expect(out).toEqual(['S1', 'S2', 'F1'])
     expect(state.rpcCalls).toEqual([
-      'match_ai_knowledge_semantic',
-      'match_ai_knowledge_fts',
+      'match_property_ai_knowledge_semantic',
+      'match_property_ai_knowledge_fts',
     ])
   })
 })

@@ -198,6 +198,24 @@ export type AppointmentType =
 
 export type AppointmentStatus = 'scheduled' | 'completed' | 'cancelled';
 
+export type PropertyStage = 'na_planta' | 'em_construcao' | 'pronto' | 'lancamento';
+
+export interface PropertyAiContext {
+  id: string;
+  account_id: string;
+  property_id: string;
+  stage: PropertyStage;
+  subjective_knowledge?: string | null;
+  book_storage_path?: string | null;
+  book_filename?: string | null;
+  book_file_size?: number | null;
+  book_page_count?: number | null;
+  book_extracted_text?: string | null;
+  book_indexed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Real estate listing an appointment can reference (migration 045).
  *  Deliberately minimal — just enough to name/select a property from
  *  the appointment form; not a full listings module. */
@@ -206,6 +224,24 @@ export interface Property {
   account_id: string;
   user_id: string;
   name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PropertyWithAiContext extends Property {
+  ai_context?: PropertyAiContext | null;
+}
+
+export type AiKnowledgeSourceType = 'text' | 'pdf_book' | 'subjective_text';
+
+export interface AiKnowledgeDocument {
+  id: string;
+  account_id: string;
+  property_id?: string | null;
+  created_by?: string | null;
+  title: string;
+  content: string;
+  source_type: AiKnowledgeSourceType;
   created_at: string;
   updated_at: string;
 }

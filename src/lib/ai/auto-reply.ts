@@ -1,14 +1,12 @@
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
-import { retrieveKnowledge } from './knowledge'
-import { generateReply } from './generate'
-import { buildSystemPrompt } from './defaults'
-import { buildHandoffSummary } from './handoff'
+import { executeConversationalTurn } from './conversation-engine'
 import { logAiUsage } from './usage'
-import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { sendPushToAccount } from '@/lib/push/send'
+import { resolvePropertyForConversation } from './property-resolution'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -21,24 +19,23 @@ interface DispatchArgs {
 }
 
 /**
- * AI auto-reply for a freshly-arrived inbound message.
- *
- * Invoked from the WhatsApp webhook's `after()` block, only when no
- * deterministic flow consumed the message (flows win). Mirrors the flow
- * runner's contract: it owns its try/catch and NEVER throws — a failing
- * or slow LLM call must not affect the webhook's 200 to Meta.
- *
- * Eligibility gates (any → silent no-op):
- *   - AI off / auto-reply disabled for the account
- *   - a human agent is assigned (they own the thread)
- *   - auto-reply was disabled for this conversation (prior handoff)
- *   - the per-conversation reply cap is reached
- *   - there's nothing to reply to
- *
- * The 24h WhatsApp session window is inherently open here — we're
- * reacting to a customer message that just landed — so no separate
- * window check is needed.
- */
+  * AI auto-reply for a freshly-arrived inbound message.
+  *
+  * Invoked from the WhatsApp webhook's `after()` block, only when no
+  * deterministic flow consumed the message (flows win). Mirrors the flow
+  * runner's contract: it owns its try/catch and NEVER throws — a failing
+  * or slow LLM call must not affect the webhook's 200 to Meta.
+  *
+  * Eligibility gates (any → silent no-op):
+  *   1. AI off / auto-reply disabled for the account (Master switch `auto_reply_enabled === false`)
+  *   2. Message-level active automations or active Flow run (Flows win)
+  *   3. Human agent is assigned (`assigned_agent_id !== null`)
+  *   4. Human takeover active / auto-reply disabled for this thread (`ai_autoreply_disabled === true`)
+  *   5. Handoff already pending or completed (`ai_transfer_status in ('pending_human', 'transferred')`)
+  *   6. Per-conversation safety limit reached (`ai_reply_count >= safetyLimit`)
+  *   7. Account-level burst rate limit
+  *   8. Just-in-time race condition check immediately before sending to Meta
+  */
 export async function dispatchInboundToAiReply(
   args: DispatchArgs,
 ): Promise<void> {
@@ -47,17 +44,13 @@ export async function dispatchInboundToAiReply(
   try {
     const db = supabaseAdmin()
 
+    // 1. MASTER SWITCH: Must be active and explicitly enabled for auto-reply
     const config = await loadAiConfig(db, accountId)
-    if (!config || !config.autoReplyEnabled) return
+    if (!config || !config.autoReplyEnabled) {
+      return
+    }
 
-    // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
+    // 2. FLOWS & AUTOMATIONS WIN: Check for active automations or running flows
     const { data: autoResponders } = await db
       .from('automations')
       .select('id')
@@ -67,126 +60,214 @@ export async function dispatchInboundToAiReply(
       .limit(1)
     if (autoResponders && autoResponders.length > 0) return
 
+    const { data: activeFlowRuns } = await db
+      .from('flow_runs')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('contact_id', contactId)
+      .eq('status', 'active')
+      .limit(1)
+    if (activeFlowRuns && activeFlowRuns.length > 0) return
+
+    // 3. CONVERSATION STATE GATES
     const { data: conv, error: convErr } = await db
       .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled, ai_reply_count')
+      .select('id, assigned_agent_id, ai_autoreply_disabled, ai_reply_count, property_id, ai_transfer_status, ctwa_referral')
       .eq('id', conversationId)
       .maybeSingle()
-    if (convErr || !conv) return
-    if (conv.assigned_agent_id) return // a human owns this thread
-    if (conv.ai_autoreply_disabled) return // handed off / turned off here
-    // Cheap early-out; the authoritative cap check is the atomic claim
-    // below (this read can race a concurrent inbound).
-    if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) return
 
+    if (convErr || !conv) return
+    if (conv.assigned_agent_id) return // A human agent owns this thread
+    if (conv.ai_autoreply_disabled) return // Human takeover or handed off
+    if (conv.ai_transfer_status === 'pending_human' || conv.ai_transfer_status === 'transferred') {
+      return // Handoff waiting for human response
+    }
+
+    const maxReplies = config.safetyMessageLimit ?? config.autoReplyMaxPerConversation ?? 8
+    if ((conv.ai_reply_count ?? 0) >= maxReplies) return // Per-thread safety limit reached
+
+    // 4. TRANSCRIPT / CONTEXT GATES
     const messages = await buildConversationContext(db, conversationId)
     if (messages.length === 0) return
 
-    // Account-wide throttle on the shared BYO key. The per-conversation
-    // cap bounds one thread; this bounds a burst across many threads (a
-    // marketing blast landing 200 replies at once) so we never run the
-    // owner's key past the provider's rate limit. Over the limit → skip
-    // the auto-reply; the inbound still sits in the inbox for a human.
+    // Resolve property via 5-level deterministic cascade
+    let effectivePropertyId = conv.property_id || null
+    if (!effectivePropertyId) {
+      const firstUserMsg = messages.find((m) => m.role === 'user')?.content || null
+      const resolution = await resolvePropertyForConversation({
+        db,
+        accountId,
+        conversationId,
+        currentPropertyId: null,
+        referral: (conv.ctwa_referral as any) || null,
+        firstUserMessage: firstUserMsg,
+      })
+      if (resolution.propertyId) {
+        effectivePropertyId = resolution.propertyId
+        // Best-effort persist resolved property onto conversation
+        void db
+          .from('conversations')
+          .update({ property_id: effectivePropertyId })
+          .eq('id', conversationId)
+      }
+    }
+
+    // Record timestamp before LLM call to verify concurrency / race conditions afterward
+    const inboundTriggerTimestamp = new Date().toISOString()
+
+    // 5. ACCOUNT RATE LIMIT
     const acctLimit = checkRateLimit(
       `ai-autoreply:${accountId}`,
       RATE_LIMITS.aiAutoReplyAccount,
     )
     if (!acctLimit.success) {
       console.warn(
-        `[ai auto-reply] account ${accountId} hit the per-account rate limit — skipping this inbound.`,
+        `[ai auto-reply] account ${accountId} hit rate limit — skipping this turn.`,
       )
       return
     }
 
-    // Ground the reply in the account's knowledge base (best-effort).
-    const knowledge = await retrieveKnowledge(
+    // 6. EXECUTE CONVERSATIONAL TURN
+    const turnResult = await executeConversationalTurn({
       db,
       accountId,
       config,
-      latestUserMessage(messages),
-    )
-
-    const systemPrompt = buildSystemPrompt({
-      userPrompt: config.systemPrompt,
-      mode: 'auto_reply',
-      knowledge,
-    })
-
-    const { text, handoff, usage } = await generateReply({
-      config,
-      systemPrompt,
+      contactId,
+      propertyId: effectivePropertyId,
       messages,
+      replyCount: conv.ai_reply_count ?? 0,
     })
 
-    // Record token spend on the account's BYO key. Fire-and-forget so it
-    // never adds latency to the customer-facing send: `logAiUsage`
-    // swallows its own errors, so the floating promise can't reject.
-    // Logged regardless of handoff — the provider call happened either
-    // way.
+    // 7. RECORD USAGE
     void logAiUsage(db, {
       accountId,
       conversationId,
       mode: 'auto_reply',
       provider: config.provider,
       model: config.model,
-      usage,
+      usage: turnResult.usage,
     })
 
-    if (handoff || !text) {
-      // The model can't (or shouldn't) answer — stop auto-replying on
-      // this thread and hand it to a human. We (a) pause the bot here
-      // (sticky until re-enabled), (b) route the conversation to the
-      // configured handoff agent — null leaves it in the shared queue —
-      // and (c) leave a short internal note so whoever picks it up has
-      // context. Assigning fires the `on_conversation_assigned` trigger,
-      // which notifies the agent.
-      const summary = buildHandoffSummary({
-        messages,
-        replyCount: conv.ai_reply_count ?? 0,
-      })
-      const update: Record<string, unknown> = {
-        ai_autoreply_disabled: true,
-        ai_handoff_summary: summary,
-      }
-      // Only set the assignee when a target is configured AND the thread
-      // isn't already owned — never stomp an existing human assignment.
-      if (config.handoffAgentId && !conv.assigned_agent_id) {
-        update.assigned_agent_id = config.handoffAgentId
-      }
-      await db.from('conversations').update(update).eq('id', conversationId)
+    // 8. JUST-IN-TIME RACE CONDITION & TAKEOVER VERIFICATION
+    // Re-fetch conversation state right before sending to Meta
+    const { data: freshConv, error: freshConvErr } = await db
+      .from('conversations')
+      .select('assigned_agent_id, ai_autoreply_disabled, ai_transfer_status')
+      .eq('id', conversationId)
+      .maybeSingle()
+
+    if (
+      freshConvErr ||
+      !freshConv ||
+      freshConv.assigned_agent_id ||
+      freshConv.ai_autoreply_disabled ||
+      freshConv.ai_transfer_status === 'pending_human' ||
+      freshConv.ai_transfer_status === 'transferred'
+    ) {
+      console.log(
+        `[ai auto-reply] ABORTING send for conv ${conversationId}: human takeover or assignment occurred during generation.`,
+      )
       return
     }
 
-    // Atomically claim a reply slot: the cap check + increment happen in
-    // one UPDATE, so concurrent inbounds can never overshoot the cap. If
-    // another inbound just took the last slot, `claimed` is false and we
-    // skip the send. (We consume a slot slightly before the send lands —
-    // fail-safe: under-reply rather than over-reply.)
+    // Check if any human message was inserted into messages during LLM processing
+    const { data: recentHumanMsgs } = await db
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', conversationId)
+      .eq('sender_type', 'agent')
+      .gte('created_at', inboundTriggerTimestamp)
+      .limit(1)
+
+    if (recentHumanMsgs && recentHumanMsgs.length > 0) {
+      console.log(
+        `[ai auto-reply] ABORTING send for conv ${conversationId}: human agent sent a message during generation.`,
+      )
+      return
+    }
+
+    // Re-verify master switch wasn't disabled mid-turn
+    const freshConfig = await loadAiConfig(db, accountId)
+    if (!freshConfig || !freshConfig.autoReplyEnabled) {
+      console.log(
+        `[ai auto-reply] ABORTING send for conv ${conversationId}: auto_reply_enabled disabled mid-turn.`,
+      )
+      return
+    }
+
+    // 9. ATOMIC SLOT CLAIM
     const { data: claimed, error: claimErr } = await db.rpc(
       'claim_ai_reply_slot',
       {
         conversation_id: conversationId,
-        max_replies: config.autoReplyMaxPerConversation,
+        max_replies: maxReplies,
       },
     )
     if (claimErr) {
-      // A real error here (vs. losing the cap race) is almost always a
-      // deploy issue — e.g. `claim_ai_reply_slot` not EXECUTE-able by the
-      // service role, or the migration not applied. Log it loudly: a
-      // silent return makes "auto-reply never fires" undiagnosable.
       console.error('[ai auto-reply] claim_ai_reply_slot failed:', claimErr)
       return
     }
-    if (claimed !== true) return // lost the per-conversation cap race
+    if (claimed !== true) return // Lost the slot race
 
-    await engineSendText({
-      accountId,
-      userId: configOwnerUserId,
-      conversationId,
-      contactId,
-      text,
-      aiGenerated: true,
-    })
+    // 10. SEND TO META CLOUD API
+    if (turnResult.responseText && turnResult.responseText.trim().length > 0) {
+      await engineSendText({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId,
+        contactId,
+        text: turnResult.responseText,
+        aiGenerated: true,
+      })
+    }
+
+    // 11. POST-TURN HANDOFF HANDLING
+    if (turnResult.handoff || turnResult.decision?.transfer_required) {
+      const boundary = turnResult.decision?.boundary_type || 'comercial'
+      const reason = turnResult.decision?.reason || 'Fronteira atingida'
+      const summary = turnResult.decision?.context_summary || 'Atendimento transferido'
+      const action = turnResult.decision?.suggested_next_action || 'Dar continuidade ao atendimento'
+
+      const note = [
+        `[TRANSFERÊNCIA PELA IA]`,
+        `Fronteira: ${boundary}`,
+        `Motivo: ${reason}`,
+        `Resumo: ${summary}`,
+        `Próxima Ação Sugerida: ${action}`,
+      ].join('\n')
+
+      const convUpdate: Record<string, unknown> = {
+        ai_autoreply_disabled: true,
+        ai_transfer_status: 'pending_human',
+        ai_transfer_reason: reason,
+        ai_transfer_boundary_type: boundary,
+        ai_transfer_at: new Date().toISOString(),
+        ai_handoff_summary: note,
+      }
+
+      if (config.handoffAgentId && !freshConv.assigned_agent_id) {
+        convUpdate.assigned_agent_id = config.handoffAgentId
+      }
+
+      await db.from('conversations').update(convUpdate).eq('id', conversationId)
+
+      // Attention Push Notification for the human team
+      const { data: contact } = await db
+        .from('contacts')
+        .select('name')
+        .eq('id', contactId)
+        .maybeSingle()
+
+      const contactName = contact?.name || 'Novo Lead'
+      void sendPushToAccount(accountId, {
+        title: `🚨 Lead precisa da sua atenção: ${contactName}`,
+        body: `${reason}. Resumo: ${summary}`,
+        url: `/inbox?conversationId=${conversationId}`,
+        tag: `ai-handoff-${conversationId}`,
+      }).catch((err) => {
+        console.error('[ai auto-reply] push notification failed:', err)
+      })
+    }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }

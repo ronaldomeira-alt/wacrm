@@ -2,10 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { loadAiConfig } from '@/lib/ai/config'
-import { retrieveKnowledge } from '@/lib/ai/knowledge'
-import { generateReply } from '@/lib/ai/generate'
-import { buildSystemPrompt } from '@/lib/ai/defaults'
-import { latestUserMessage } from '@/lib/ai/query'
+import { executeConversationalTurn } from '@/lib/ai/conversation-engine'
 import { AiError, type ChatMessage } from '@/lib/ai/types'
 
 // Keep the tested transcript bounded, mirroring the live context window.
@@ -72,20 +69,99 @@ export async function POST(request: Request) {
       )
     }
 
-    const knowledge = await retrieveKnowledge(
-      supabase,
+    const propertyId =
+      typeof body?.property_id === 'string'
+        ? body.property_id.trim()
+        : typeof body?.propertyId === 'string'
+          ? body.propertyId.trim()
+          : null
+
+    const contactId =
+      typeof body?.contact_id === 'string'
+        ? body.contact_id.trim()
+        : typeof body?.contactId === 'string'
+          ? body.contactId.trim()
+          : null
+
+    const simulatedHours = body?.simulated_hours || 'real_time'
+
+    let simulatedLeadContext = null
+    if (body?.simulated_lead && typeof body.simulated_lead === 'object') {
+      const sl = body.simulated_lead
+      const knownFacts: string[] = []
+      if (sl.purpose) knownFacts.push(`Finalidade declarada: ${Array.isArray(sl.purpose) ? sl.purpose.join(', ') : sl.purpose}`)
+      if (sl.location) knownFacts.push(`Bairros/Localizações de interesse: ${Array.isArray(sl.location) ? sl.location.join(', ') : sl.location}`)
+      if (sl.property_type) knownFacts.push(`Tipologia desejada: ${Array.isArray(sl.property_type) ? sl.property_type.join(', ') : sl.property_type}`)
+      if (sl.price_max || sl.price_min) {
+        const minStr = sl.price_min ? `R$ ${Number(sl.price_min).toLocaleString('pt-BR')}` : ''
+        const maxStr = sl.price_max ? `R$ ${Number(sl.price_max).toLocaleString('pt-BR')}` : ''
+        knownFacts.push(`Faixa de orçamento informada: ${[minStr && `a partir de ${minStr}`, maxStr && `até ${maxStr}`].filter(Boolean).join(' ')}`)
+      }
+      if (sl.bedrooms) knownFacts.push(`Quartos desejados: ${Array.isArray(sl.bedrooms) ? sl.bedrooms.join(' ou ') : sl.bedrooms}`)
+      if (sl.features) knownFacts.push(`Preferências: ${Array.isArray(sl.features) ? sl.features.join(', ') : sl.features}`)
+      if (sl.profile) knownFacts.push(`Perfil: ${Array.isArray(sl.profile) ? sl.profile.join(', ') : sl.profile}`)
+      if (sl.intent) knownFacts.push(`Momento / Grau de intenção: ${sl.intent}`)
+      if (sl.notes) knownFacts.push(`Notas: ${sl.notes}`)
+      if (sl.tags) knownFacts.push(`Tags: ${Array.isArray(sl.tags) ? sl.tags.join(', ') : sl.tags}`)
+      if (typeof sl.ai_score === 'number') knownFacts.push(`Score do lead: ${sl.ai_score}/10`)
+
+      const contactName = sl.name || 'Cliente Simulado'
+      simulatedLeadContext = {
+        contactName,
+        aiScore: typeof sl.ai_score === 'number' ? sl.ai_score : null,
+        aiScoreReason: sl.ai_score_reason || null,
+        summary: {
+          purpose: Array.isArray(sl.purpose) ? sl.purpose : sl.purpose ? [sl.purpose] : [],
+          property_type: Array.isArray(sl.property_type) ? sl.property_type : sl.property_type ? [sl.property_type] : [],
+          location: Array.isArray(sl.location) ? sl.location : sl.location ? [sl.location] : [],
+          price_min: typeof sl.price_min === 'number' ? sl.price_min : null,
+          price_max: typeof sl.price_max === 'number' ? sl.price_max : null,
+          price_flex_max: null,
+          bedrooms: Array.isArray(sl.bedrooms) ? sl.bedrooms : sl.bedrooms ? [Number(sl.bedrooms)] : [],
+          features: Array.isArray(sl.features) ? sl.features : sl.features ? [sl.features] : [],
+          profile: Array.isArray(sl.profile) ? sl.profile : sl.profile ? [sl.profile] : [],
+          intent: sl.intent || null,
+          stage_signal: null,
+          notes: sl.notes || null,
+        },
+        tags: Array.isArray(sl.tags) ? sl.tags : [],
+        promptExcerpts: knownFacts.length > 0
+          ? `INFORMAÇÕES JÁ EXTRAÍDAS E CONFIRMADAS SOBRE ESTE CLIENTE (${contactName}):\n- ` +
+            knownFacts.join('\n- ') +
+            '\n\nIMPORTANTE: O cliente JÁ informou os pontos acima. NÃO pergunte novamente o que já consta nesta lista (como orçamento, finalidade ou localização) a menos que o cliente mude de ideia ou o contexto exija esclarecimento natural.'
+          : '',
+      }
+    }
+
+    const startTime = Date.now()
+    const turnResult = await executeConversationalTurn({
+      db: supabase,
       accountId,
       config,
-      latestUserMessage(messages),
-    )
-    const systemPrompt = buildSystemPrompt({
-      userPrompt: config.systemPrompt,
-      mode: 'auto_reply',
-      knowledge,
+      contactId,
+      propertyId,
+      messages,
+      simulatedHours,
+      simulatedLeadContext,
+      replyCount: messages.filter((m) => m.role === 'assistant').length,
     })
+    const latencyMs = Date.now() - startTime
 
-    const { text, handoff } = await generateReply({ config, systemPrompt, messages })
-    return NextResponse.json({ reply: text, handoff })
+    return NextResponse.json({
+      reply: turnResult.responseText,
+      handoff: turnResult.handoff,
+      decision: turnResult.decision,
+      retrievedKnowledgeCount: turnResult.retrievedKnowledgeCount,
+      retrievedKnowledge: turnResult.retrievedKnowledge,
+      propertyInfo: turnResult.propertyInfo,
+      businessHoursContext: turnResult.businessHoursContext,
+      leadContext: turnResult.leadContext,
+      systemPrompt: turnResult.systemPrompt,
+      usage: turnResult.usage,
+      latencyMs,
+      model: config.model,
+      provider: config.provider,
+    })
   } catch (err) {
     if (err instanceof AiError) {
       return NextResponse.json(

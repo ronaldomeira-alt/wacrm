@@ -1,28 +1,25 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AiConfig } from './types'
+import type { PropertyStage } from '@/types'
 import { chunkText } from './chunk'
 import { embedTexts, toVectorLiteral } from './embeddings'
 
 // ============================================================
 // Knowledge base: ingest (chunk + optionally embed) and hybrid
-// retrieve (semantic when an embeddings key is present, topped up with
-// lexical full-text search).
+// retrieve with strict per-property isolation.
 // ============================================================
 
 interface MatchRow {
   id: string
   content: string
+  is_global?: boolean
 }
 
 /**
  * (Re)build the chunks for one document. Deletes the document's
  * existing chunks, re-chunks the content, and — when the account has an
- * embeddings key — embeds each chunk. Runs under whatever client the
- * caller passes (service-role for ingest routes).
- *
- * Throws on embedding failure so the ingest route can report it; the
- * chunks are only written once embedding (if attempted) succeeds, so a
- * failed embed never leaves half-indexed rows.
+ * embeddings key — embeds each chunk. If propertyId is provided, attaches
+ * it to every chunk for strict isolation in RAG retrieval.
  */
 export async function ingestDocument(
   db: SupabaseClient,
@@ -30,6 +27,7 @@ export async function ingestDocument(
   config: Pick<AiConfig, 'embeddingsApiKey'>,
   documentId: string,
   content: string,
+  propertyId: string | null = null,
 ): Promise<void> {
   const chunks = chunkText(content)
 
@@ -42,12 +40,6 @@ export async function ingestDocument(
 
   if (chunks.length === 0) return
 
-  // Embed if a key is set, but DON'T let an embedding failure stop the
-  // chunks from being stored: a failed embed must still leave the
-  // document searchable lexically. We record the error and rethrow it
-  // AFTER inserting (embedding-less) rows, so the route can warn
-  // "semantic indexing failed" — which is now truthful, because lexical
-  // search really does still work.
   let embeddings: number[][] | null = null
   let embedError: unknown = null
   if (config.embeddingsApiKey) {
@@ -58,11 +50,12 @@ export async function ingestDocument(
     }
   }
 
-  const rows = chunks.map((content, i) => ({
+  const rows = chunks.map((chunkContent, i) => ({
     document_id: documentId,
     account_id: accountId,
+    property_id: propertyId,
     chunk_index: i,
-    content,
+    content: chunkContent,
     embedding: embeddings ? toVectorLiteral(embeddings[i]) : null,
   }))
 
@@ -73,28 +66,180 @@ export async function ingestDocument(
 }
 
 /**
- * Retrieve up to `k` knowledge excerpts relevant to `queryText`.
- *
- * Semantic-primary when an embeddings key is configured (embed the
- * query → cosine-nearest chunks), then topped up with lexical full-text
- * matches to fill `k`. Lexical-only when there's no key. Best-effort:
- * any failure (no KB, embedding error, RPC error) degrades to fewer or
- * zero results and never throws into the draft / auto-reply path.
+ * Replace a property's Book PDF document and chunks.
+ * Purges prior book documents/chunks for this property only.
  */
-export async function retrieveKnowledge(
+export async function replacePropertyBook(
   db: SupabaseClient,
   accountId: string,
   config: Pick<AiConfig, 'embeddingsApiKey'>,
+  propertyId: string,
+  args: {
+    filename: string
+    extractedText: string
+    storagePath?: string | null
+    fileSize?: number | null
+    pageCount?: number | null
+  },
+): Promise<void> {
+  const { filename, extractedText, storagePath, fileSize, pageCount } = args
+
+  // 1. Delete prior book documents for this property (chunks cascade-deleted)
+  await db
+    .from('ai_knowledge_documents')
+    .delete()
+    .eq('account_id', accountId)
+    .eq('property_id', propertyId)
+    .eq('source_type', 'pdf_book')
+
+  // 2. Insert new book document
+  const { data: doc, error: docErr } = await db
+    .from('ai_knowledge_documents')
+    .insert({
+      account_id: accountId,
+      property_id: propertyId,
+      title: `Book: ${filename}`,
+      content: extractedText,
+      source_type: 'pdf_book',
+    })
+    .select('id')
+    .single()
+
+  if (docErr || !doc) throw docErr || new Error('Failed to create book document')
+
+  // 3. Ingest chunks with property_id
+  await ingestDocument(db, accountId, config, doc.id, extractedText, propertyId)
+
+  // 4. Upsert property_ai_contexts
+  const { error: ctxErr } = await db.from('property_ai_contexts').upsert(
+    {
+      account_id: accountId,
+      property_id: propertyId,
+      book_filename: filename,
+      book_file_size: fileSize ?? null,
+      book_page_count: pageCount ?? null,
+      book_storage_path: storagePath ?? null,
+      book_extracted_text: extractedText,
+      book_indexed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'property_id' },
+  )
+
+  if (ctxErr) throw ctxErr
+}
+
+/**
+ * Remove a property's Book and its indexed chunks.
+ */
+export async function removePropertyBook(
+  db: SupabaseClient,
+  accountId: string,
+  propertyId: string,
+): Promise<void> {
+  // 1. Delete book documents (chunks cascade)
+  await db
+    .from('ai_knowledge_documents')
+    .delete()
+    .eq('account_id', accountId)
+    .eq('property_id', propertyId)
+    .eq('source_type', 'pdf_book')
+
+  // 2. Clear book metadata on property_ai_contexts
+  await db
+    .from('property_ai_contexts')
+    .update({
+      book_filename: null,
+      book_file_size: null,
+      book_page_count: null,
+      book_storage_path: null,
+      book_extracted_text: null,
+      book_indexed_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('account_id', accountId)
+    .eq('property_id', propertyId)
+}
+
+/**
+ * Save/replace a property's subjective knowledge (the broker's free-form insights)
+ * and indexes its chunks for isolated RAG retrieval.
+ */
+export async function replacePropertySubjectiveKnowledge(
+  db: SupabaseClient,
+  accountId: string,
+  config: Pick<AiConfig, 'embeddingsApiKey'>,
+  propertyId: string,
+  args: {
+    subjectiveKnowledge?: string | null
+    stage?: PropertyStage
+  },
+): Promise<void> {
+  const { subjectiveKnowledge, stage } = args
+  const trimmed = (subjectiveKnowledge || '').trim()
+
+  // 1. Upsert property_ai_contexts
+  const updatePayload: Record<string, unknown> = {
+    account_id: accountId,
+    property_id: propertyId,
+    subjective_knowledge: trimmed || null,
+    updated_at: new Date().toISOString(),
+  }
+  if (stage) updatePayload.stage = stage
+
+  const { error: ctxErr } = await db
+    .from('property_ai_contexts')
+    .upsert(updatePayload, { onConflict: 'property_id' })
+
+  if (ctxErr) throw ctxErr
+
+  // 2. Delete prior subjective document for this property
+  await db
+    .from('ai_knowledge_documents')
+    .delete()
+    .eq('account_id', accountId)
+    .eq('property_id', propertyId)
+    .eq('source_type', 'subjective_text')
+
+  // 3. If there is text, index it as an isolated document
+  if (trimmed) {
+    const { data: doc, error: docErr } = await db
+      .from('ai_knowledge_documents')
+      .insert({
+        account_id: accountId,
+        property_id: propertyId,
+        title: 'Conhecimento Subjetivo do Corretor',
+        content: trimmed,
+        source_type: 'subjective_text',
+      })
+      .select('id')
+      .single()
+
+    if (docErr || !doc) throw docErr || new Error('Failed to create subjective document')
+
+    await ingestDocument(db, accountId, config, doc.id, trimmed, propertyId)
+  }
+}
+
+/**
+ * Retrieve knowledge excerpts strictly scoped to:
+ * - Chunks belonging to `propertyId`
+ * - PLUS global chunks (where `property_id IS NULL`)
+ *
+ * NEVER returns chunks belonging to any other property.
+ */
+export async function retrievePropertyKnowledge(
+  db: SupabaseClient,
+  accountId: string,
+  config: Pick<AiConfig, 'embeddingsApiKey'>,
+  propertyId: string | null | undefined,
   queryText: string,
   k = 5,
 ): Promise<string[]> {
   const query = queryText.trim()
   if (!query || k <= 0) return []
 
-  // Skip everything when the account has no knowledge base — otherwise
-  // every draft / auto-reply would pay for a query embedding + two RPCs
-  // just to get []. One cheap indexed COUNT (head, no rows) instead of a
-  // paid embeddings call on the hot path.
+  // Skip when the account has no chunks
   try {
     const { count, error } = await db
       .from('ai_knowledge_chunks')
@@ -106,14 +251,16 @@ export async function retrieveKnowledge(
   }
 
   const picked = new Map<string, string>() // id → content, preserves order
+  const targetPropertyId = propertyId || null
 
-  // Semantic path.
+  // Semantic path with property isolation RPC
   if (config.embeddingsApiKey) {
     try {
       const [queryEmbedding] = await embedTexts(config.embeddingsApiKey, [query])
       if (queryEmbedding) {
-        const { data, error } = await db.rpc('match_ai_knowledge_semantic', {
+        const { data, error } = await db.rpc('match_property_ai_knowledge_semantic', {
           p_account_id: accountId,
+          p_property_id: targetPropertyId,
           p_query_embedding: toVectorLiteral(queryEmbedding),
           p_match_count: k,
         })
@@ -126,11 +273,12 @@ export async function retrieveKnowledge(
     }
   }
 
-  // Lexical top-up (also the sole path when there's no embeddings key).
+  // Lexical top-up with property isolation RPC
   if (picked.size < k) {
     try {
-      const { data, error } = await db.rpc('match_ai_knowledge_fts', {
+      const { data, error } = await db.rpc('match_property_ai_knowledge_fts', {
         p_account_id: accountId,
+        p_property_id: targetPropertyId,
         p_query: query,
         p_match_count: k,
       })
@@ -146,4 +294,17 @@ export async function retrieveKnowledge(
   }
 
   return Array.from(picked.values()).slice(0, k)
+}
+
+/**
+ * Retrieve global knowledge (backward-compatible wrapper).
+ */
+export async function retrieveKnowledge(
+  db: SupabaseClient,
+  accountId: string,
+  config: Pick<AiConfig, 'embeddingsApiKey'>,
+  queryText: string,
+  k = 5,
+): Promise<string[]> {
+  return retrievePropertyKnowledge(db, accountId, config, null, queryText, k)
 }

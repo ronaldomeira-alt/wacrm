@@ -4,8 +4,23 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { BrainCircuit, Check, CheckCheck, ChevronDown, EyeOff, Loader2, X } from 'lucide-react';
+import {
+  BrainCircuit,
+  Check,
+  CheckCheck,
+  ChevronDown,
+  EyeOff,
+  Loader2,
+  X,
+  BookOpen,
+  Sparkles,
+  ListTodo,
+  Sliders,
+  Building2,
+  GraduationCap,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -16,6 +31,11 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { SuggestionCard } from '@/components/ai-hub/suggestion-card';
+import { PropertyKnowledgeList } from '@/components/agents/property-knowledge-list';
+import { GlobalKnowledgeSection } from '@/components/agents/global-knowledge-section';
+import { AiPlayground } from '@/components/agents/ai-playground';
+import { AiBehaviorSettings } from '@/components/agents/ai-behavior-settings';
+import { AiEvolutionDashboard } from '@/components/agents/ai-evolution-dashboard';
 import {
   AI_SUGGESTION_CATEGORIES,
   aiSuggestionCategoryConfig,
@@ -24,6 +44,7 @@ import {
 import type { AiSuggestion, AiSuggestionCategory, AiSuggestionStatus } from '@/types';
 
 type StatusFilter = AiSuggestionStatus;
+type MainTab = 'knowledge' | 'playground' | 'evolution' | 'suggestions' | 'behavior';
 
 const STATUS_FILTERS: StatusFilter[] = [
   'pending',
@@ -45,18 +66,29 @@ function AgentsPageInner() {
   const t = useTranslations('AiHub');
   const router = useRouter();
   const searchParams = useSearchParams();
-  // Deep-link from the Inbox's discreet "pending suggestions" hint
-  // (contact-sidebar.tsx) — `?contact=<id>` prefilters to that lead.
+
   const contactFilter = searchParams.get('contact');
+  const tabParam = searchParams.get('tab') as MainTab | null;
+
+  const [activeTab, setActiveTab] = useState<MainTab>(
+    tabParam || (contactFilter ? 'suggestions' : 'knowledge'),
+  );
+
+  const handleTabChange = (val: string) => {
+    const nextTab = val as MainTab;
+    setActiveTab(nextTab);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', nextTab);
+    router.replace(`/agents?${params.toString()}`, { scroll: false });
+  };
+
   const [suggestions, setSuggestions] = useState<AiSuggestion[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('pending');
-  // Which category groups are expanded — collapsed by default (section
-  // "AGRUPAMENTO DA CENTRAL DE IA"). Cards themselves are unchanged;
-  // this only controls whether a group's card grid is shown.
   const [expandedCategories, setExpandedCategories] = useState<
     Set<AiSuggestionCategory>
   >(new Set());
+
   const toggleCategory = useCallback((cat: AiSuggestionCategory) => {
     setExpandedCategories((prev) => {
       const next = new Set(prev);
@@ -66,7 +98,7 @@ function AgentsPageInner() {
     });
   }, []);
 
-  const load = useCallback(async () => {
+  const loadSuggestions = useCallback(async () => {
     try {
       const params = new URLSearchParams({ status: statusFilter });
       if (contactFilter) params.set('contactId', contactFilter);
@@ -89,8 +121,10 @@ function AgentsPageInner() {
   }, [router, searchParams]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (activeTab === 'suggestions') {
+      loadSuggestions();
+    }
+  }, [activeTab, loadSuggestions]);
 
   const patchSuggestion = useCallback(async (id: string, status: AiSuggestionStatus) => {
     const res = await fetch(`/api/ai/suggestions/${id}`, {
@@ -104,25 +138,18 @@ function AgentsPageInner() {
 
   const updateStatus = useCallback(
     async (id: string, status: AiSuggestionStatus) => {
-      // Optimistic — the item drops out of the current (pending) view
-      // immediately rather than waiting on the round-trip.
       setSuggestions((prev) => prev?.filter((s) => s.id !== id) ?? prev);
       try {
         await patchSuggestion(id, status);
         toast.success(t('toastUpdated'));
       } catch {
         toast.error(t('toastError'));
-        load();
+        loadSuggestions();
       }
     },
-    [load, patchSuggestion, t],
+    [loadSuggestions, patchSuggestion, t],
   );
 
-  // Grouped by category (section "AGRUPAMENTO DA CENTRAL DE IA") — the
-  // list itself is already scoped to `statusFilter` by the fetch above,
-  // so a category's items here are exactly what its group shows once
-  // expanded, and — while `statusFilter === 'pending'` — exactly what
-  // "Aceitar tudo"/"Ignorar tudo" acts on below.
   const itemsByCategory = AI_SUGGESTION_CATEGORIES.reduce<
     Record<AiSuggestionCategory, AiSuggestion[]>
   >(
@@ -132,6 +159,7 @@ function AgentsPageInner() {
     },
     {} as Record<AiSuggestionCategory, AiSuggestion[]>,
   );
+
   const counts = AI_SUGGESTION_CATEGORIES.reduce<Record<string, number>>(
     (acc, cat) => {
       acc[cat] = itemsByCategory[cat].length;
@@ -140,13 +168,10 @@ function AgentsPageInner() {
     {},
   );
 
-  // Per-group "Aceitar tudo" / "Ignorar tudo" — same `patchSuggestion`
-  // used by every individual card action and by the pre-existing
-  // pipeline-move bulk-accept button below, just looped per group
-  // instead of duplicating the PATCH logic.
   const [groupBulkRunning, setGroupBulkRunning] = useState<
     Partial<Record<AiSuggestionCategory, boolean>>
   >({});
+
   const runGroupBulk = useCallback(
     async (category: AiSuggestionCategory, targetStatus: 'approved' | 'ignored') => {
       const targets = suggestions?.filter((s) => s.category === category) ?? [];
@@ -170,15 +195,12 @@ function AgentsPageInner() {
         );
       } else {
         toast.error(t('groupBulkPartial', { failed, total: targets.length }));
-        load();
+        loadSuggestions();
       }
     },
-    [suggestions, patchSuggestion, load, t],
+    [suggestions, patchSuggestion, loadSuggestions, t],
   );
 
-  // "Aceitar todas as movimentações" (section 12) — pipeline_move only,
-  // never mixed with other categories. Only meaningful while looking at
-  // the pending view, since that's the only status the button acts on.
   const pendingPipelineMoves = useMemo(
     () =>
       statusFilter === 'pending'
@@ -193,10 +215,6 @@ function AgentsPageInner() {
     setBulkRunning(true);
     const targets = pendingPipelineMoves;
     let failed = 0;
-    // Sequential, not parallel — each acceptance is recorded as its own
-    // decision (section 12) and moves a real deal; running them one at a
-    // time keeps that audit trail honest and avoids hammering the
-    // provider-agnostic deals table with concurrent writes.
     for (const s of targets) {
       try {
         await patchSuggestion(s.id, 'approved');
@@ -211,189 +229,249 @@ function AgentsPageInner() {
       toast.success(t('bulkAcceptSuccess', { count: targets.length }));
     } else {
       toast.error(t('bulkAcceptPartial', { failed, total: targets.length }));
-      load();
+      loadSuggestions();
     }
-  }, [pendingPipelineMoves, patchSuggestion, load, t]);
+  }, [pendingPipelineMoves, patchSuggestion, loadSuggestions, t]);
 
   return (
-    <div>
-      <div className="flex items-center gap-2">
-        <BrainCircuit className="h-6 w-6 text-primary" />
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">
-          {t('title')}
-        </h1>
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <div className="flex items-center gap-2">
+          <BrainCircuit className="h-6 w-6 text-primary" />
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            Central de IA
+          </h1>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Gestão de conhecimento dos empreendimentos, testes de conversação, atividades e comportamento da IA.
+        </p>
       </div>
-      <p className="mt-1 text-sm text-muted-foreground">{t('subtitle')}</p>
 
       {contactFilter && (
         <button
           type="button"
           onClick={clearContactFilter}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium text-primary-on-soft"
+          className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium text-primary"
         >
           {suggestions?.[0]?.contact?.name ?? t('filteredByContact')}
           <X className="h-3 w-3" />
         </button>
       )}
 
-      {/* Status filter — plain buttons rather than the Tabs primitive
-          since it's a single flat row with no per-tab panel markup. */}
-      <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap gap-1.5">
-          {STATUS_FILTERS.map((s) => (
-            <Button
-              key={s}
-              size="sm"
-              variant={statusFilter === s ? 'default' : 'outline'}
-              onClick={() => setStatusFilter(s)}
-            >
-              {t(`status.${s}`)}
-            </Button>
-          ))}
-        </div>
-        {pendingPipelineMoves.length > 0 && (
-          <Button size="sm" variant="outline" onClick={() => setBulkConfirmOpen(true)}>
-            <CheckCheck className="h-3.5 w-3.5" />
-            {t('bulkAcceptButton')}
-          </Button>
-        )}
-      </div>
+      {/* Main Tabs */}
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
+        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 max-w-3xl">
+          <TabsTrigger value="knowledge" className="flex items-center gap-1.5">
+            <BookOpen className="h-4 w-4" />
+            <span>Conhecimento</span>
+          </TabsTrigger>
+          <TabsTrigger value="playground" className="flex items-center gap-1.5">
+            <Sparkles className="h-4 w-4" />
+            <span>Playground</span>
+          </TabsTrigger>
+          <TabsTrigger value="evolution" className="flex items-center gap-1.5">
+            <GraduationCap className="h-4 w-4" />
+            <span>Evolução</span>
+          </TabsTrigger>
+          <TabsTrigger value="suggestions" className="flex items-center gap-1.5">
+            <ListTodo className="h-4 w-4" />
+            <span>Sugestões</span>
+          </TabsTrigger>
+          <TabsTrigger value="behavior" className="flex items-center gap-1.5">
+            <Sliders className="h-4 w-4" />
+            <span>Comportamento</span>
+          </TabsTrigger>
+        </TabsList>
 
-      {statusFilter === 'ignored' && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {t('ignoredRetentionHint', { days: IGNORED_SUGGESTION_RETENTION_DAYS })}
-        </p>
-      )}
-
-      <Dialog open={bulkConfirmOpen} onOpenChange={setBulkConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('bulkAcceptTitle')}</DialogTitle>
-            <DialogDescription>
-              {t('bulkAcceptConfirm', { count: pendingPipelineMoves.length })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" disabled={bulkRunning} onClick={() => setBulkConfirmOpen(false)}>
-              {t('bulkAcceptCancel')}
-            </Button>
-            <Button disabled={bulkRunning} onClick={runBulkAccept}>
-              {bulkRunning && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {t('bulkAcceptConfirmBtn')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <div className="mt-4">
-        {error ? (
-          <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/40">
-            <p className="text-sm text-destructive">{error}</p>
-            <Button variant="outline" size="sm" onClick={load}>
-              {t('retry')}
-            </Button>
+        {/* Tab 1: Conhecimento */}
+        <TabsContent value="knowledge" className="space-y-8">
+          <GlobalKnowledgeSection />
+          
+          <div className="space-y-3 pt-4 border-t border-border">
+            <div>
+              <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-primary" />
+                Empreendimentos & Books
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Configure o Book técnico (PDF) e as anotações práticas do corretor para cada empreendimento. O conhecimento é isolado por imóvel no RAG.
+              </p>
+            </div>
+            <PropertyKnowledgeList />
           </div>
-        ) : suggestions === null ? (
-          <div className="flex h-48 items-center justify-center">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
-          </div>
-        ) : suggestions.length > 0 ? (
-          <div className="space-y-3">
-            {AI_SUGGESTION_CATEGORIES.filter((cat) => counts[cat] > 0).map((cat) => {
-              const meta = aiSuggestionCategoryConfig[cat];
-              const Icon = meta.icon;
-              const items = itemsByCategory[cat];
-              const isOpen = expandedCategories.has(cat);
-              const running = groupBulkRunning[cat] ?? false;
-              return (
-                <div key={cat} className="rounded-xl border border-border bg-card">
-                  <button
-                    type="button"
-                    onClick={() => toggleCategory(cat)}
-                    className="flex w-full items-center justify-between gap-2 p-3 text-left"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Icon className="h-4 w-4 text-primary" />
-                      <span className="text-sm font-medium text-foreground">
-                        {t(`categories.${meta.labelKey}`)}
-                      </span>
-                      <span className="text-sm text-muted-foreground">({items.length})</span>
-                    </span>
-                    <ChevronDown
-                      className={cn(
-                        'h-4 w-4 text-muted-foreground transition-transform',
-                        isOpen && 'rotate-180',
-                      )}
-                    />
-                  </button>
+        </TabsContent>
 
-                  {isOpen && (
-                    <div className="border-t border-border p-3">
-                      {/* Bulk actions — same patchSuggestion loop as the
-                          existing pipeline-move bulk-accept button, just
-                          generalized to any category/status. Only
-                          meaningful on the pending view, same as that
-                          button. */}
-                      {statusFilter === 'pending' && (
-                        <div className="mb-3 flex flex-wrap gap-1.5">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={running}
-                            onClick={() => runGroupBulk(cat, 'ignored')}
-                          >
-                            {running ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <EyeOff className="h-3.5 w-3.5" />
-                            )}
-                            {t('groupIgnoreAll')}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={running}
-                            onClick={() => runGroupBulk(cat, 'approved')}
-                          >
-                            {running ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Check className="h-3.5 w-3.5" />
-                            )}
-                            {t('groupAcceptAll')}
-                          </Button>
+        {/* Tab 2: Playground */}
+        <TabsContent value="playground">
+          <AiPlayground />
+        </TabsContent>
+
+        {/* Tab 3: Evolução & Aprendizado */}
+        <TabsContent value="evolution">
+          <AiEvolutionDashboard />
+        </TabsContent>
+
+        {/* Tab 4: Sugestões */}
+        <TabsContent value="suggestions" className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-1.5">
+              {STATUS_FILTERS.map((s) => (
+                <Button
+                  key={s}
+                  size="sm"
+                  variant={statusFilter === s ? 'default' : 'outline'}
+                  onClick={() => setStatusFilter(s)}
+                >
+                  {t(`status.${s}`)}
+                </Button>
+              ))}
+            </div>
+            {pendingPipelineMoves.length > 0 && (
+              <Button size="sm" variant="outline" onClick={() => setBulkConfirmOpen(true)}>
+                <CheckCheck className="h-3.5 w-3.5" />
+                {t('bulkAcceptButton')}
+              </Button>
+            )}
+          </div>
+
+          {statusFilter === 'ignored' && (
+            <p className="text-xs text-muted-foreground">
+              {t('ignoredRetentionHint', { days: IGNORED_SUGGESTION_RETENTION_DAYS })}
+            </p>
+          )}
+
+          <Dialog open={bulkConfirmOpen} onOpenChange={setBulkConfirmOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{t('bulkAcceptTitle')}</DialogTitle>
+                <DialogDescription>
+                  {t('bulkAcceptConfirm', { count: pendingPipelineMoves.length })}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="outline" disabled={bulkRunning} onClick={() => setBulkConfirmOpen(false)}>
+                  {t('bulkAcceptCancel')}
+                </Button>
+                <Button disabled={bulkRunning} onClick={runBulkAccept}>
+                  {bulkRunning && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {t('bulkAcceptConfirmBtn')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <div>
+            {error ? (
+              <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/40">
+                <p className="text-sm text-destructive">{error}</p>
+                <Button variant="outline" size="sm" onClick={loadSuggestions}>
+                  {t('retry')}
+                </Button>
+              </div>
+            ) : suggestions === null ? (
+              <div className="flex h-48 items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              </div>
+            ) : suggestions.length > 0 ? (
+              <div className="space-y-3">
+                {AI_SUGGESTION_CATEGORIES.filter((cat) => counts[cat] > 0).map((cat) => {
+                  const meta = aiSuggestionCategoryConfig[cat];
+                  const Icon = meta.icon;
+                  const items = itemsByCategory[cat];
+                  const isOpen = expandedCategories.has(cat);
+                  const running = groupBulkRunning[cat] ?? false;
+                  return (
+                    <div key={cat} className="rounded-xl border border-border bg-card">
+                      <button
+                        type="button"
+                        onClick={() => toggleCategory(cat)}
+                        className="flex w-full items-center justify-between gap-2 p-3 text-left"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Icon className="h-4 w-4 text-primary" />
+                          <span className="text-sm font-medium text-foreground">
+                            {t(`categories.${meta.labelKey}`)}
+                          </span>
+                          <span className="text-sm text-muted-foreground">({items.length})</span>
+                        </span>
+                        <ChevronDown
+                          className={cn(
+                            'h-4 w-4 text-muted-foreground transition-transform',
+                            isOpen && 'rotate-180',
+                          )}
+                        />
+                      </button>
+
+                      {isOpen && (
+                        <div className="border-t border-border p-3">
+                          {statusFilter === 'pending' && (
+                            <div className="mb-3 flex flex-wrap gap-1.5">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={running}
+                                onClick={() => runGroupBulk(cat, 'ignored')}
+                              >
+                                {running ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <EyeOff className="h-3.5 w-3.5" />
+                                )}
+                                {t('groupIgnoreAll')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={running}
+                                onClick={() => runGroupBulk(cat, 'approved')}
+                              >
+                                {running ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Check className="h-3.5 w-3.5" />
+                                )}
+                                {t('groupAcceptAll')}
+                              </Button>
+                            </div>
+                          )}
+                          <div className="grid gap-3 lg:grid-cols-2">
+                            {items.map((s) => (
+                              <SuggestionCard
+                                key={s.id}
+                                suggestion={s}
+                                onUpdateStatus={updateStatus}
+                                onRefresh={loadSuggestions}
+                              />
+                            ))}
+                          </div>
                         </div>
                       )}
-                      <div className="grid gap-3 lg:grid-cols-2">
-                        {items.map((s) => (
-                          <SuggestionCard
-                            key={s.id}
-                            suggestion={s}
-                            onUpdateStatus={updateStatus}
-                            onRefresh={load}
-                          />
-                        ))}
-                      </div>
                     </div>
-                  )}
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/40">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+                  <BrainCircuit className="h-6 w-6 text-primary" />
                 </div>
-              );
-            })}
+                <p className="mt-3 text-sm font-medium text-foreground">
+                  {t('emptyTitle')}
+                </p>
+                <p className="mt-1 max-w-sm text-center text-xs text-muted-foreground">
+                  {t('emptyDesc')}
+                </p>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/40">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-              <BrainCircuit className="h-6 w-6 text-primary" />
-            </div>
-            <p className="mt-3 text-sm font-medium text-foreground">
-              {t('emptyTitle')}
-            </p>
-            <p className="mt-1 max-w-sm text-center text-xs text-muted-foreground">
-              {t('emptyDesc')}
-            </p>
-          </div>
-        )}
-      </div>
+        </TabsContent>
+
+        {/* Tab 4: Comportamento */}
+        <TabsContent value="behavior">
+          <AiBehaviorSettings />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
