@@ -70,10 +70,10 @@ export function GlobalKnowledgeSection() {
           setContent('');
         }
       } else {
-        toast.error(data.error || 'Falha ao carregar conhecimento global');
+        console.warn('[global-knowledge] GET /api/ai/knowledge error:', data.error);
       }
-    } catch {
-      toast.error('Erro de conexão ao carregar conhecimento global');
+    } catch (err) {
+      console.warn('[global-knowledge] fetch error:', err);
     } finally {
       setLoading(false);
     }
