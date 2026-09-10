@@ -89,7 +89,7 @@ describe('retrieveKnowledge', () => {
     const { db, state } = makeDb()
     state.fts = [{ id: 'f1', content: 'F1' }]
     const out = await retrieveKnowledge(db, 'acct', { embeddingsApiKey: null }, 'q')
-    expect(out).toEqual(['F1'])
+    expect(out).toEqual(['[Origem: Conhecimento Global]\nF1'])
     expect(state.rpcCalls).toEqual(['match_property_ai_knowledge_fts'])
     expect(h.embedTexts).not.toHaveBeenCalled()
   })
@@ -102,7 +102,11 @@ describe('retrieveKnowledge', () => {
       { id: 's3', content: 'S3' },
     ]
     const out = await retrieveKnowledge(db, 'acct', { embeddingsApiKey: 'sk-x' }, 'q', 3)
-    expect(out).toEqual(['S1', 'S2', 'S3'])
+    expect(out).toEqual([
+      '[Origem: Conhecimento Global]\nS1',
+      '[Origem: Conhecimento Global]\nS2',
+      '[Origem: Conhecimento Global]\nS3',
+    ])
     expect(h.embedTexts).toHaveBeenCalledTimes(1)
     // Enough semantic hits → no FTS top-up.
     expect(state.rpcCalls).toEqual(['match_property_ai_knowledge_semantic'])
@@ -119,7 +123,11 @@ describe('retrieveKnowledge', () => {
       { id: 'f1', content: 'F1' },
     ]
     const out = await retrieveKnowledge(db, 'acct', { embeddingsApiKey: 'sk-x' }, 'q', 3)
-    expect(out).toEqual(['S1', 'S2', 'F1'])
+    expect(out).toEqual([
+      '[Origem: Conhecimento Global]\nS1',
+      '[Origem: Conhecimento Global]\nS2',
+      '[Origem: Conhecimento Global]\nF1',
+    ])
     expect(state.rpcCalls).toEqual([
       'match_property_ai_knowledge_semantic',
       'match_property_ai_knowledge_fts',

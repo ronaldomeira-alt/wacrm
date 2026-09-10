@@ -291,12 +291,56 @@ export async function replacePropertySubjectiveKnowledge(
   return replacePropertyKnowledge(db, accountId, config, propertyId, args)
 }
 
+export interface RetrievedChunk {
+  id: string
+  content: string
+  isGlobal: boolean
+  propertyId: string | null
+  sourceType: string | null
+  title: string | null
+  formattedText: string
+}
+
+export interface RetrievedKnowledgeResult {
+  propertyChunks: string[]
+  globalChunks: string[]
+  allChunks: string[]
+  chunks: RetrievedChunk[]
+}
+
+/**
+ * Format a chunk with explicit semantic origin tag.
+ */
+export function formatChunkOrigin(
+  content: string,
+  isGlobal: boolean,
+  sourceType: string | null,
+  title: string | null,
+): string {
+  let label = '[Origem: Conhecimento Global]'
+  if (!isGlobal) {
+    if (sourceType === 'pdf_book') {
+      label = '[Origem: Ficha Técnica]'
+    } else if (sourceType === 'subjective_text') {
+      label = '[Origem: Visão do Corretor]'
+    } else if (title && title.toLowerCase().includes('book')) {
+      label = '[Origem: Ficha Técnica]'
+    } else if (title && title.toLowerCase().includes('visão')) {
+      label = '[Origem: Visão do Corretor]'
+    } else {
+      label = '[Origem: Ficha Técnica]'
+    }
+  }
+  return `${label}\n${content.trim()}`
+}
+
 /**
  * Retrieve knowledge excerpts strictly scoped to:
  * - Chunks belonging to `propertyId`
  * - PLUS global chunks (where `property_id IS NULL`)
  *
  * NEVER returns chunks belonging to any other property.
+ * Returns separated propertyChunks and globalChunks with explicit origin metadata.
  */
 export async function retrievePropertyKnowledge(
   db: SupabaseClient,
@@ -305,9 +349,16 @@ export async function retrievePropertyKnowledge(
   propertyId: string | null | undefined,
   queryText: string,
   k = 5,
-): Promise<string[]> {
+): Promise<RetrievedKnowledgeResult> {
+  const emptyResult: RetrievedKnowledgeResult = {
+    propertyChunks: [],
+    globalChunks: [],
+    allChunks: [],
+    chunks: [],
+  }
+
   const query = queryText.trim()
-  if (!query || k <= 0) return []
+  if (!query || k <= 0) return emptyResult
 
   // Skip when the account has no chunks
   try {
@@ -315,12 +366,13 @@ export async function retrievePropertyKnowledge(
       .from('ai_knowledge_chunks')
       .select('id', { count: 'exact', head: true })
       .eq('account_id', accountId)
-    if (error || !count) return []
+    if (error || !count) return emptyResult
   } catch {
-    return []
+    return emptyResult
   }
 
   const picked = new Map<string, string>() // id → content, preserves order
+  const pickedGlobal = new Map<string, boolean>() // id → is_global
   const targetPropertyId = propertyId || null
 
   // Semantic path with property isolation RPC
@@ -335,7 +387,13 @@ export async function retrievePropertyKnowledge(
           p_match_count: k,
         })
         if (!error && Array.isArray(data)) {
-          for (const row of data as MatchRow[]) picked.set(row.id, row.content)
+          for (const row of data as MatchRow[]) {
+            picked.set(row.id, row.content)
+            pickedGlobal.set(
+              row.id,
+              row.is_global !== undefined ? Boolean(row.is_global) : !targetPropertyId,
+            )
+          }
         }
       }
     } catch (err) {
@@ -355,7 +413,13 @@ export async function retrievePropertyKnowledge(
       if (!error && Array.isArray(data)) {
         for (const row of data as MatchRow[]) {
           if (picked.size >= k) break
-          if (!picked.has(row.id)) picked.set(row.id, row.content)
+          if (!picked.has(row.id)) {
+            picked.set(row.id, row.content)
+            pickedGlobal.set(
+              row.id,
+              row.is_global !== undefined ? Boolean(row.is_global) : !targetPropertyId,
+            )
+          }
         }
       }
     } catch (err) {
@@ -363,11 +427,87 @@ export async function retrievePropertyKnowledge(
     }
   }
 
-  return Array.from(picked.values()).slice(0, k)
+  const chunkIds = Array.from(picked.keys())
+  const chunkMetadataMap = new Map<
+    string,
+    { property_id: string | null; source_type: string | null; title: string | null }
+  >()
+
+  if (chunkIds.length > 0) {
+    try {
+      const { data: details } = await db
+        .from('ai_knowledge_chunks')
+        .select('id, property_id, ai_knowledge_documents(source_type, title)')
+        .in('id', chunkIds)
+
+      if (details && Array.isArray(details)) {
+        for (const row of details as Array<{
+          id: string
+          property_id?: string | null
+          ai_knowledge_documents?:
+            | { source_type?: string | null; title?: string | null }
+            | Array<{ source_type?: string | null; title?: string | null }>
+            | null
+        }>) {
+          const doc = Array.isArray(row.ai_knowledge_documents)
+            ? row.ai_knowledge_documents[0]
+            : row.ai_knowledge_documents
+          chunkMetadataMap.set(row.id, {
+            property_id: row.property_id ?? null,
+            source_type: doc?.source_type ?? null,
+            title: doc?.title ?? null,
+          })
+        }
+      }
+    } catch (err) {
+      console.error('[ai knowledge] error fetching chunk metadata:', err)
+    }
+  }
+
+  const propertyChunks: string[] = []
+  const globalChunks: string[] = []
+  const allChunks: string[] = []
+  const chunks: RetrievedChunk[] = []
+
+  for (const [id, content] of picked.entries()) {
+    const meta = chunkMetadataMap.get(id)
+    const isGlobal = meta
+      ? meta.property_id === null
+      : pickedGlobal.get(id) ?? !targetPropertyId
+    const sourceType = meta?.source_type ?? null
+    const title = meta?.title ?? null
+    const formatted = formatChunkOrigin(content, isGlobal, sourceType, title)
+
+    const chunkObj: RetrievedChunk = {
+      id,
+      content,
+      isGlobal,
+      propertyId: meta?.property_id ?? (isGlobal ? null : targetPropertyId),
+      sourceType,
+      title,
+      formattedText: formatted,
+    }
+
+    chunks.push(chunkObj)
+    allChunks.push(formatted)
+
+    if (isGlobal || !targetPropertyId) {
+      globalChunks.push(formatted)
+    } else {
+      propertyChunks.push(formatted)
+    }
+  }
+
+  return {
+    propertyChunks,
+    globalChunks,
+    allChunks,
+    chunks,
+  }
 }
 
 /**
- * Retrieve global knowledge (backward-compatible wrapper).
+ * Retrieve global knowledge (backward-compatible wrapper returning array of formatted strings).
  */
 export async function retrieveKnowledge(
   db: SupabaseClient,
@@ -376,5 +516,6 @@ export async function retrieveKnowledge(
   queryText: string,
   k = 5,
 ): Promise<string[]> {
-  return retrievePropertyKnowledge(db, accountId, config, null, queryText, k)
+  const res = await retrievePropertyKnowledge(db, accountId, config, null, queryText, k)
+  return res.allChunks
 }

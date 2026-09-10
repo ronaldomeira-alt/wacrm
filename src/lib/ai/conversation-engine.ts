@@ -28,6 +28,7 @@ export interface ConversationalTurnArgs {
   simulatedHours?: 'business_hours' | 'off_hours' | 'real_time';
   simulatedLeadContext?: FormattedLeadContext | null;
   replyCount?: number;
+  mode?: 'draft' | 'auto_reply';
 }
 
 export interface ConversationalTurnResult {
@@ -202,6 +203,7 @@ export async function executeConversationalTurn(
     simulatedHours = 'real_time',
     simulatedLeadContext = null,
     replyCount = 0,
+    mode = 'auto_reply',
   } = args;
 
   // Determine effective date/time based on simulated hours
@@ -285,7 +287,7 @@ export async function executeConversationalTurn(
 
   // 4. Retrieve isolated RAG Knowledge
   const lastUserMsg = latestUserMessage(messages);
-  const knowledgeExcerpts = await retrievePropertyKnowledge(
+  const rawKnowledge = await retrievePropertyKnowledge(
     db,
     accountId,
     config,
@@ -294,14 +296,28 @@ export async function executeConversationalTurn(
     5,
   );
 
+  const knowledgeResult = Array.isArray(rawKnowledge)
+    ? {
+        propertyChunks: propertyId ? (rawKnowledge as string[]) : [],
+        globalChunks: propertyId ? [] : (rawKnowledge as string[]),
+        allChunks: rawKnowledge as string[],
+        chunks: [],
+      }
+    : (rawKnowledge || {
+        propertyChunks: [],
+        globalChunks: [],
+        allChunks: [],
+        chunks: [],
+      });
+
   // 5. Build Modular System Prompt with structured decision requirement
   const systemPrompt = buildConversationalSystemPrompt({
     config,
-    mode: 'auto_reply',
+    mode: mode || 'auto_reply',
     property: propertyInfo,
-    propertyKnowledge: propertyId ? knowledgeExcerpts : [],
+    propertyKnowledge: propertyId ? knowledgeResult.propertyChunks : [],
     propertyStyleInstructions: propertyId ? propertyStyleInstructions : [],
-    globalKnowledge: !propertyId ? knowledgeExcerpts : [],
+    globalKnowledge: knowledgeResult.globalChunks,
     leadContext,
     businessHours,
     structuredOutputRequired: true,
@@ -330,8 +346,8 @@ export async function executeConversationalTurn(
     handoff: decision.transfer_required,
     decision,
     usage: rawResult.usage,
-    retrievedKnowledgeCount: knowledgeExcerpts.length,
-    retrievedKnowledge: knowledgeExcerpts,
+    retrievedKnowledgeCount: knowledgeResult.allChunks.length,
+    retrievedKnowledge: knowledgeResult.allChunks,
     systemPrompt,
     propertyInfo,
     businessHoursContext: businessHours,

@@ -34,7 +34,12 @@ describe('Property Knowledge Isolation and Management', () => {
         'prop-1',
         '   ',
       );
-      expect(result).toEqual([]);
+      expect(result).toEqual({
+        propertyChunks: [],
+        globalChunks: [],
+        allChunks: [],
+        chunks: [],
+      });
       expect(db.rpc).not.toHaveBeenCalled();
     });
 
@@ -56,6 +61,7 @@ describe('Property Knowledge Isolation and Management', () => {
         from: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockResolvedValue({ count: 10, error: null }),
+            in: vi.fn().mockResolvedValue({ data: [], error: null }),
           }),
         }),
       } as unknown as SupabaseClient;
@@ -68,7 +74,9 @@ describe('Property Knowledge Isolation and Management', () => {
         'qual a vista?',
       );
 
-      expect(results).toEqual(['Apartamento com vista para o mar']);
+      expect(results.propertyChunks).toEqual([
+        '[Origem: Ficha Técnica]\nApartamento com vista para o mar',
+      ]);
       expect(rpcMock).toHaveBeenCalledWith(
         'match_property_ai_knowledge_semantic',
         expect.objectContaining({
@@ -95,6 +103,7 @@ describe('Property Knowledge Isolation and Management', () => {
         from: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             eq: vi.fn().mockResolvedValue({ count: 5, error: null }),
+            in: vi.fn().mockResolvedValue({ data: [], error: null }),
           }),
         }),
       } as unknown as SupabaseClient;
@@ -107,7 +116,9 @@ describe('Property Knowledge Isolation and Management', () => {
         'torre',
       );
 
-      expect(results).toEqual(['Sol da manhã na torre B']);
+      expect(results.propertyChunks).toEqual([
+        '[Origem: Ficha Técnica]\nSol da manhã na torre B',
+      ]);
       expect(rpcMock).toHaveBeenCalledWith(
         'match_property_ai_knowledge_fts',
         expect.objectContaining({
