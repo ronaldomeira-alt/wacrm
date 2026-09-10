@@ -204,8 +204,8 @@ export function AiBehaviorSettings() {
       {/* 2. Regras Globais e Fronteiras */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2 text-destructive/90">
-            <ShieldAlert className="h-4 w-4 text-destructive" />
+          <CardTitle className="text-base flex items-center gap-2 text-rose-600 dark:text-rose-400">
+            <ShieldAlert className="h-4 w-4 text-rose-600 dark:text-rose-400" />
             Fronteiras e Regras Globais (O que a IA NUNCA pode fazer)
           </CardTitle>
           <CardDescription className="text-xs">

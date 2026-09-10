@@ -88,7 +88,7 @@ export const NEVER_RULE_CATEGORIES: NeverRuleCategory[] = [
 ];
 
 /**
- * Converte um texto de regras legadas (linhas soltas ou marcadas com bullets/traços) em um array limpo de regras.
+ * Converte um texto de regras legadas em um array limpo de regras.
  */
 export function parseLegacyRulesToLines(rawText: string | null | undefined): string[] {
   if (!rawText || !rawText.trim()) return [];
@@ -99,24 +99,22 @@ export function parseLegacyRulesToLines(rawText: string | null | undefined): str
 }
 
 /**
- * Converte um array de regras com seus prefixos de volta para o formato de texto consolidado para persistência.
+ * Converte um array de regras de volta para string consolidada.
  */
 export function formatLinesToLegacyRules(rules: string[]): string {
   return rules.filter((r) => r.trim().length > 0).join('\n');
 }
 
 /**
- * Analyses text in real-time and returns the most suitable prohibition category based on keyword scoring.
+ * Análise semântica em tempo real para as regras proibitivas.
  */
 export function inferNeverRuleCategoryFromText(text: string): NeverRuleCategory {
   const lower = text.toLowerCase().trim();
   if (!lower) return NEVER_RULE_CATEGORIES[0];
 
-  // First check explicit prefix tag
   const byPrefix = NEVER_RULE_CATEGORIES.find((c) => text.startsWith(c.prefix));
   if (byPrefix) return byPrefix;
 
-  // Score each category based on keyword occurrences
   let bestCategory = NEVER_RULE_CATEGORIES[0];
   let maxScore = 0;
 
@@ -137,7 +135,6 @@ export function inferNeverRuleCategoryFromText(text: string): NeverRuleCategory 
 }
 
 interface GlobalNeverRulesEditorProps {
-  /** Array of rules or raw string (both supported) */
   value: string[] | string;
   loading?: boolean;
   onChange: (rules: string[]) => void;
@@ -172,7 +169,6 @@ export function GlobalNeverRulesEditor({
   const [search, setSearch] = useState('');
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
 
-  // Resolved active category (either manual override or auto-inferred from text)
   const detectedCategory = useMemo(() => {
     if (selectedCategory !== 'auto') {
       return (
@@ -195,7 +191,6 @@ export function GlobalNeverRulesEditor({
       const updated = [...rulesList, formatted];
       onChange(updated);
       setDraft('');
-      // Open the target group automatically so the user sees their new item
       if (cat) {
         setOpenGroups((prev) => new Set(prev).add(cat.id));
       }
@@ -258,11 +253,9 @@ export function GlobalNeverRulesEditor({
     });
   };
 
-  // Group rules by category
   const categorizedRules = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    // Map each item in rulesList to its resolved category & clean display text
     const categorized = rulesList.map((rawText, originalIndex) => {
       let matchedCategory = NEVER_RULE_CATEGORIES.find((c) => rawText.startsWith(c.prefix));
       let cleanText = rawText;
@@ -270,7 +263,6 @@ export function GlobalNeverRulesEditor({
       if (matchedCategory) {
         cleanText = rawText.slice(matchedCategory.prefix.length).trim();
       } else {
-        // Fallback: match by semantic keywords
         const lower = rawText.toLowerCase();
         matchedCategory =
           NEVER_RULE_CATEGORIES.find((c) => c.keywords.some((k) => lower.includes(k))) || undefined;
@@ -293,7 +285,6 @@ export function GlobalNeverRulesEditor({
       items: categorized.filter((item) => item.categoryId === cat.id && item.matchesSearch),
     }));
 
-    // Group for uncategorized if any
     const uncategorizedItems = categorized.filter(
       (item) => item.categoryId === 'outras' && item.matchesSearch,
     );
@@ -320,13 +311,13 @@ export function GlobalNeverRulesEditor({
 
   return (
     <div className={cn('space-y-3.5', className)}>
-      {/* 1. Header Alert / Principle */}
-      <div className="rounded-xl border border-destructive/25 bg-gradient-to-r from-destructive/10 via-destructive/5 to-transparent p-3.5 shadow-xs">
+      {/* 1. Header Alert / Principle — Tons refinados em Rose suave e Amber */}
+      <div className="rounded-xl border border-rose-500/20 bg-gradient-to-r from-rose-500/10 via-rose-500/5 to-transparent dark:border-rose-500/20 dark:from-rose-950/40 dark:via-rose-950/20 p-3.5 shadow-xs">
         <div className="flex items-center gap-2">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-destructive/20 text-destructive">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
             <ShieldAlert className="h-3.5 w-3.5" />
           </div>
-          <p className="text-xs font-semibold text-destructive uppercase tracking-wide">
+          <p className="text-xs font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wide">
             Diretrizes Inegociáveis & Fronteiras Rígidas
           </p>
         </div>
@@ -341,9 +332,9 @@ export function GlobalNeverRulesEditor({
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-medium text-foreground">Nova Regra Proibitiva</span>
             {draft.trim().length > 0 && selectedCategory === 'auto' && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-destructive bg-destructive/10 px-2 py-0.5 rounded-full animate-in fade-in-0 duration-200">
-                <Sparkles className="h-3 w-3" />
-                Enquadramento: <strong>{detectedCategory.shortName}</strong>
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-700 dark:text-rose-300 bg-rose-500/15 px-2 py-0.5 rounded-full animate-in fade-in-0 duration-200 border border-rose-500/20">
+                <Sparkles className="h-3 w-3 text-rose-600 dark:text-rose-400" />
+                Enquadramento: <strong className="text-foreground">{detectedCategory.shortName}</strong>
               </span>
             )}
           </div>
@@ -354,7 +345,7 @@ export function GlobalNeverRulesEditor({
               className={cn(
                 'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer',
                 selectedCategory === 'auto'
-                  ? 'bg-destructive text-destructive-foreground shadow-xs font-semibold'
+                  ? 'bg-rose-600 text-white dark:bg-rose-700/80 dark:text-rose-100 shadow-xs font-semibold'
                   : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
               )}
               title="Detecta o grupo automaticamente pelo significado da proibição digitada"
@@ -373,7 +364,7 @@ export function GlobalNeverRulesEditor({
                   className={cn(
                     'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer',
                     isSelected
-                      ? 'bg-destructive text-destructive-foreground shadow-xs'
+                      ? 'bg-rose-600 text-white dark:bg-rose-700/80 dark:text-rose-100 shadow-xs'
                       : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
                   )}
                 >
@@ -398,15 +389,14 @@ export function GlobalNeverRulesEditor({
             disabled={loading}
             placeholder={placeholder}
             rows={2}
-            className="flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs leading-relaxed text-foreground placeholder-muted-foreground outline-none focus:border-destructive/50"
+            className="flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs leading-relaxed text-foreground placeholder-muted-foreground outline-none focus:border-rose-500/50"
           />
           <Button
             type="button"
             size="sm"
             onClick={handleAdd}
             disabled={adding || loading || !draft.trim()}
-            variant="destructive"
-            className="h-9 text-xs shrink-0 gap-1.5"
+            className="h-9 text-xs shrink-0 gap-1.5 bg-rose-600 hover:bg-rose-700 text-white dark:bg-rose-700 dark:hover:bg-rose-600 border border-rose-500/30"
           >
             {adding ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -426,7 +416,7 @@ export function GlobalNeverRulesEditor({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar regra proibitiva por palavra-chave..."
-            className="w-full rounded-lg border border-border bg-background py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-destructive/50"
+            className="w-full rounded-lg border border-border bg-background py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-rose-500/50"
           />
         </div>
       )}
@@ -435,7 +425,7 @@ export function GlobalNeverRulesEditor({
       <div className="space-y-2">
         {loading ? (
           <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-destructive" /> Carregando regras proibitivas...
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-rose-500" /> Carregando regras proibitivas...
           </div>
         ) : rulesList.length === 0 ? (
           <p className="p-3 text-center text-xs text-muted-foreground">{emptyLabel}</p>
@@ -461,7 +451,7 @@ export function GlobalNeverRulesEditor({
                   className="flex w-full min-w-0 items-center justify-between gap-2 px-3.5 py-2.5 text-left transition-colors hover:bg-muted/40 cursor-pointer"
                 >
                   <div className="flex min-w-0 items-center gap-2.5">
-                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
                       <Icon className="h-3.5 w-3.5" />
                     </div>
                     <span className="truncate text-xs font-semibold text-foreground">
@@ -497,14 +487,14 @@ export function GlobalNeverRulesEditor({
                           return (
                             <div
                               key={item.originalIndex}
-                              className="rounded-lg border border-destructive/40 bg-card p-2.5 space-y-2 shadow-xs"
+                              className="rounded-lg border border-rose-500/40 bg-card p-2.5 space-y-2 shadow-xs"
                             >
                               <textarea
                                 value={editDraft}
                                 onChange={(e) => setEditDraft(e.target.value)}
                                 autoFocus
                                 rows={3}
-                                className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-xs leading-relaxed text-foreground outline-none focus:border-destructive/50"
+                                className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-xs leading-relaxed text-foreground outline-none focus:border-rose-500/50"
                               />
                               <div className="flex justify-end gap-1.5">
                                 <Button
@@ -520,10 +510,9 @@ export function GlobalNeverRulesEditor({
                                 <Button
                                   type="button"
                                   size="sm"
-                                  variant="destructive"
                                   onClick={() => saveEdit(item.originalIndex)}
                                   disabled={savingEdit || !editDraft.trim()}
-                                  className="h-7 text-xs"
+                                  className="h-7 text-xs bg-rose-600 hover:bg-rose-700 text-white dark:bg-rose-700"
                                 >
                                   {savingEdit ? (
                                     <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -540,7 +529,7 @@ export function GlobalNeverRulesEditor({
                         return (
                           <div
                             key={item.originalIndex}
-                            className="flex items-start gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs text-foreground shadow-2xs hover:border-destructive/30 transition-colors"
+                            className="flex items-start gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs text-foreground shadow-2xs hover:border-rose-500/30 transition-colors"
                           >
                             <span
                               className={cn(
@@ -567,7 +556,7 @@ export function GlobalNeverRulesEditor({
                                 type="button"
                                 onClick={() => startEdit(item.originalIndex)}
                                 disabled={removingIndex !== null}
-                                className="text-muted-foreground hover:text-destructive disabled:opacity-40 cursor-pointer"
+                                className="text-muted-foreground hover:text-rose-500 disabled:opacity-40 cursor-pointer"
                                 title="Editar regra"
                               >
                                 <Pencil className="h-3.5 w-3.5" />
@@ -580,7 +569,7 @@ export function GlobalNeverRulesEditor({
                                 title="Remover regra"
                               >
                                 {removingIndex === item.originalIndex ? (
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-destructive" />
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-rose-500" />
                                 ) : (
                                   <X className="h-3.5 w-3.5" />
                                 )}
