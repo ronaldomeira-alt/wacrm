@@ -37,9 +37,8 @@ import { Badge } from '@/components/ui/badge';
 import type { PropertyWithAiContext, PropertyStage } from '@/types';
 
 export const STAGE_LABELS: Record<PropertyStage, string> = {
+  pre_lancamento: 'Pré-Lançamento',
   lancamento: 'Lançamento',
-  na_planta: 'Na Planta',
-  em_construcao: 'Em Obras',
   pronto: 'Pronto para Morar',
 };
 

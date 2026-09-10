@@ -10,6 +10,7 @@ import {
   Loader2,
   X,
   Plus,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   Dialog,
@@ -48,6 +49,7 @@ export function PropertyCreateDialog({
   const [stage, setStage] = useState<PropertyStage>('lancamento');
   const [subjectiveKnowledge, setSubjectiveKnowledge] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [saving, setSaving] = useState(false);
   const [stepLabel, setStepLabel] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -57,28 +59,58 @@ export function PropertyCreateDialog({
     setStage('lancamento');
     setSubjectiveKnowledge('');
     setSelectedFile(null);
+    setIsDragging(false);
+    setSaving(false);
     setStepLabel(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+  const processFile = (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
       toast.error('Por favor, selecione apenas arquivos em formato PDF.');
       return;
     }
 
     if (file.size > 50 * 1024 * 1024) {
-      toast.error('O arquivo selecionado excede o limite máximo de 50MB.');
+      toast.error('O arquivo PDF selecionado excede o limite máximo de 50MB.');
       return;
     }
 
     setSelectedFile(file);
+    toast.success(`Arquivo "${file.name}" pronto para envio!`);
   };
 
-  const handleRemoveFile = () => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processFile(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processFile(file);
+    }
+  };
+
+  const handleRemoveFile = (e: React.MouseEvent) => {
+    e.stopPropagation();
     setSelectedFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -86,15 +118,15 @@ export function PropertyCreateDialog({
   const handleSubmit = async () => {
     const trimmedName = name.trim();
     if (!trimmedName) {
-      toast.error('Informe o nome do empreendimento.');
+      toast.error('Por favor, informe o nome do empreendimento.');
       return;
     }
 
     setSaving(true);
-    setStepLabel('Criando empreendimento...');
+    setStepLabel('1/2 Criando empreendimento no banco de dados...');
 
     try {
-      // 1. Create property and initial context
+      // 1. Create property and initial context (with subjective knowledge indexed)
       const res = await fetch('/api/ai/properties', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,7 +146,7 @@ export function PropertyCreateDialog({
 
       // 2. If a PDF file was selected, upload and index it immediately
       if (selectedFile && createdProperty?.id) {
-        setStepLabel('Extraindo texto e indexando Book em PDF...');
+        setStepLabel('2/2 Extraindo texto e indexando páginas do Book no RAG...');
         const formData = new FormData();
         formData.append('file', selectedFile);
 
@@ -126,11 +158,11 @@ export function PropertyCreateDialog({
         const uploadData = await uploadRes.json().catch(() => ({}));
         if (!uploadRes.ok) {
           toast.warning(
-            `Empreendimento criado, mas houve um aviso no PDF: ${uploadData.error || 'Erro ao processar PDF'}. Você pode reenviá-lo depois.`,
+            `Empreendimento criado! Porém houve um aviso na leitura do PDF: ${uploadData.error || 'Não foi possível extrair texto'}. Você pode anexar outro PDF depois.`,
           );
         } else {
           toast.success(
-            `Empreendimento criado com sucesso e Book indexado (${uploadData.pageCount ?? ''} páginas)!`,
+            `Empreendimento cadastrado e Book indexado com sucesso (${uploadData.pageCount ?? ''} páginas)!`,
           );
         }
       } else {
@@ -165,7 +197,7 @@ export function PropertyCreateDialog({
             Adicionar Novo Empreendimento
           </DialogTitle>
           <DialogDescription className="text-xs">
-            Cadastre o empreendimento com seu estágio, anotações práticas de atendimento e o Book Técnico (PDF) para consulta da IA.
+            Cadastre o empreendimento, defina o estágio, adicione as anotações práticas do corretor e anexe o Book Técnico (PDF) para a IA.
           </DialogDescription>
         </DialogHeader>
 
@@ -173,11 +205,11 @@ export function PropertyCreateDialog({
           {/* Nome e Estágio */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2 space-y-1.5">
-              <Label htmlFor="prop-name" className="text-xs font-medium">
+              <Label htmlFor="create-prop-name" className="text-xs font-medium">
                 Nome do Empreendimento <span className="text-destructive">*</span>
               </Label>
               <Input
-                id="prop-name"
+                id="create-prop-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Ex: Residencial Aurora Bessa"
@@ -188,15 +220,15 @@ export function PropertyCreateDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="prop-stage" className="text-xs font-medium">
-                Estágio da Obra
+              <Label htmlFor="create-prop-stage" className="text-xs font-medium">
+                Estágio do Empreendimento
               </Label>
               <Select
                 value={stage}
                 onValueChange={(val) => setStage(val as PropertyStage)}
                 disabled={saving}
               >
-                <SelectTrigger id="prop-stage" className="h-9 text-sm">
+                <SelectTrigger id="create-prop-stage" className="h-9 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -212,26 +244,26 @@ export function PropertyCreateDialog({
 
           {/* Anotações Práticas / Visão do Corretor */}
           <div className="space-y-1.5">
-            <Label htmlFor="prop-subjective" className="text-xs font-medium flex items-center gap-1.5">
+            <Label htmlFor="create-prop-subjective" className="text-xs font-medium flex items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 text-primary" />
               Anotações Práticas / Visão do Corretor (Conhecimento Subjetivo)
             </Label>
             <Textarea
-              id="prop-subjective"
+              id="create-prop-subjective"
               value={subjectiveKnowledge}
               onChange={(e) => setSubjectiveKnowledge(e.target.value)}
-              placeholder="Digite dicas e informações práticas que a IA deve saber sobre este empreendimento. Ex:
+              placeholder="Digite dicas e detalhes práticos que a IA deve saber sobre este empreendimento. Exemplo:
 - Previsão de entrega para Dezembro de 2026.
 - A área de lazer é entregue 100% equipada e decorada.
 - Vagas de garagem rotativas com sorteio bienal.
 - Aceita animais de grande porte no pet place.
-- Fica a 200 metros da praia, próximo ao Bessa Shopping."
+- Localizado a 200m da praia do Bessa, próximo a padarias e escolas."
               rows={5}
               disabled={saving}
               className="text-sm resize-y"
             />
             <p className="text-[11px] text-muted-foreground">
-              A IA usa estas notas para responder a dúvidas práticas do dia a dia com linguagem natural.
+              A IA usa estas notas para esclarecer dúvidas práticas do dia a dia de forma humanizada.
             </p>
           </div>
 
@@ -243,6 +275,7 @@ export function PropertyCreateDialog({
             </Label>
 
             <input
+              id="create-prop-book-file"
               ref={fileInputRef}
               type="file"
               accept=".pdf,application/pdf"
@@ -254,8 +287,8 @@ export function PropertyCreateDialog({
             {selectedFile ? (
               <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
-                    <FileText className="h-4 w-4" />
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <FileCheckIcon className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
                     <p className="font-medium text-foreground truncate">{selectedFile.name}</p>
@@ -278,29 +311,30 @@ export function PropertyCreateDialog({
                 </Button>
               </div>
             ) : (
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 p-5 text-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-colors"
+              <label
+                htmlFor="create-prop-book-file"
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-all ${
+                  isDragging
+                    ? 'border-primary bg-primary/10'
+                    : 'border-border bg-muted/20 hover:border-primary/50 hover:bg-primary/5'
+                }`}
               >
-                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary mb-2">
-                  <Upload className="h-4 w-4" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary mb-2">
+                  <Upload className="h-5 w-5" />
                 </div>
-                <p className="text-xs font-medium text-foreground">
-                  Clique aqui para selecionar o Book em PDF
+                <p className="text-xs font-semibold text-foreground">
+                  Clique para selecionar o Book em PDF ou arraste o arquivo aqui
                 </p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  PDF com plantas, áreas, acabamento e especificações (até 50MB).
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Plantas, metragens, acabamento e ficha técnica (arquivo PDF de até 50MB)
                 </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="mt-2.5 h-7 text-xs"
-                  disabled={saving}
-                >
-                  <Plus className="mr-1 h-3 w-3" /> Selecionar Arquivo PDF
-                </Button>
-              </div>
+                <span className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium text-foreground shadow-sm">
+                  <Plus className="h-3.5 w-3.5 text-primary" /> Escolher Arquivo PDF
+                </span>
+              </label>
             )}
           </div>
         </div>
@@ -330,5 +364,26 @@ export function PropertyCreateDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function FileCheckIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="m9 15 2 2 4-4" />
+    </svg>
   );
 }

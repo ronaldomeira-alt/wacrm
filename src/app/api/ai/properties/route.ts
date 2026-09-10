@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
-import type { PropertyWithAiContext, PropertyAiContext } from '@/types';
+import { loadEmbeddingsKey } from '@/lib/ai/config';
+import { replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge';
+import type { PropertyWithAiContext, PropertyAiContext, PropertyStage } from '@/types';
 
 /**
  * GET /api/ai/properties (agent+)
@@ -61,9 +63,12 @@ export async function POST(req: Request) {
       );
     }
 
-    const stage = ['lancamento', 'na_planta', 'em_construcao', 'pronto'].includes(body.stage)
-      ? body.stage
+    const validStages: PropertyStage[] = ['pre_lancamento', 'lancamento', 'pronto'];
+    const rawStage = body.stage;
+    const stage: PropertyStage = validStages.includes(rawStage)
+      ? rawStage
       : 'lancamento';
+
     const subjectiveKnowledge =
       typeof body.subjective_knowledge === 'string' && body.subjective_knowledge.trim()
         ? body.subjective_knowledge.trim()
@@ -82,21 +87,27 @@ export async function POST(req: Request) {
 
     if (propErr) throw propErr;
 
-    // 2. Insert property_ai_contexts
-    const { data: aiContext, error: ctxErr } = await supabase
-      .from('property_ai_contexts')
-      .insert({
-        account_id: accountId,
-        property_id: property.id,
-        stage,
-        subjective_knowledge: subjectiveKnowledge,
-      })
-      .select('*')
-      .single();
+    // 2. Initialize or save context with subjective knowledge & stage
+    const embeddingsKeyResult = await loadEmbeddingsKey(supabase, accountId);
+    const config = { embeddingsApiKey: embeddingsKeyResult.key };
 
-    if (ctxErr) {
-      console.error('[properties.POST] failed inserting property_ai_contexts:', ctxErr);
-    }
+    await replacePropertySubjectiveKnowledge(
+      supabase,
+      accountId,
+      config,
+      property.id,
+      {
+        subjectiveKnowledge,
+        stage,
+      },
+    );
+
+    const { data: aiContext } = await supabase
+      .from('property_ai_contexts')
+      .select('*')
+      .eq('property_id', property.id)
+      .eq('account_id', accountId)
+      .maybeSingle();
 
     const item: PropertyWithAiContext = {
       ...property,

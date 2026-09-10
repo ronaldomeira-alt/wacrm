@@ -364,24 +364,41 @@ export function GlobalKnowledgeSection() {
                 Manual Geral Consolidado da Imobiliária (Texto Único para IA)
               </span>
             </div>
-            <Badge variant="outline" className="text-[10px] font-normal">
-              RAG Global Ativo
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={() => {
+                  const template = `## Sobre a Imobiliária e Equipe
+Somos corretores associados especialistas em imóveis e lançamentos no litoral paraibano. Nossos corretores responsáveis são Ronaldo Meira e Thatianna. Oferecemos assessoria completa desde a escolha da unidade até a entrega das chaves.
+
+## Parcerias Bancárias e Financiamento
+Trabalhamos com os principais agentes financeiros: Caixa Econômica Federal, Itaú, Bradesco e Santander. Contamos com correspondente bancário interno para simulação e aprovação ágil de crédito sem custo adicional para o comprador.
+
+## Regras de Atendimento e Visitas
+As visitas a estandes de vendas, obras e apartamentos decorados são realizadas mediante agendamento prévio com Ronaldo ou Thatianna, garantindo atendimento VIP e personalizado.
+
+## Localização e Região de Atuação
+Atuamos com foco em João Pessoa/PB, cobrindo os bairros de Bessa, Manaíra, Tambaú, Cabo Branco, Intermares e região metropolitana.`;
+                  setConsolidatedText((prev) => (prev.trim() ? `${prev}\n\n${template}` : template));
+                  toast.success('Modelo de estrutura inserido no editor!');
+                }}
+              >
+                <Sparkles className="h-3 w-3 text-primary" />
+                Inserir Modelo Sugerido
+              </Button>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                RAG Global Ativo
+              </Badge>
+            </div>
           </div>
 
           <Textarea
             value={consolidatedText}
             onChange={(e) => setConsolidatedText(e.target.value)}
-            placeholder="Digite ou edite o conhecimento geral da sua imobiliária de forma unificada. Exemplo:
-
-## Sobre a Imobiliária
-Somos uma imobiliária especializada no litoral paraibano, com foco em lançamentos e imóveis de alto padrão. Nossos corretores responsáveis são Ronaldo Meira e Thatianna.
-
-## Parcerias Bancárias e Financiamento
-Trabalhamos com os principais bancos (Caixa Econômica, Itaú, Bradesco e Santander). Temos correspondente bancário interno que cuida de toda a aprovação de crédito.
-
-## Regras de Visitas e Atendimento
-As visitas aos estandes e obras são realizadas mediante agendamento prévio com os corretores. Temos plantão de atendimento e transporte próprio para clientes em visita."
+            placeholder="Digite ou edite o conhecimento geral da sua imobiliária de forma unificada. Clique em 'Inserir Modelo Sugerido' acima se desejar um ponto de partida."
             rows={12}
             className="text-sm font-sans resize-y"
           />

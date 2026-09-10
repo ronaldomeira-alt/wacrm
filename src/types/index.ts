@@ -198,7 +198,7 @@ export type AppointmentType =
 
 export type AppointmentStatus = 'scheduled' | 'completed' | 'cancelled';
 
-export type PropertyStage = 'na_planta' | 'em_construcao' | 'pronto' | 'lancamento';
+export type PropertyStage = 'pre_lancamento' | 'lancamento' | 'pronto';
 
 export interface PropertyAiContext {
   id: string;
