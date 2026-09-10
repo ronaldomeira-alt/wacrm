@@ -1387,7 +1387,7 @@ export function MessageComposer({
             )}
           >
             {/* Left — attach media: photo / video / document. */}
-            <div ref={attachMenuRef} className="relative inline-flex shrink-0">
+            <div ref={attachMenuRef} data-composer-attach-wrapper className="relative inline-flex shrink-0">
               <button
                 type="button"
                 data-composer-attach

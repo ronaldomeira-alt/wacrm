@@ -649,7 +649,7 @@ html[data-theme="rose"] {
          give buttons and text the whole vertical space with identical baseline. */
       padding: 3px 8px 3px 8px;
       align-items: center;
-      transition: border-radius 180ms ease-out, border-color 150ms ease-out;
+      transition: border-radius 300ms ease-out, border-color 150ms ease-out, padding 450ms cubic-bezier(0.25, 1, 0.5, 1);
     }
 
     [data-composer-capsule]:focus-within {
@@ -688,6 +688,8 @@ html[data-theme="rose"] {
       padding-bottom: 4px;
     }
 
+    [data-composer-capsule]:has([data-multiline]) > [data-composer-attach-wrapper],
+    [data-composer-capsule]:has([data-multiline]) > div:has([data-composer-attach]),
     [data-composer-capsule]:has([data-multiline]) > [data-composer-attach] {
       order: 2;
       margin-right: auto;
@@ -713,7 +715,7 @@ html[data-theme="rose"] {
       padding-top: 7px;
       padding-bottom: 7px;
       line-height: 24px;
-      transition: height 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+      transition: height 450ms cubic-bezier(0.25, 1, 0.5, 1), padding 450ms cubic-bezier(0.25, 1, 0.5, 1) !important;
     }
     [data-composer-textarea]:focus {
       border-color: transparent;
@@ -738,6 +740,17 @@ html[data-theme="rose"] {
       justify-content: center;
       flex-shrink: 0;
       box-sizing: border-box;
+    }
+
+    /* Wrapper div around [data-composer-attach] */
+    [data-composer-capsule] > [data-composer-attach-wrapper],
+    [data-composer-capsule] > div:has([data-composer-attach]) {
+      display: inline-flex;
+      height: 38px;
+      width: 38px;
+      flex-shrink: 0;
+      align-items: center;
+      justify-content: center;
     }
 
     /* Wrapper span from GatedButton around [data-composer-send] */
