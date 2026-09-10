@@ -208,9 +208,13 @@ export async function POST(request: Request) {
   // guaranteeing the work runs to completion.
   //
   // This MUST use `after()` rather than a detached `processWebhook(body)`
-  // promise: on serverless platforms (we run on Vercel) the function can
-  // be frozen or terminated the moment the response is sent, so a floating
-  // promise's DB writes are not guaranteed to finish. That dropped a
+  // promise: on serverless/edge platforms the function can be frozen or
+  // terminated the moment the response is sent, so a floating promise's DB
+  // writes are not guaranteed to finish. Production runs on Hostinger's
+  // managed Node.js (a long-lived process, not frozen between requests),
+  // but `after()` is still the portable, correct way to defer work in
+  // Next.js regardless of host — and this app has run on Vercel before.
+  // That earlier floating-promise version dropped a
   // non-deterministic *subset* of inbound messages — contacts/conversations
   // were created but the message insert never landed, leaving conversations
   // that show in the inbox with an empty thread, and no logs to explain it

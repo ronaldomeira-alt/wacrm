@@ -164,7 +164,10 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           );
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('[ai-playground] failed to load properties:', err);
+        toast.error('Falha ao carregar empreendimentos — tente recarregar a página.');
+      });
   }, []);
 
   useEffect(() => {
@@ -195,11 +198,18 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (data.code === 'ai_not_configured') {
-          toast.error('Nenhum provedor de IA configurado. Configure a chave da API em Configurações.');
-        } else {
-          toast.error(data.error ?? 'Não foi possível obter resposta da IA.');
-        }
+        const errorMsg =
+          data.code === 'ai_not_configured'
+            ? 'Nenhum provedor de IA configurado. Configure a chave da API em Configurações.'
+            : (data.error ?? 'Não foi possível obter resposta da IA.');
+
+        toast.error(errorMsg);
+        const errorTurn: Turn = {
+          role: 'assistant',
+          content: `⚠️ Não foi possível processar a resposta: ${errorMsg}`,
+          handoff: false,
+        };
+        setTurns((prev) => [...prev, errorTurn]);
         return;
       }
 
@@ -233,6 +243,12 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     } catch (err) {
       console.error('[playground] send error:', err);
       toast.error('Não foi possível conectar à IA.');
+      const errorTurn: Turn = {
+        role: 'assistant',
+        content: '⚠️ Falha de conexão ao comunicar com o servidor de IA. Por favor, tente novamente.',
+        handoff: false,
+      };
+      setTurns((prev) => [...prev, errorTurn]);
     } finally {
       setSending(false);
     }
@@ -450,9 +466,12 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
             ))}
 
             {sending && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Bot className="h-4 w-4 text-primary" />
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Gerando resposta e avaliando fronteiras...
+              <div className="flex items-start gap-2 justify-start">
+                <Bot className="mt-1 h-5 w-5 shrink-0 text-primary animate-pulse" />
+                <div className="rounded-2xl rounded-bl-sm bg-muted/60 border border-border/50 px-4 py-2.5 text-xs text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+                  <span>Consultando conhecimento do empreendimento e gerando resposta...</span>
+                </div>
               </div>
             )}
           </div>
@@ -644,7 +663,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               Inspeção do System Prompt Efetivo
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Composição modular exata das 10 seções fornecida ao modelo para este turno conversacional. Chaves e dados sensíveis foram mascarados.
+              Composição modular exata das 10 seções fornecida ao modelo para este turno conversacional.
             </DialogDescription>
           </DialogHeader>
 
