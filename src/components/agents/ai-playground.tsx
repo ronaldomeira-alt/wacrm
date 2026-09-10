@@ -79,13 +79,15 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const [selectedTurnForInspect, setSelectedTurnForInspect] = useState<Turn | null>(null);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
 
-  // Response-style instructions — edited here, saved to the same
-  // ai_configs.response_style_instructions field the "Comportamento" tab
-  // reads/writes, so a tweak made while testing here takes effect on the
-  // very next message sent in this same Playground session, and on real
-  // production auto-replies too.
-  const [styleInstructions, setStyleInstructions] = useState('');
-  const [savedStyleInstructions, setSavedStyleInstructions] = useState('');
+  // Response-style instructions — the box below is for the NEXT new
+  // instruction only; saving appends it to `activeInstructions` (the
+  // accumulated text stored in ai_configs.response_style_instructions,
+  // the same field the "Comportamento" tab reads/writes) and clears the
+  // box so the next one can be typed. Takes effect on the very next
+  // message sent in this same Playground session, and on real production
+  // auto-replies too, since both read the same live config row.
+  const [newInstruction, setNewInstruction] = useState('');
+  const [activeInstructions, setActiveInstructions] = useState('');
   const [loadingStyle, setLoadingStyle] = useState(true);
   const [savingStyle, setSavingStyle] = useState(false);
 
@@ -114,8 +116,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
       .then((res) => res.json())
       .then((data) => {
         const value = typeof data.response_style_instructions === 'string' ? data.response_style_instructions : '';
-        setStyleInstructions(value);
-        setSavedStyleInstructions(value);
+        setActiveInstructions(value);
       })
       .catch((err) => {
         console.error('[ai-playground] failed to load style instructions:', err);
@@ -128,24 +129,30 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns, sending]);
 
-  const styleDirty = styleInstructions.trim() !== savedStyleInstructions.trim();
+  const addInstruction = async () => {
+    const trimmed = newInstruction.trim();
+    if (!trimmed) return;
 
-  const saveStyleInstructions = async () => {
+    const combined = activeInstructions.trim()
+      ? `${activeInstructions.trim()}\n${trimmed}`
+      : trimmed;
+
     setSavingStyle(true);
     try {
       const res = await fetch('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ response_style_instructions: styleInstructions.trim() || null }),
+        body: JSON.stringify({ response_style_instructions: combined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.error || 'Falha ao salvar instruções de estilo');
+        throw new Error(data.error || 'Falha ao salvar instrução de estilo');
       }
-      setSavedStyleInstructions(styleInstructions);
-      toast.success('Instruções de estilo salvas — valendo a partir da próxima mensagem.');
+      setActiveInstructions(combined);
+      setNewInstruction('');
+      toast.success('Instrução adicionada — valendo a partir da próxima mensagem.');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao salvar instruções de estilo';
+      const msg = err instanceof Error ? err.message : 'Erro ao salvar instrução de estilo';
       toast.error(msg);
     } finally {
       setSavingStyle(false);
@@ -445,41 +452,54 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               <SlidersHorizontal className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-semibold text-foreground">Instruções de Estilo de Resposta</h3>
             </div>
-            {styleDirty && (
-              <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded uppercase">
-                Não salvo
-              </span>
-            )}
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Vá testando no chat ao lado e ajustando aqui como a IA deve escrever — comprimento, se deve
-            terminar com pergunta, tom, etc. Ao salvar, a próxima mensagem já usa a versão nova, e o mesmo
-            texto vale para as respostas reais no WhatsApp (fica armazenado na aba Comportamento).
+            Digite uma orientação (ex: &quot;responda em frases curtas&quot;) e clique em Adicionar. Ela entra na
+            lista abaixo, a caixa limpa para a próxima, e já vale a partir da próxima mensagem — no chat ao
+            lado e nas respostas reais do WhatsApp (fica armazenado na aba Comportamento).
           </p>
 
-          <textarea
-            value={styleInstructions}
-            onChange={(e) => setStyleInstructions(e.target.value)}
-            disabled={loadingStyle}
-            placeholder={'Ex:\n- Responda em no máximo 2 frases curtas.\n- Sempre termine a resposta com uma pergunta que avance a conversa.\n- Evite emojis.'}
-            className="flex-1 min-h-[280px] resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs font-mono leading-relaxed text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
-          />
-
-          <div className="flex items-center justify-end">
+          <div className="flex items-end gap-2">
+            <textarea
+              value={newInstruction}
+              onChange={(e) => setNewInstruction(e.target.value)}
+              disabled={loadingStyle}
+              placeholder={'Ex: Responda em no máximo 2 frases curtas.'}
+              rows={2}
+              className="flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs leading-relaxed text-foreground placeholder-muted-foreground outline-none focus:border-primary/50"
+            />
             <Button
               size="sm"
-              onClick={saveStyleInstructions}
-              disabled={savingStyle || loadingStyle || !styleDirty}
-              className="h-8 text-xs"
+              onClick={addInstruction}
+              disabled={savingStyle || loadingStyle || !newInstruction.trim()}
+              className="h-9 text-xs shrink-0"
             >
               {savingStyle ? (
                 <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Save className="mr-1.5 h-3.5 w-3.5" />
               )}
-              Salvar
+              Adicionar
             </Button>
+          </div>
+
+          <div className="flex-1 flex flex-col min-h-0 border-t border-border/60 pt-3">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+              Instruções Ativas
+            </span>
+            <div className="flex-1 overflow-y-auto rounded-lg border border-border/60 bg-muted/20 p-3 text-xs font-mono leading-relaxed text-foreground whitespace-pre-wrap">
+              {loadingStyle ? (
+                <span className="text-muted-foreground">Carregando...</span>
+              ) : activeInstructions.trim() ? (
+                activeInstructions
+              ) : (
+                <span className="text-muted-foreground">Nenhuma instrução salva ainda.</span>
+              )}
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Para editar ou remover uma instrução já salva, use a aba Comportamento.
+            </p>
           </div>
         </div>
       </div>
