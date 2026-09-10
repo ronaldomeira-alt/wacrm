@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 export interface InstructionCategory {
   id: string;
   name: string;
+  shortName: string;
   icon: typeof Compass;
   prefix: string;
   keywords: string[];
@@ -33,32 +34,84 @@ export const INSTRUCTION_CATEGORIES: InstructionCategory[] = [
   {
     id: 'conducao',
     name: 'Condução da conversa',
+    shortName: 'Condução',
     icon: Compass,
     prefix: '[Condução]',
-    keywords: ['conduz', 'conversa', 'pergunta', 'passo', 'avanço', 'direciona', 'sequência', 'fluxo'],
+    keywords: [
+      'conduz', 'conduza', 'condução', 'pergunta', 'pergunte', 'perguntar', 'passo', 'avanço',
+      'avançar', 'direciona', 'direcionar', 'sequência', 'fluxo', 'conversa', 'diálogo',
+      'próximo passo', 'terminar com', 'termine com', 'finalizar com', 'intercal', 'ritmo'
+    ],
   },
   {
     id: 'qualificacao',
     name: 'Qualificação do cliente',
+    shortName: 'Qualificação',
     icon: Target,
     prefix: '[Qualificação]',
-    keywords: ['qualifica', 'necessidade', 'orçamento', 'decisão', 'perfil', 'interrogatório', 'investir', 'procura'],
+    keywords: [
+      'qualifica', 'qualificação', 'qualifique', 'qualificar', 'necessidade', 'orçamento',
+      'decisão', 'perfil', 'interrogatório', 'investir', 'investimento', 'procura', 'procurando',
+      'faixa de valor', 'tipo de imóvel', 'planta', 'moradia', 'interesse'
+    ],
   },
   {
     id: 'comunicacao',
     name: 'Estilo de comunicação',
+    shortName: 'Comunicação',
     icon: MessageSquare,
     prefix: '[Comunicação]',
-    keywords: ['sucint', 'curt', 'cordial', 'tom', 'humana', 'frase', 'linhas', 'formal', 'acolhedor'],
+    keywords: [
+      'sucint', 'sucinta', 'sucinto', 'curt', 'curta', 'curto', 'cordial', 'cordialidade',
+      'tom', 'humana', 'humano', 'frase', 'frases', 'linha', 'linhas', 'formal', 'informal',
+      'acolhedor', 'acolher', 'linguagem', 'emoji', 'educad', 'caloroso', 'empátic'
+    ],
   },
   {
     id: 'encaminhamento',
     name: 'Encaminhamento para a equipe',
+    shortName: 'Encaminhamento',
     icon: Users,
     prefix: '[Encaminhamento]',
-    keywords: ['equipe', 'humano', 'direcionar', 'transfer', 'atendimento', 'especialista', 'corretor'],
+    keywords: [
+      'equipe', 'humano', 'direcionar para a equipe', 'transfer', 'transferir', 'atendimento humano',
+      'especialista', 'corretor', 'corretores', 'visita', 'agendar visita', 'passar o contato',
+      'encaminhar', 'encaminhamento', 'conectar com'
+    ],
   },
 ];
+
+/**
+ * Analyses text in real-time and returns the most suitable category based on keyword scoring.
+ */
+export function inferCategoryFromText(text: string): InstructionCategory {
+  const lower = text.toLowerCase().trim();
+  if (!lower) return INSTRUCTION_CATEGORIES[0];
+
+  // First check explicit prefix tag
+  const byPrefix = INSTRUCTION_CATEGORIES.find((c) => text.startsWith(c.prefix));
+  if (byPrefix) return byPrefix;
+
+  // Score each category based on keyword occurrences
+  let bestCategory = INSTRUCTION_CATEGORIES[0];
+  let maxScore = 0;
+
+  for (const cat of INSTRUCTION_CATEGORIES) {
+    let score = 0;
+    for (const kw of cat.keywords) {
+      if (lower.includes(kw)) {
+        // Multi-word keywords get higher weight
+        score += kw.includes(' ') ? 3 : 1;
+      }
+    }
+    if (score > maxScore) {
+      maxScore = score;
+      bestCategory = cat;
+    }
+  }
+
+  return bestCategory;
+}
 
 interface ResponseStyleInstructionsEditorProps {
   instructions: string[];
@@ -86,7 +139,8 @@ export function ResponseStyleInstructionsEditor({
   showCentralPrinciple = true,
 }: ResponseStyleInstructionsEditorProps) {
   const [draft, setDraft] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('conducao');
+  // 'auto' means dynamically calculate from text; otherwise string category ID (manual override)
+  const [selectedCategory, setSelectedCategory] = useState<string>('auto');
   const [adding, setAdding] = useState(false);
   const [removingIndex, setRemovingIndex] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -96,13 +150,21 @@ export function ResponseStyleInstructionsEditor({
   const [search, setSearch] = useState('');
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
 
+  // Resolved active category (either manual override or auto-inferred from text)
+  const detectedCategory = useMemo(() => {
+    if (selectedCategory !== 'auto') {
+      return INSTRUCTION_CATEGORIES.find((c) => c.id === selectedCategory) || INSTRUCTION_CATEGORIES[0];
+    }
+    return inferCategoryFromText(draft);
+  }, [selectedCategory, draft]);
+
   const handleAdd = async () => {
     const trimmed = draft.trim();
     if (!trimmed || adding) return;
     setAdding(true);
     try {
-      const cat = INSTRUCTION_CATEGORIES.find((c) => c.id === selectedCategory);
-      // If the text already has a bracket tag or prefix, keep it; otherwise prepend category prefix if selected
+      const cat = detectedCategory;
+      // If the text already has a bracket tag or prefix, keep it; otherwise prepend resolved category prefix
       const hasPrefix = INSTRUCTION_CATEGORIES.some((c) => trimmed.startsWith(c.prefix));
       const formatted = hasPrefix || !cat ? trimmed : `${cat.prefix} ${trimmed}`;
 
@@ -250,8 +312,30 @@ export function ResponseStyleInstructionsEditor({
       {/* 2. Add New Instruction Form */}
       <div className="rounded-xl border border-border/70 bg-card p-3 shadow-xs space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs font-medium text-foreground">Nova Instrução de Estilo</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium text-foreground">Nova Instrução de Estilo</span>
+            {draft.trim().length > 0 && selectedCategory === 'auto' && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full animate-in fade-in-0 duration-200">
+                <Sparkles className="h-3 w-3" />
+                Enquadramento: <strong>{detectedCategory.shortName}</strong>
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+            <button
+              type="button"
+              onClick={() => setSelectedCategory('auto')}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer',
+                selectedCategory === 'auto'
+                  ? 'bg-primary text-primary-foreground shadow-xs font-semibold'
+                  : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
+              title="Detecta a categoria automaticamente pelo significado do texto digitado"
+            >
+              <Sparkles className="h-3 w-3" />
+              <span>Auto</span>
+            </button>
             {INSTRUCTION_CATEGORIES.map((cat) => {
               const Icon = cat.icon;
               const isSelected = selectedCategory === cat.id;
@@ -268,7 +352,7 @@ export function ResponseStyleInstructionsEditor({
                   )}
                 >
                   <Icon className="h-3 w-3" />
-                  <span>{cat.name.split(' ')[0]}</span>
+                  <span>{cat.shortName}</span>
                 </button>
               );
             })}
