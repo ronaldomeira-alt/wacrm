@@ -381,7 +381,7 @@ export function GlobalKnowledgeSection() {
           the master content or a fragment) can never push the dialog
           itself wider or taller than the viewport. */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-        <DialogContent className="flex h-auto max-h-[90vh] w-full max-w-[min(90vw,48rem)] flex-col gap-0 overflow-hidden p-0">
+        <DialogContent className="flex h-auto max-h-[90vh] w-full max-w-[min(90vw,48rem)] sm:max-w-2xl md:max-w-3xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="shrink-0 space-y-1 border-b border-border/60 px-4 py-4 sm:px-6">
             <div className="flex min-w-0 items-center gap-2 pr-8">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -456,11 +456,11 @@ export function GlobalKnowledgeSection() {
             )}
           </div>
 
-          <DialogFooter className="mx-0 mb-0 flex w-full shrink-0 items-center justify-between gap-2 border-t border-border/60 bg-muted/50 px-4 py-3 sm:justify-between sm:px-6">
-            <span className="text-xs text-muted-foreground">
+          <DialogFooter className="mx-0 mb-0 flex w-full shrink-0 flex-col-reverse items-stretch justify-between gap-3 border-t border-border/60 bg-muted/50 p-3 sm:flex-row sm:items-center sm:gap-2 sm:px-6 sm:py-3">
+            <span className="text-center text-xs text-muted-foreground sm:text-left">
               {content.trim().length.toLocaleString('pt-BR')} caracteres • Indexado no RAG
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2">
               <Button
                 type="button"
                 variant="outline"
@@ -621,7 +621,7 @@ export function GlobalKnowledgeSection() {
                         </button>
                       </div>
                       {isExpanded && (
-                        <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed text-foreground/90 border-t border-border/40 pt-2">
+                        <p className="mt-2 min-w-0 border-t border-border/40 pt-2 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere] leading-relaxed">
                           {d.content}
                         </p>
                       )}
