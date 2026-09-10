@@ -85,6 +85,14 @@ export const NEVER_RULE_CATEGORIES: NeverRuleCategory[] = [
       'passar contato', 'ligar', 'telefonar', 'assumir compromisso'
     ],
   },
+  {
+    id: 'outras',
+    name: 'Outras Proibições & Restrições',
+    shortName: 'Outras',
+    icon: Layers,
+    prefix: '[Outras]',
+    keywords: ['outras', 'geral', 'restrição', 'proibição', 'comportamento geral'],
+  },
 ];
 
 /**
@@ -278,30 +286,15 @@ export function GlobalNeverRulesEditor({
     });
 
     const groups: {
-      category: NeverRuleCategory | { id: string; name: string; shortName: string; icon: typeof Layers; prefix: string };
+      category: NeverRuleCategory;
       items: typeof categorized;
     }[] = NEVER_RULE_CATEGORIES.map((cat) => ({
       category: cat,
       items: categorized.filter((item) => item.categoryId === cat.id && item.matchesSearch),
     }));
 
-    const uncategorizedItems = categorized.filter(
-      (item) => item.categoryId === 'outras' && item.matchesSearch,
-    );
-    if (uncategorizedItems.length > 0) {
-      groups.push({
-        category: {
-          id: 'outras',
-          name: 'Outras Proibições & Restrições',
-          shortName: 'Outras',
-          icon: Layers,
-          prefix: '',
-        },
-        items: uncategorizedItems,
-      });
-    }
-
-    return groups;
+    // Se o grupo 'outras' estiver vazio e não houver busca, só exibe se tiver itens
+    return groups.filter((g) => g.category.id !== 'outras' || g.items.length > 0);
   }, [rulesList, search]);
 
   const totalVisibleItems = useMemo(
