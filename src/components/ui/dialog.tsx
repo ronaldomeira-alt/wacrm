@@ -75,7 +75,17 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // `grid` makes every direct child a grid item sized at its own
+          // max-content by default (min-width:auto) — a long unbroken run
+          // of text (a paragraph with no explicit width) then blows the
+          // whole dialog out to that text's single-line width instead of
+          // wrapping, which is what produced double scrollbars on any
+          // dialog with a sizeable text block. `[&>*]:min-w-0` lets every
+          // direct child (DialogHeader, a plain content div, DialogFooter,
+          // ...) shrink to the dialog's actual max-width and wrap
+          // normally; `overflow-x-hidden` is the backstop for anything
+          // that still can't wrap (e.g. a single very long token).
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-x-hidden rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 [&>*]:min-w-0",
           className
         )}
         {...props}

@@ -376,15 +376,18 @@ export function GlobalKnowledgeSection() {
         </div>
       </div>
 
-      {/* View Full Content Dialog */}
+      {/* View Full Content Dialog — fixed header/footer, only the middle
+          content region scrolls; capped at 90vw/90vh so long text (either
+          the master content or a fragment) can never push the dialog
+          itself wider or taller than the viewport. */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-        <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[85dvh] sm:max-h-[85vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
-          <DialogHeader className="space-y-1">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
+        <DialogContent className="flex h-auto max-h-[90vh] w-full max-w-[min(90vw,48rem)] flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="shrink-0 space-y-1 border-b border-border/60 px-4 py-4 sm:px-6">
+            <div className="flex min-w-0 items-center gap-2 pr-8">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <Globe className="h-4 w-4" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <DialogTitle className="text-base font-semibold text-foreground">
                   Conhecimento Global Transversal
                 </DialogTitle>
@@ -395,60 +398,65 @@ export function GlobalKnowledgeSection() {
             </div>
           </DialogHeader>
 
-          <div className="rounded-xl border border-border bg-muted/20 p-4 mt-2">
-            <div className="prose prose-sm dark:prose-invert max-w-none text-xs text-foreground/90 whitespace-pre-wrap font-sans leading-relaxed">
-              {content}
+          {/* Scrollable content — the only region that scrolls */}
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-6">
+            <div className="min-w-0 rounded-xl border border-border bg-muted/20 p-4">
+              <div className="min-w-0 text-xs leading-relaxed whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">
+                {content}
+              </div>
             </div>
+
+            {otherDocs.length > 0 && (
+              <div className="mt-3 min-w-0 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0">
+                    {otherDocs.length} fragmento{otherDocs.length > 1 ? 's' : ''} adicional{otherDocs.length > 1 ? 'is' : ''} — também usado{otherDocs.length > 1 ? 's' : ''} pela IA, mas fora do texto acima
+                  </span>
+                </div>
+                <div className="max-h-64 min-w-0 space-y-1.5 overflow-x-hidden overflow-y-auto rounded-lg border border-amber-500/20 bg-amber-500/5 p-2">
+                  {otherDocs.map((d) => {
+                    const isExpanded = expandedFragmentIds.has(d.id);
+                    return (
+                      <div key={d.id} className="min-w-0 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => toggleFragmentExpanded(d.id)}
+                          className="flex w-full min-w-0 items-center justify-between gap-2 text-left cursor-pointer"
+                        >
+                          <span className="min-w-0 flex-1 truncate font-medium text-foreground">{d.title}</span>
+                          <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                            {(d.content || '').trim().length.toLocaleString('pt-BR')} caracteres
+                            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                          </span>
+                        </button>
+                        {isExpanded && (
+                          <p className="mt-2 min-w-0 border-t border-border/40 pt-2 whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere] leading-relaxed">
+                            {d.content}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setViewDialogOpen(false);
+                    handleOpenCleanup();
+                  }}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                  Revisar e Unificar Fragmentos
+                </Button>
+              </div>
+            )}
           </div>
 
-          {otherDocs.length > 0 && (
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                {otherDocs.length} fragmento{otherDocs.length > 1 ? 's' : ''} adicional{otherDocs.length > 1 ? 'is' : ''} — também usado{otherDocs.length > 1 ? 's' : ''} pela IA, mas fora do texto acima
-              </div>
-              <div className="max-h-64 overflow-y-auto space-y-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2">
-                {otherDocs.map((d) => {
-                  const isExpanded = expandedFragmentIds.has(d.id);
-                  return (
-                    <div key={d.id} className="min-w-0 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => toggleFragmentExpanded(d.id)}
-                        className="flex w-full min-w-0 items-center justify-between gap-2 text-left cursor-pointer"
-                      >
-                        <span className="min-w-0 flex-1 truncate font-medium text-foreground">{d.title}</span>
-                        <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
-                          {(d.content || '').trim().length.toLocaleString('pt-BR')} caracteres
-                          {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                        </span>
-                      </button>
-                      {isExpanded && (
-                        <p className="mt-2 whitespace-pre-wrap leading-relaxed text-foreground/90 border-t border-border/40 pt-2 break-words">
-                          {d.content}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setViewDialogOpen(false);
-                  handleOpenCleanup();
-                }}
-                className="h-8 text-xs gap-1.5"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-primary" />
-                Revisar e Unificar Fragmentos
-              </Button>
-            </div>
-          )}
-
-          <DialogFooter className="flex items-center justify-between sm:justify-between w-full pt-2">
+          <DialogFooter className="mx-0 mb-0 flex w-full shrink-0 items-center justify-between gap-2 border-t border-border/60 bg-muted/50 px-4 py-3 sm:justify-between sm:px-6">
             <span className="text-xs text-muted-foreground">
               {content.trim().length.toLocaleString('pt-BR')} caracteres • Indexado no RAG
             </span>
