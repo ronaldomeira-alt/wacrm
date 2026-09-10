@@ -136,10 +136,10 @@ describe('Stage 4 — Behavioral Engine, Boundaries and Decision Engine', () => 
 
       expect(prompt).toContain('=== 1. MISSÃO PRINCIPAL E PAPEL NO ATENDIMENTO ===');
       expect(prompt).toContain('=== 2. PERSONALIDADE, TOM DE VOZ E MALEMOLÊNCIA ===');
-      expect(prompt).toContain('=== 3. FRONTEIRAS RÍGIDAS');
+      expect(prompt).toContain('=== 4. FRONTEIRAS RÍGIDAS');
       expect(prompt).toContain('PREÇO E VALORES');
       expect(prompt).toContain('NUNCA passar valores por m²');
-      expect(prompt).toContain('=== 5. CONTEXTO DE HORÁRIO DE ATENDIMENTO ===');
+      expect(prompt).toContain('=== 6. CONTEXTO DE HORÁRIO DE ATENDIMENTO ===');
       expect(prompt).toContain('Reserva Altiplano (Estágio da Obra: Em Obras)');
       expect(prompt).toContain('Piscina com borda infinita no 25º andar.');
       expect(prompt).toContain('INFORMAÇÕES JÁ EXTRAÍDAS: Finalidade: investimento');

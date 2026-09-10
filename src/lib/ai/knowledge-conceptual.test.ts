@@ -34,10 +34,10 @@ describe('CORREÇÃO CONCEITUAL — Validação das 4 Camadas da IA (Seção 20)
       globalKnowledge: ['Ronaldo Meira é o corretor responsável por visitas.'],
     });
 
-    expect(prompt).toContain('=== 7. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO (ISOLAMENTO ESTRITO) ===');
+    expect(prompt).toContain('=== 8. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO (ISOLAMENTO ESTRITO) ===');
     expect(prompt).toContain('Residencial Aurora');
     expect(prompt).toContain('Rooftop com piscina e vista panorâmica do Bessa.');
-    expect(prompt).toContain('=== 8. CONHECIMENTO GLOBAL (INFORMAÇÕES TRANSVERSAIS VÁLIDAS PARA QUALQUER ATENDIMENTO) ===');
+    expect(prompt).toContain('=== 9. CONHECIMENTO GLOBAL (INFORMAÇÕES TRANSVERSAIS VÁLIDAS PARA QUALQUER ATENDIMENTO) ===');
     expect(prompt).toContain('Ronaldo Meira é o corretor responsável por visitas.');
   });
 
@@ -66,9 +66,9 @@ describe('CORREÇÃO CONCEITUAL — Validação das 4 Camadas da IA (Seção 20)
       globalKnowledge: [],
     });
 
-    expect(prompt).toContain('=== 3. FRONTEIRAS RÍGIDAS (O QUE VOCÊ NUNCA RESPONDE / SEMPRE TRANSFERE) ===');
+    expect(prompt).toContain('=== 4. FRONTEIRAS RÍGIDAS (O QUE VOCÊ NUNCA RESPONDE / SEMPRE TRANSFERE) ===');
     expect(prompt).toContain('PREÇO É DADO DINÂMICO E VOCÊ NUNCA INFORMA AO CLIENTE');
-    expect(prompt).toContain('=== 4. REGRAS GLOBAIS PROIBITIVAS ESPECÍFICAS ("NUNCA FAZER") ===');
+    expect(prompt).toContain('=== 5. REGRAS GLOBAIS PROIBITIVAS ESPECÍFICAS ("NUNCA FAZER") ===');
     expect(prompt).toContain('Nunca prometer valorização futura ou passar preços.');
   });
 
@@ -88,11 +88,11 @@ describe('CORREÇÃO CONCEITUAL — Validação das 4 Camadas da IA (Seção 20)
       },
     });
 
-    expect(prompt).toContain('=== 9. MEMÓRIA E CONTEXTO DO LEAD (DADOS JÁ EXTRAÍDOS / NÃO REPETIR PERGUNTAS) ===');
+    expect(prompt).toContain('=== 10. MEMÓRIA E CONTEXTO DO LEAD (DADOS JÁ EXTRAÍDOS / NÃO REPETIR PERGUNTAS) ===');
     expect(prompt).toContain('Finalidade: Investimento');
     expect(prompt).toContain('Orçamento: R$ 600.000');
     // Global knowledge remains clean and transversal
-    expect(prompt).toContain('=== 8. CONHECIMENTO GLOBAL (INFORMAÇÕES TRANSVERSAIS VÁLIDAS PARA QUALQUER ATENDIMENTO) ===');
+    expect(prompt).toContain('=== 9. CONHECIMENTO GLOBAL (INFORMAÇÕES TRANSVERSAIS VÁLIDAS PARA QUALQUER ATENDIMENTO) ===');
     expect(prompt).toContain('Atuamos no litoral paraibano.');
   });
 

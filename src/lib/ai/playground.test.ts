@@ -38,6 +38,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
     toneStyle: 'consultative_warm',
     teamPresentation: 'Somos a equipe de atendimento do Ronaldo e da Thatianna.',
     globalNeverRules: 'NUNCA negociar valores, prometer descontos ou inventar especificações não documentadas.',
+    responseStyleInstructions: 'Responda em no máximo 2 frases curtas. Sempre termine com uma pergunta.',
     businessHoursStart: '08:00',
     businessHoursEnd: '18:00',
     businessDays: [1, 2, 3, 4, 5, 6],
@@ -104,9 +105,21 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
 
     expect(prompt).toContain('=== 1. MISSÃO PRINCIPAL E PAPEL NO ATENDIMENTO ===')
     expect(prompt).toContain('=== 2. PERSONALIDADE, TOM DE VOZ E MALEMOLÊNCIA ===')
-    expect(prompt).toContain('=== 3. FRONTEIRAS RÍGIDAS')
+    expect(prompt).toContain('=== 3. INSTRUÇÕES DE ESTILO DE RESPOSTA ===')
+    expect(prompt).toContain('Responda em no máximo 2 frases curtas.')
+    expect(prompt).toContain('=== 4. FRONTEIRAS RÍGIDAS')
     expect(prompt).toContain('NUNCA negociar valores, prometer descontos')
-    expect(prompt).toContain('=== 10. FORMATO DE RESPOSTA (DECISÃO ESTRUTURADA) ===')
+    expect(prompt).toContain('=== 11. FORMATO DE RESPOSTA (DECISÃO ESTRUTURADA) ===')
+  })
+
+  it('2b. Omitting responseStyleInstructions leaves section 3 out of the prompt entirely', () => {
+    const prompt = buildConversationalSystemPrompt({
+      config: { ...mockConfig, responseStyleInstructions: null },
+      mode: 'auto_reply',
+      structuredOutputRequired: false,
+    })
+
+    expect(prompt).not.toContain('=== 3. INSTRUÇÕES DE ESTILO DE RESPOSTA ===')
   })
 
   it('3. Property selector isolation: includes property book in knowledge when property is selected', () => {

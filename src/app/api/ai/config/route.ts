@@ -217,6 +217,7 @@ export async function POST(request: Request) {
     if ('tone_style' in body) shared.tone_style = typeof body.tone_style === 'string' ? body.tone_style.trim() : 'consultative_warm'
     if ('team_presentation' in body) shared.team_presentation = typeof body.team_presentation === 'string' ? body.team_presentation.trim() : null
     if ('global_never_rules' in body) shared.global_never_rules = typeof body.global_never_rules === 'string' ? body.global_never_rules.trim() : null
+    if ('response_style_instructions' in body) shared.response_style_instructions = typeof body.response_style_instructions === 'string' ? body.response_style_instructions.trim() || null : null
     if ('business_hours_start' in body) shared.business_hours_start = typeof body.business_hours_start === 'string' ? body.business_hours_start.trim() : '08:00'
     if ('business_hours_end' in body) shared.business_hours_end = typeof body.business_hours_end === 'string' ? body.business_hours_end.trim() : '18:00'
     if ('business_days' in body && Array.isArray(body.business_days)) shared.business_days = body.business_days
