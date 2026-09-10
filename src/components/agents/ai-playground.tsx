@@ -368,75 +368,71 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           {/* Selectors */}
           <div className="flex flex-1 flex-wrap items-center gap-2.5 px-4 py-3">
             {/* 1. Property Selector */}
-            <div className="flex min-w-0 items-center gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <Building2 className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
-                  Empreendimento
-                </p>
-                <Select
-                  value={selectedPropertyId || NO_PROPERTY_VALUE}
-                  onValueChange={(val) => {
-                    setSelectedPropertyId(val === NO_PROPERTY_VALUE ? '' : val ?? '');
-                    setTurns([]); // reset context to avoid mixing properties
-                  }}
-                >
-                  <SelectTrigger className="mt-0.5 h-auto min-w-0 max-w-[190px] gap-1 border-0 bg-transparent p-0 text-sm font-semibold text-foreground shadow-none hover:bg-transparent focus-visible:ring-0 data-[size=default]:h-auto">
-                    <SelectValue className="truncate">
-                      {selectedPropertyName ?? 'Nenhum / Desconhecido'}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-auto min-w-56">
-                    <SelectItem value={NO_PROPERTY_VALUE}>Nenhum / Desconhecido</SelectItem>
-                    {properties.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            <Select
+              value={selectedPropertyId || NO_PROPERTY_VALUE}
+              onValueChange={(val) => {
+                setSelectedPropertyId(val === NO_PROPERTY_VALUE ? '' : val ?? '');
+                setTurns([]); // reset context to avoid mixing properties
+              }}
+            >
+              <SelectTrigger className="h-auto min-w-[200px] sm:min-w-[220px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto [&_svg]:ml-auto">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Building2 className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
+                    Empreendimento
+                  </p>
+                  <SelectValue className="mt-0.5 truncate text-sm font-semibold text-foreground">
+                    {selectedPropertyName ?? 'Nenhum / Desconhecido'}
+                  </SelectValue>
+                </div>
+              </SelectTrigger>
+              <SelectContent className="w-(--anchor-width) min-w-[200px]">
+                <SelectItem value={NO_PROPERTY_VALUE}>Nenhum / Desconhecido</SelectItem>
+                {properties.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
             {/* 2. Simulated Hours */}
-            <div className="flex min-w-0 items-center gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <Clock className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
-                  Horário Simulado
-                </p>
-                <Select
-                  value={simulatedHours}
-                  onValueChange={(val) => val && setSimulatedHours(val as typeof simulatedHours)}
-                >
-                  <SelectTrigger className="mt-0.5 h-auto min-w-0 max-w-[220px] gap-1 border-0 bg-transparent p-0 text-sm font-semibold text-foreground shadow-none hover:bg-transparent focus-visible:ring-0 data-[size=default]:h-auto">
-                    <SelectValue className="min-w-0">
-                      {(() => {
-                        const opt = SIMULATED_HOURS_OPTIONS.find((o) => o.value === simulatedHours);
-                        return (
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt?.dotClassName)} />
-                            <span className="truncate">{opt?.label}</span>
-                          </span>
-                        );
-                      })()}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-auto min-w-72">
-                    {SIMULATED_HOURS_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt.dotClassName)} />
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            <Select
+              value={simulatedHours}
+              onValueChange={(val) => val && setSimulatedHours(val as typeof simulatedHours)}
+            >
+              <SelectTrigger className="h-auto min-w-[230px] sm:min-w-[250px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto [&_svg]:ml-auto">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Clock className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
+                    Horário Simulado
+                  </p>
+                  <SelectValue className="mt-0.5 min-w-0 text-sm font-semibold text-foreground">
+                    {(() => {
+                      const opt = SIMULATED_HOURS_OPTIONS.find((o) => o.value === simulatedHours);
+                      return (
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt?.dotClassName)} />
+                          <span className="truncate">{opt?.label}</span>
+                        </span>
+                      );
+                    })()}
+                  </SelectValue>
+                </div>
+              </SelectTrigger>
+              <SelectContent className="w-(--anchor-width) min-w-[230px]">
+                {SIMULATED_HOURS_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', opt.dotClassName)} />
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Nova Conversa */}
