@@ -175,9 +175,11 @@ export async function replacePropertyKnowledge(
     subjectiveKnowledge?: string | null
     bookSummary?: string | null
     stage?: PropertyStage
+    responseStyleInstructions?: string[] | null
   },
 ): Promise<void> {
-  const { subjectiveKnowledge, bookSummary, stage } = args
+  const { subjectiveKnowledge, bookSummary, stage, responseStyleInstructions } = args
+  const hasSubjectiveKnowledge = subjectiveKnowledge !== undefined
   const trimmedSubj = (subjectiveKnowledge || '').trim()
   const hasBookSummary = bookSummary !== undefined
   const trimmedBook = (bookSummary || '').trim()
@@ -186,14 +188,26 @@ export async function replacePropertyKnowledge(
   const updatePayload: Record<string, unknown> = {
     account_id: accountId,
     property_id: propertyId,
-    subjective_knowledge: trimmedSubj || null,
     updated_at: new Date().toISOString(),
+  }
+  // subjective_knowledge, like book summary below, is only touched when the
+  // caller actually sent it — a partial save (e.g. this Playground modal
+  // saving only response_style_instructions) must not silently wipe the
+  // broker's notes by writing subjective_knowledge: null over them.
+  if (hasSubjectiveKnowledge) {
+    updatePayload.subjective_knowledge = trimmedSubj || null
   }
   if (hasBookSummary) {
     updatePayload.book_extracted_text = trimmedBook || null
     updatePayload.book_indexed_at = trimmedBook ? new Date().toISOString() : null
   }
   if (stage) updatePayload.stage = stage
+  if (responseStyleInstructions !== undefined) {
+    updatePayload.response_style_instructions =
+      responseStyleInstructions && responseStyleInstructions.length > 0
+        ? responseStyleInstructions
+        : null
+  }
 
   const { error: ctxErr } = await db
     .from('property_ai_contexts')
@@ -201,30 +215,33 @@ export async function replacePropertyKnowledge(
 
   if (ctxErr) throw ctxErr
 
-  // 2. Index subjective knowledge document
-  await db
-    .from('ai_knowledge_documents')
-    .delete()
-    .eq('account_id', accountId)
-    .eq('property_id', propertyId)
-    .eq('source_type', 'subjective_text')
-
-  if (trimmedSubj) {
-    const { data: doc, error: docErr } = await db
+  // 2. Index subjective knowledge document (only when the caller sent it —
+  // same partial-save guard as the context row above).
+  if (hasSubjectiveKnowledge) {
+    await db
       .from('ai_knowledge_documents')
-      .insert({
-        account_id: accountId,
-        property_id: propertyId,
-        title: 'Visão do Corretor',
-        content: trimmedSubj,
-        source_type: 'subjective_text',
-      })
-      .select('id')
-      .single()
+      .delete()
+      .eq('account_id', accountId)
+      .eq('property_id', propertyId)
+      .eq('source_type', 'subjective_text')
 
-    if (docErr || !doc) throw docErr || new Error('Failed to create subjective document')
+    if (trimmedSubj) {
+      const { data: doc, error: docErr } = await db
+        .from('ai_knowledge_documents')
+        .insert({
+          account_id: accountId,
+          property_id: propertyId,
+          title: 'Visão do Corretor',
+          content: trimmedSubj,
+          source_type: 'subjective_text',
+        })
+        .select('id')
+        .single()
 
-    await ingestDocument(db, accountId, config, doc.id, trimmedSubj, propertyId)
+      if (docErr || !doc) throw docErr || new Error('Failed to create subjective document')
+
+      await ingestDocument(db, accountId, config, doc.id, trimmedSubj, propertyId)
+    }
   }
 
   // 3. Index book summary document if provided
@@ -268,6 +285,7 @@ export async function replacePropertySubjectiveKnowledge(
     subjectiveKnowledge?: string | null
     bookSummary?: string | null
     stage?: PropertyStage
+    responseStyleInstructions?: string[] | null
   },
 ): Promise<void> {
   return replacePropertyKnowledge(db, accountId, config, propertyId, args)

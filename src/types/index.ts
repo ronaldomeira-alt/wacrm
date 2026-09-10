@@ -213,6 +213,7 @@ export interface PropertyAiContext {
   property_id: string;
   stage: PropertyStage;
   subjective_knowledge?: string | null;
+  response_style_instructions?: string[] | null;
   book_storage_path?: string | null;
   book_filename?: string | null;
   book_file_size?: number | null;

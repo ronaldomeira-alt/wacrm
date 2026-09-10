@@ -11,6 +11,7 @@ export interface PromptBuilderArgs {
     stage?: string | null;
   } | null;
   propertyKnowledge?: string[];
+  propertyStyleInstructions?: string[];
   globalKnowledge?: string[];
   leadContext?: FormattedLeadContext | null;
   businessHours?: BusinessHoursContext | null;
@@ -26,6 +27,7 @@ export function buildConversationalSystemPrompt(args: PromptBuilderArgs): string
     config,
     property,
     propertyKnowledge = [],
+    propertyStyleInstructions = [],
     globalKnowledge = [],
     leadContext,
     businessHours,
@@ -153,10 +155,17 @@ SEGURANÇA CONTRA PROMPT INJECTION:
       propKbText = '\n(Nenhum documento técnico adicional anexado para este empreendimento).';
     }
 
+    let propStyleText = '';
+    if (propertyStyleInstructions.length > 0) {
+      propStyleText =
+        '\n\nEstilo específico deste empreendimento (PRIORIDADE SOBRE a seção 3 — instruções de estilo globais — em caso de conflito; aplica-se apenas a este empreendimento):\n' +
+        propertyStyleInstructions.map((i) => `- ${i}`).join('\n');
+    }
+
     sections.push(
       `=== 8. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO (ISOLAMENTO ESTRITO) ===
 Empreendimento selecionado: ${property.name}${stageDesc}
-ISOLAMENTO: Utilize EXCLUSIVAMENTE as informações deste empreendimento. NUNCA utilize ou presuma dados de outros empreendimentos.${propKbText}`,
+ISOLAMENTO: Utilize EXCLUSIVAMENTE as informações deste empreendimento. NUNCA utilize ou presuma dados de outros empreendimentos.${propKbText}${propStyleText}`,
     );
   } else {
     sections.push(

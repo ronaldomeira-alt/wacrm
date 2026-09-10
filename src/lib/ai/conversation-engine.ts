@@ -249,11 +249,16 @@ export async function executeConversationalTurn(
 
   // 2. Load Property Details if propertyId is provided
   let propertyInfo: { id: string; name: string; stage?: string | null } | null = null;
+  let propertyStyleInstructions: string[] = [];
   if (propertyId) {
     try {
       const [propRes, ctxRes] = await Promise.all([
         db.from('properties').select('id, name').eq('id', propertyId).maybeSingle(),
-        db.from('property_ai_contexts').select('stage').eq('property_id', propertyId).maybeSingle(),
+        db
+          .from('property_ai_contexts')
+          .select('stage, response_style_instructions')
+          .eq('property_id', propertyId)
+          .maybeSingle(),
       ]);
 
       if (propRes.data) {
@@ -264,6 +269,9 @@ export async function executeConversationalTurn(
           stage: STAGE_LABELS[rawStage] || rawStage,
         };
       }
+      propertyStyleInstructions = Array.isArray(ctxRes.data?.response_style_instructions)
+        ? ctxRes.data.response_style_instructions
+        : [];
     } catch (err) {
       console.error('[conversation engine] error loading property info:', err);
     }
@@ -292,6 +300,7 @@ export async function executeConversationalTurn(
     mode: 'auto_reply',
     property: propertyInfo,
     propertyKnowledge: propertyId ? knowledgeExcerpts : [],
+    propertyStyleInstructions: propertyId ? propertyStyleInstructions : [],
     globalKnowledge: !propertyId ? knowledgeExcerpts : [],
     leadContext,
     businessHours,

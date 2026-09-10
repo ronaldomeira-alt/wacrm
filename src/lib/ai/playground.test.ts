@@ -153,6 +153,62 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
     expect(prompt).toContain('Você pode acolher o cliente, responder perguntas gerais')
   })
 
+  it('4b. Property-specific style instructions appear inside section 8 when a property is selected', () => {
+    const prompt = buildConversationalSystemPrompt({
+      config: mockConfig,
+      mode: 'auto_reply',
+      property: {
+        id: 'prop-123',
+        name: 'Residencial Cabo Branco Sunset',
+        stage: 'Lançamento',
+      },
+      propertyKnowledge: [],
+      propertyStyleInstructions: ['Sempre mencionar a vista para o mar antes de qualquer outro diferencial.'],
+    })
+
+    expect(prompt).toContain('=== 8. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO')
+    expect(prompt).toContain('Sempre mencionar a vista para o mar antes de qualquer outro diferencial.')
+    expect(prompt).toContain('Estilo específico deste empreendimento')
+  })
+
+  it('4c. Property-specific style instructions never leak when no property is selected (isolation)', () => {
+    const prompt = buildConversationalSystemPrompt({
+      config: mockConfig,
+      mode: 'auto_reply',
+      property: null,
+      propertyKnowledge: [],
+      // Defensive: even if a caller mistakenly passes leftover instructions
+      // from a previously-selected property, they must never surface
+      // without a property context to isolate them under.
+      propertyStyleInstructions: ['Instrução vazada de outro empreendimento.'],
+    })
+
+    expect(prompt).not.toContain('Instrução vazada de outro empreendimento.')
+    expect(prompt).not.toContain('Estilo específico deste empreendimento')
+  })
+
+  it('4d. Property-specific style instructions take precedence over global style instructions on conflict', () => {
+    const prompt = buildConversationalSystemPrompt({
+      config: mockConfig, // has global responseStyleInstructions set
+      mode: 'auto_reply',
+      property: {
+        id: 'prop-123',
+        name: 'Residencial Cabo Branco Sunset',
+        stage: 'Lançamento',
+      },
+      propertyKnowledge: [],
+      propertyStyleInstructions: ['Neste empreendimento, use frases mais longas e descritivas.'],
+    })
+
+    // Both scopes are present...
+    expect(prompt).toContain('=== 3. INSTRUÇÕES DE ESTILO DE RESPOSTA ===')
+    expect(prompt).toContain('Responda em no máximo 2 frases curtas.')
+    expect(prompt).toContain('Neste empreendimento, use frases mais longas e descritivas.')
+    // ...and the prompt text explicitly resolves the conflict in favor of
+    // the property-specific instruction.
+    expect(prompt).toContain('PRIORIDADE SOBRE a seção 3')
+  })
+
   it('5. Business hours simulation: correctly injects business hours prompt guidance', () => {
     const status = getBusinessHoursContext(mockConfig, new Date('2026-09-09T14:30:00-03:00'))
     expect(status.isBusinessHours).toBe(true)

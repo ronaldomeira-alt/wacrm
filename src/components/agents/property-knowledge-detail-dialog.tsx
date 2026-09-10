@@ -11,7 +11,9 @@ import {
   Megaphone,
   Plus,
   Tag,
+  SlidersHorizontal,
 } from 'lucide-react';
+import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor';
 import {
   Dialog,
   DialogContent,
@@ -58,6 +60,7 @@ export function PropertyKnowledgeDetailDialog({
   const [stage, setStage] = useState<PropertyStage>('lancamento');
   const [bookSummary, setBookSummary] = useState('');
   const [subjectiveKnowledge, setSubjectiveKnowledge] = useState('');
+  const [styleInstructions, setStyleInstructions] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -76,6 +79,11 @@ export function PropertyKnowledgeDetailDialog({
       setStage(property.ai_context?.stage || 'lancamento');
       setBookSummary(property.ai_context?.book_extracted_text || '');
       setSubjectiveKnowledge(property.ai_context?.subjective_knowledge || '');
+      setStyleInstructions(
+        Array.isArray(property.ai_context?.response_style_instructions)
+          ? property.ai_context.response_style_instructions
+          : [],
+      );
       loadAdMappings(property.id);
     }
   }, [property]);
@@ -113,6 +121,7 @@ export function PropertyKnowledgeDetailDialog({
           stage,
           book_summary: bookSummary.trim() || null,
           subjective_knowledge: subjectiveKnowledge.trim() || null,
+          response_style_instructions: styleInstructions,
         }),
       });
 
@@ -329,6 +338,27 @@ export function PropertyKnowledgeDetailDialog({
             />
             <p className="text-[11px] text-muted-foreground">
               Anotações e percepções comerciais consultadas exclusivamente no atendimento aos interessados neste empreendimento.
+            </p>
+          </div>
+
+          {/* Instruções de Estilo Específicas do Empreendimento */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <SlidersHorizontal className="h-3.5 w-3.5 text-primary" />
+              <Label className="text-xs font-medium text-foreground">
+                Instruções de Estilo Específicas deste Empreendimento
+              </Label>
+            </div>
+            <ResponseStyleInstructionsEditor
+              instructions={styleInstructions}
+              onAdd={async (text) => setStyleInstructions((prev) => [...prev, text])}
+              onRemove={async (index) => setStyleInstructions((prev) => prev.filter((_, i) => i !== index))}
+              onEdit={async (index, text) =>
+                setStyleInstructions((prev) => prev.map((v, i) => (i === index ? text : v)))
+              }
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Ajustes de estilo válidos apenas neste empreendimento — em caso de conflito, prevalecem sobre as instruções globais de estilo. Só grava ao clicar em &quot;Salvar Conhecimento&quot;; para efeito imediato, ajuste pelo Playground.
             </p>
           </div>
 

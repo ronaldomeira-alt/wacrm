@@ -189,6 +189,9 @@ export function AiBehaviorSettings() {
               instructions={responseStyleInstructions}
               onAdd={async (text) => setResponseStyleInstructions((prev) => [...prev, text])}
               onRemove={async (index) => setResponseStyleInstructions((prev) => prev.filter((_, i) => i !== index))}
+              onEdit={async (index, text) =>
+                setResponseStyleInstructions((prev) => prev.map((v, i) => (i === index ? text : v)))
+              }
             />
             <p className="text-[11px] text-muted-foreground">
               Ajustes de formato e ritmo da conversa (comprimento, tom, se deve terminar com pergunta, etc.) — não confundir com as proibições abaixo. Adicionar/remover aqui só grava ao clicar em &quot;Salvar Configurações da IA&quot; no final da página; para efeito imediato, ajuste direto pelo Playground.

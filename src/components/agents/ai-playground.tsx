@@ -15,7 +15,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Code2,
-  X,
+  ChevronRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -80,18 +80,23 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const [selectedTurnForInspect, setSelectedTurnForInspect] = useState<Turn | null>(null);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
 
-  // Response-style instructions — each entry is its own item (array), so
-  // removing one "I changed my mind" instruction is a single click here
-  // instead of hand-editing a text blob. Same field the "Comportamento"
-  // tab reads/writes; every add/remove saves immediately and takes effect
-  // on the very next message sent in this Playground session, and on real
-  // production auto-replies too, since both read the same live config row.
-  const [activeInstructions, setActiveInstructions] = useState<string[]>([]);
-  const [loadingStyle, setLoadingStyle] = useState(true);
+  // Response-style instructions — two independent scopes. Each entry is
+  // its own array item, so removing/editing one "I changed my mind"
+  // instruction is a single action instead of hand-editing a text blob.
+  // Global saves to ai_configs (same field the "Comportamento" tab
+  // reads/writes); per-property saves to property_ai_contexts for the
+  // currently selected empreendimento. Both save immediately and take
+  // effect on the very next message — in this Playground session and on
+  // real production auto-replies too, since all read the same live rows.
+  const [globalInstructions, setGlobalInstructions] = useState<string[]>([]);
+  const [loadingGlobalStyle, setLoadingGlobalStyle] = useState(true);
+  const [propertyInstructions, setPropertyInstructions] = useState<string[]>([]);
+  const [loadingPropertyStyle, setLoadingPropertyStyle] = useState(false);
+  const [styleDialogScope, setStyleDialogScope] = useState<'global' | 'property' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Load properties + current style instructions on mount
+  // Load properties + global style instructions on mount
   useEffect(() => {
     fetch('/api/ai/properties')
       .then((res) => res.json())
@@ -113,20 +118,43 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     fetch('/api/ai/config')
       .then((res) => res.json())
       .then((data) => {
-        setActiveInstructions(Array.isArray(data.response_style_instructions) ? data.response_style_instructions : []);
+        setGlobalInstructions(Array.isArray(data.response_style_instructions) ? data.response_style_instructions : []);
       })
       .catch((err) => {
         console.error('[ai-playground] failed to load style instructions:', err);
         toast.error('Falha ao carregar instruções de estilo — tente recarregar a página.');
       })
-      .finally(() => setLoadingStyle(false));
+      .finally(() => setLoadingGlobalStyle(false));
   }, []);
+
+  // Load the selected property's own style instructions whenever it changes
+  useEffect(() => {
+    if (!selectedPropertyId) {
+      setPropertyInstructions([]);
+      return;
+    }
+    setLoadingPropertyStyle(true);
+    fetch(`/api/ai/properties/${selectedPropertyId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setPropertyInstructions(
+          Array.isArray(data.property?.ai_context?.response_style_instructions)
+            ? data.property.ai_context.response_style_instructions
+            : [],
+        );
+      })
+      .catch((err) => {
+        console.error('[ai-playground] failed to load property style instructions:', err);
+        toast.error('Falha ao carregar instruções do empreendimento.');
+      })
+      .finally(() => setLoadingPropertyStyle(false));
+  }, [selectedPropertyId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns, sending]);
 
-  const saveInstructions = async (next: string[]) => {
+  const saveGlobalInstructions = async (next: string[]) => {
     const res = await fetch('/api/ai/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -136,26 +164,78 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     if (!res.ok) {
       throw new Error(data.error || 'Falha ao salvar instrução de estilo');
     }
-    setActiveInstructions(next);
+    setGlobalInstructions(next);
   };
 
-  const handleAddInstruction = async (text: string) => {
+  const savePropertyInstructions = async (next: string[]) => {
+    if (!selectedPropertyId) return;
+    const res = await fetch(`/api/ai/properties/${selectedPropertyId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response_style_instructions: next }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao salvar instrução de estilo do empreendimento');
+    }
+    setPropertyInstructions(next);
+  };
+
+  const handleAddGlobalInstruction = async (text: string) => {
     try {
-      await saveInstructions([...activeInstructions, text]);
-      toast.success('Instrução adicionada — valendo a partir da próxima mensagem.');
+      await saveGlobalInstructions([...globalInstructions, text]);
+      toast.success('Instrução global adicionada — valendo a partir da próxima mensagem.');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar instrução de estilo');
     }
   };
 
-  const handleRemoveInstruction = async (index: number) => {
+  const handleRemoveGlobalInstruction = async (index: number) => {
     try {
-      await saveInstructions(activeInstructions.filter((_, i) => i !== index));
-      toast.success('Instrução removida.');
+      await saveGlobalInstructions(globalInstructions.filter((_, i) => i !== index));
+      toast.success('Instrução global removida.');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Erro ao remover instrução de estilo');
     }
   };
+
+  const handleEditGlobalInstruction = async (index: number, text: string) => {
+    try {
+      await saveGlobalInstructions(globalInstructions.map((v, i) => (i === index ? text : v)));
+      toast.success('Instrução global atualizada.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao editar instrução de estilo');
+    }
+  };
+
+  const handleAddPropertyInstruction = async (text: string) => {
+    try {
+      await savePropertyInstructions([...propertyInstructions, text]);
+      toast.success('Instrução do empreendimento adicionada — valendo a partir da próxima mensagem.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao salvar instrução de estilo');
+    }
+  };
+
+  const handleRemovePropertyInstruction = async (index: number) => {
+    try {
+      await savePropertyInstructions(propertyInstructions.filter((_, i) => i !== index));
+      toast.success('Instrução do empreendimento removida.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao remover instrução de estilo');
+    }
+  };
+
+  const handleEditPropertyInstruction = async (index: number, text: string) => {
+    try {
+      await savePropertyInstructions(propertyInstructions.map((v, i) => (i === index ? text : v)));
+      toast.success('Instrução do empreendimento atualizada.');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao editar instrução de estilo');
+    }
+  };
+
+  const selectedPropertyName = properties.find((p) => p.id === selectedPropertyId)?.name;
 
   const send = async (customPrompt?: string) => {
     const text = (customPrompt || input).trim();
@@ -311,10 +391,67 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         </div>
       </div>
 
-      {/* Main Container: Chat (Left/Center) + Style Instructions Composer (Right) */}
-      <div className="grid gap-4 lg:grid-cols-12 items-start">
-        {/* Chat Stream (7 cols on lg) */}
-        <div className="lg:col-span-7 flex h-[460px] sm:h-[540px] lg:h-[620px] flex-col rounded-xl border border-border bg-card shadow-xs">
+      {/* Response Style Cards */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => setStyleDialogScope('global')}
+          className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left shadow-xs transition-colors hover:border-primary/40 hover:bg-muted/30 cursor-pointer"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <SlidersHorizontal className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-foreground truncate">Instruções Globais</p>
+              <p className="text-[11px] text-muted-foreground">Valem para qualquer atendimento</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Badge variant="outline" className="text-[11px] px-1.5 py-0">
+              {loadingGlobalStyle ? <Loader2 className="h-3 w-3 animate-spin" /> : globalInstructions.length}
+            </Badge>
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => selectedPropertyId && setStyleDialogScope('property')}
+          disabled={!selectedPropertyId}
+          className={cn(
+            'flex items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left shadow-xs transition-colors',
+            selectedPropertyId
+              ? 'hover:border-primary/40 hover:bg-muted/30 cursor-pointer'
+              : 'opacity-60 cursor-not-allowed',
+          )}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Building2 className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-foreground truncate">Instruções deste Empreendimento</p>
+              <p className="text-[11px] text-muted-foreground truncate">
+                {selectedPropertyId
+                  ? (selectedPropertyName ?? 'Empreendimento selecionado')
+                  : 'Selecione um empreendimento para ver instruções específicas'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {selectedPropertyId && (
+              <Badge variant="outline" className="text-[11px] px-1.5 py-0">
+                {loadingPropertyStyle ? <Loader2 className="h-3 w-3 animate-spin" /> : propertyInstructions.length}
+              </Badge>
+            )}
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          </div>
+        </button>
+      </div>
+
+      {/* Chat Stream */}
+      <div className="flex h-[460px] sm:h-[540px] lg:h-[620px] flex-col rounded-xl border border-border bg-card shadow-xs">
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5 bg-muted/20">
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-primary" />
@@ -443,31 +580,51 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           </div>
         </div>
 
-        {/* Response Style Composer (5 cols on lg) */}
-        <div className="lg:col-span-5 flex h-[380px] sm:h-[460px] lg:h-[620px] flex-col rounded-xl border border-border bg-card p-4 space-y-3 shadow-xs">
-          <div className="flex items-center justify-between border-b border-border pb-2.5">
-            <div className="flex items-center gap-2">
-              <SlidersHorizontal className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-semibold text-foreground">Instruções de Estilo de Resposta</h3>
-            </div>
+      {/* Response Style Instructions Dialog — scoped to exactly one list at
+          a time (global OR the selected property), never both together */}
+      <Dialog open={styleDialogScope !== null} onOpenChange={(open) => !open && setStyleDialogScope(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              {styleDialogScope === 'property' ? (
+                <Building2 className="h-4 w-4 text-primary" />
+              ) : (
+                <SlidersHorizontal className="h-4 w-4 text-primary" />
+              )}
+              {styleDialogScope === 'property'
+                ? `Instruções de Estilo — ${selectedPropertyName ?? 'Empreendimento'}`
+                : 'Instruções de Estilo Globais'}
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              {styleDialogScope === 'property'
+                ? 'Ajustes de estilo válidos apenas para este empreendimento. Em caso de conflito com as instruções globais, estas prevalecem.'
+                : 'Ajustes de estilo válidos para qualquer atendimento, em qualquer empreendimento. Salva na hora e já vale a partir da próxima mensagem.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {styleDialogScope === 'property' ? (
+              <ResponseStyleInstructionsEditor
+                instructions={propertyInstructions}
+                loading={loadingPropertyStyle}
+                onAdd={handleAddPropertyInstruction}
+                onRemove={handleRemovePropertyInstruction}
+                onEdit={handleEditPropertyInstruction}
+                className="flex flex-col"
+              />
+            ) : (
+              <ResponseStyleInstructionsEditor
+                instructions={globalInstructions}
+                loading={loadingGlobalStyle}
+                onAdd={handleAddGlobalInstruction}
+                onRemove={handleRemoveGlobalInstruction}
+                onEdit={handleEditGlobalInstruction}
+                className="flex flex-col"
+              />
+            )}
           </div>
-
-          <p className="text-xs text-muted-foreground">
-            Digite uma orientação (ex: &quot;responda em frases curtas&quot;) e clique em Adicionar. Ela salva
-            na hora e já vale a partir da próxima mensagem — no chat ao lado e nas respostas reais do
-            WhatsApp. Mudou de ideia? Clique no <X className="inline h-3 w-3 align-text-top" /> para remover
-            uma instrução específica, sem afetar as outras.
-          </p>
-
-          <ResponseStyleInstructionsEditor
-            instructions={activeInstructions}
-            loading={loadingStyle}
-            onAdd={handleAddInstruction}
-            onRemove={handleRemoveInstruction}
-            className="flex-1 flex flex-col min-h-0"
-          />
-        </div>
-      </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Inspect System Prompt Dialog */}
       <Dialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen}>

@@ -76,14 +76,31 @@ export async function PATCH(req: Request, context: RouteContext) {
     }
 
     const stage = body.stage as PropertyStage | undefined;
+    // typeof-string handles a real value; explicit `null` means "clear the
+    // field"; the key being absent entirely means "leave it untouched" —
+    // replacePropertySubjectiveKnowledge only touches fields it receives as
+    // non-undefined, so collapsing null into undefined here would silently
+    // stop the "clear this field" save from taking effect.
     const subjectiveKnowledge = typeof body.subjective_knowledge === 'string'
       ? body.subjective_knowledge
-      : undefined;
+      : body.subjective_knowledge === null
+        ? null
+        : undefined;
 
     const bookSummary = typeof body.book_summary === 'string'
       ? body.book_summary
       : typeof body.book_extracted_text === 'string'
         ? body.book_extracted_text
+        : body.book_summary === null || body.book_extracted_text === null
+          ? null
+          : undefined;
+
+    const responseStyleInstructions = Array.isArray(body.response_style_instructions)
+      ? body.response_style_instructions
+          .filter((v: unknown): v is string => typeof v === 'string' && v.trim().length > 0)
+          .map((v: string) => v.trim())
+      : body.response_style_instructions === null
+        ? null
         : undefined;
 
     // Optional name update on properties table
@@ -106,6 +123,7 @@ export async function PATCH(req: Request, context: RouteContext) {
         subjectiveKnowledge,
         bookSummary,
         stage,
+        responseStyleInstructions,
       });
     } catch (err) {
       if (err instanceof AiError) {

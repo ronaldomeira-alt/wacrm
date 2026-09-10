@@ -531,3 +531,115 @@ describe('Stage 4 — Behavioral Engine, Boundaries and Decision Engine', () => 
     });
   });
 });
+
+describe('Property-specific response style instructions', () => {
+  function mockDbForProperty(propertyId: string, name: string, styleInstructions: string[] | null) {
+    return {
+      from: (table: string) => {
+        if (table === 'properties') {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: () => Promise.resolve({ data: { id: propertyId, name }, error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === 'property_ai_contexts') {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: { stage: 'lancamento', response_style_instructions: styleInstructions },
+                    error: null,
+                  }),
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }),
+        };
+      },
+    } as unknown as SupabaseClient;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.retrievePropertyKnowledge.mockResolvedValue([]);
+  });
+
+  it('loads and injects the selected property own style instructions into the system prompt', async () => {
+    h.generateOpenAi.mockResolvedValueOnce({
+      text: JSON.stringify({
+        response_text: 'Com certeza, esse é um dos diferenciais mais elogiados.',
+        transfer_required: false,
+        boundary_type: null,
+        reason: null,
+        context_summary: null,
+        suggested_next_action: null,
+      }),
+      usage: null,
+    });
+
+    const db = mockDbForProperty('prop-1', 'Reserva Cabo Branco', [
+      'Sempre mencionar a vista para o mar antes de qualquer outro diferencial.',
+    ]);
+
+    const result = await executeConversationalTurn({
+      db,
+      accountId: 'acc-1',
+      config: makeMockConfig(),
+      propertyId: 'prop-1',
+      messages: [{ role: 'user', content: 'Quais são os diferenciais desse empreendimento?' }],
+    });
+
+    expect(result.systemPrompt).toContain('Sempre mencionar a vista para o mar antes de qualquer outro diferencial.');
+    expect(result.systemPrompt).toContain('Estilo específico deste empreendimento');
+  });
+
+  it('never leaks one property own style instructions into a turn for a different (or no) property', async () => {
+    h.generateOpenAi.mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Claro, posso te contar mais sobre esse lançamento.',
+        transfer_required: false,
+        boundary_type: null,
+        reason: null,
+        context_summary: null,
+        suggested_next_action: null,
+      }),
+      usage: null,
+    });
+
+    // Property A has a style instruction, property B does not.
+    const dbA = mockDbForProperty('prop-a', 'Residencial A', ['Regra exclusiva do Residencial A.']);
+    const dbB = mockDbForProperty('prop-b', 'Residencial B', null);
+
+    const resultA = await executeConversationalTurn({
+      db: dbA,
+      accountId: 'acc-1',
+      config: makeMockConfig(),
+      propertyId: 'prop-a',
+      messages: [{ role: 'user', content: 'Me conta mais sobre o Residencial A.' }],
+    });
+    expect(resultA.systemPrompt).toContain('Regra exclusiva do Residencial A.');
+
+    const resultB = await executeConversationalTurn({
+      db: dbB,
+      accountId: 'acc-1',
+      config: makeMockConfig(),
+      propertyId: 'prop-b',
+      messages: [{ role: 'user', content: 'Me conta mais sobre o Residencial B.' }],
+    });
+    expect(resultB.systemPrompt).not.toContain('Regra exclusiva do Residencial A.');
+
+    const resultNoProperty = await executeConversationalTurn({
+      db: dbA,
+      accountId: 'acc-1',
+      config: makeMockConfig(),
+      messages: [{ role: 'user', content: 'Pergunta geral, sem empreendimento selecionado.' }],
+    });
+    expect(resultNoProperty.systemPrompt).not.toContain('Regra exclusiva do Residencial A.');
+  });
+});
