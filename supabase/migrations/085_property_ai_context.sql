@@ -12,6 +12,10 @@
 -- Idempotent — safe to run multiple times.
 -- ============================================================
 
+-- 1. Ensure vector extension exists in extensions schema
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
+SET search_path TO public, extensions, auth;
+
 -- ============================================================
 -- 1. property_ai_contexts
 -- ============================================================
@@ -167,6 +171,8 @@ CREATE INDEX IF NOT EXISTS idx_conversations_property
 -- 6. Isolated Search RPCs: Global + Current Property Only
 -- ============================================================
 
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
+
 -- Semantic Search RPC with strict property isolation
 CREATE OR REPLACE FUNCTION public.match_property_ai_knowledge_semantic(
   p_account_id      uuid,
@@ -177,18 +183,18 @@ CREATE OR REPLACE FUNCTION public.match_property_ai_knowledge_semantic(
 RETURNS TABLE (id uuid, content text, distance real, is_global boolean) AS $$
   SELECT c.id,
          c.content,
-         (c.embedding <=> p_query_embedding::vector(1536)) AS distance,
+         (c.embedding <=> p_query_embedding::extensions.vector(1536)) AS distance,
          (c.property_id IS NULL) AS is_global
-  FROM ai_knowledge_chunks c
+  FROM public.ai_knowledge_chunks c
   WHERE c.account_id = p_account_id
     AND c.embedding IS NOT NULL
     AND (
       (p_property_id IS NOT NULL AND c.property_id = p_property_id)
       OR c.property_id IS NULL
     )
-  ORDER BY c.embedding <=> p_query_embedding::vector(1536)
+  ORDER BY c.embedding <=> p_query_embedding::extensions.vector(1536)
   LIMIT GREATEST(p_match_count, 0);
-$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, extensions;
 
 -- Lexical Full-Text Search RPC with strict property isolation
 CREATE OR REPLACE FUNCTION public.match_property_ai_knowledge_fts(
