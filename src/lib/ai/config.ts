@@ -24,7 +24,13 @@ interface AiConfigRow {
   safety_message_limit?: number | null
 }
 
-const CONFIG_COLUMNS =
+// Exported so /api/ai/config's GET can select the exact same columns —
+// this file previously duplicated the list inline and silently drifted
+// out of sync when response_style_instructions was added here but not
+// there, making it invisible to the Settings/Playground UI (which reads
+// via that route) while still reaching the AI itself (which reads via
+// loadAiConfig below). One list, used by both paths.
+export const CONFIG_COLUMNS =
   'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key, identity_name, tone_style, team_presentation, global_never_rules, response_style_instructions, business_hours_start, business_hours_end, business_days, off_hours_instructions, safety_message_limit'
 
 /**

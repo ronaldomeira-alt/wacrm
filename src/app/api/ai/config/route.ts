@@ -9,6 +9,7 @@ import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { validateAiCredentials } from '@/lib/ai/validate'
 import { embedTexts } from '@/lib/ai/embeddings'
 import { AiError, type AiProvider } from '@/lib/ai/types'
+import { CONFIG_COLUMNS } from '@/lib/ai/config'
 
 function bad(message: string) {
   return NextResponse.json({ error: message }, { status: 400 })
@@ -25,13 +26,11 @@ export async function GET() {
   try {
     const { supabase, accountId } = await getCurrentAccount()
 
+    // `api_key`/`embeddings_api_key` are selected only to derive the
+    // has_* flags — stripped out below and never returned to the client.
     const { data, error } = await supabase
       .from('ai_configs')
-      // `api_key` is selected only to derive `has_key` — it is stripped
-      // out below and never returned to the client.
-      .select(
-        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, api_key, embeddings_api_key, identity_name, tone_style, team_presentation, global_never_rules, business_hours_start, business_hours_end, business_days, off_hours_instructions, safety_message_limit',
-      )
+      .select(CONFIG_COLUMNS)
       .eq('account_id', accountId)
       .maybeSingle()
 
