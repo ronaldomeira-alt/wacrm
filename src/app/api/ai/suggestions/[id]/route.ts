@@ -3,8 +3,9 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { hasMinRole } from '@/lib/auth/roles'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { AI_SUGGESTION_STATUSES } from '@/lib/ai-suggestion-status'
-import { loadEmbeddingsKey } from '@/lib/ai/config'
-import { ingestDocument } from '@/lib/ai/knowledge'
+import { loadAiConfig, loadEmbeddingsKey } from '@/lib/ai/config'
+import { ingestDocument, replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge'
+import { applyPropertySubjectiveLearning } from '@/lib/ai/property-learning-apply'
 import type { AiSuggestionStatus } from '@/types'
 
 function bad(message: string, status = 400) {
@@ -96,14 +97,22 @@ export async function PATCH(
 
       const appliedTarget = payload.applied_target
       if (appliedTarget === 'property_subjective' && payload.applied_property_id) {
-        await supabase
-          .from('property_ai_contexts')
-          .update({
-            subjective_knowledge: payload.previous_subjective_knowledge ?? null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('property_id', payload.applied_property_id)
-          .eq('account_id', accountId)
+        // Same write path as applying it — a direct table write here would
+        // restore the text but leave the indexed RAG chunks/embeddings
+        // stale (source/index divergence), the exact bug this route
+        // exists to avoid.
+        try {
+          const { key: embeddingsApiKey } = await loadEmbeddingsKey(supabase, accountId)
+          await replacePropertySubjectiveKnowledge(
+            supabase,
+            accountId,
+            { embeddingsApiKey },
+            payload.applied_property_id as string,
+            { subjectiveKnowledge: (payload.previous_subjective_knowledge as string | null) ?? null },
+          )
+        } catch (err) {
+          console.error('[ai/suggestions PATCH] property_subjective revert error:', err)
+        }
       } else if (appliedTarget === 'never_rule') {
         await supabase
           .from('ai_configs')
@@ -184,44 +193,39 @@ export async function PATCH(
       const learningType = String(payload.type || '').trim()
 
       if (learningType === 'property_subjective') {
-        // Resolve property
-        let propId = typeof payload.property_id === 'string' ? payload.property_id : null
-        if (!propId && typeof payload.property_name === 'string') {
-          const { data: foundProp } = await supabase
-            .from('properties')
-            .select('id')
-            .eq('account_id', accountId)
-            .ilike('name', `%${payload.property_name}%`)
-            .maybeSingle()
-          if (foundProp) propId = foundProp.id
-        }
+        // Resolves an existing property by id/name, or auto-creates it as
+        // `provisorio` when the corretor never formally registered it —
+        // then fuses the new observation into one coherent "Visão do
+        // Corretor" narrative (never a bullet concatenation) and persists
+        // through replacePropertySubjectiveKnowledge, the only correct
+        // write path (keeps the indexed RAG copy in sync with the source).
+        const propertyId = typeof payload.property_id === 'string' ? payload.property_id : null
+        const propertyName = typeof payload.property_name === 'string' ? payload.property_name : null
 
-        if (propId) {
-          const { data: currentCtx } = await supabase
-            .from('property_ai_contexts')
-            .select('subjective_knowledge')
-            .eq('property_id', propId)
-            .eq('account_id', accountId)
-            .maybeSingle()
+        try {
+          const config = await loadAiConfig(supabase, accountId)
+          if (!config) throw new Error('AI config not active for this account')
 
-          const prevKnowledge = currentCtx?.subjective_knowledge || null
-          const updatedKnowledge = prevKnowledge ? `${prevKnowledge}\n\n• ${info}` : `• ${info}`
+          const applied = await applyPropertySubjectiveLearning(supabase, accountId, config, userId, {
+            propertyId,
+            propertyName,
+            info,
+          })
 
-          await supabase
-            .from('property_ai_contexts')
-            .upsert({
-              property_id: propId,
-              account_id: accountId,
-              subjective_knowledge: updatedKnowledge,
-              updated_at: new Date().toISOString(),
-            }, { onConflict: 'property_id' })
-
-          payload = {
-            ...payload,
-            applied_target: 'property_subjective',
-            applied_property_id: propId,
-            previous_subjective_knowledge: prevKnowledge,
+          if (applied) {
+            payload = {
+              ...payload,
+              applied_target: 'property_subjective',
+              applied_property_id: applied.propertyId,
+              previous_subjective_knowledge: applied.previousKnowledge,
+            }
           }
+        } catch (err) {
+          // Same tolerance as the global_knowledge ingest below: the
+          // suggestion can still be marked approved/reviewed, but nothing
+          // was actually written to the property's knowledge — surfaced
+          // only in logs, matching this route's existing error style.
+          console.error('[ai/suggestions PATCH] property_subjective apply error:', err)
         }
       } else if (learningType === 'never_rule') {
         const { data: currentConfig } = await supabase

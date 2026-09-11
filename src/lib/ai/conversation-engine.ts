@@ -39,7 +39,7 @@ export interface ConversationalTurnResult {
   retrievedKnowledgeCount: number;
   retrievedKnowledge: string[];
   systemPrompt: string;
-  propertyInfo: { id: string; name: string; stage?: string | null } | null;
+  propertyInfo: { id: string; name: string; stage?: string | null; status?: string | null } | null;
   businessHoursContext: BusinessHoursContext;
   leadContext: FormattedLeadContext | null;
 }
@@ -250,12 +250,12 @@ export async function executeConversationalTurn(
   }
 
   // 2. Load Property Details if propertyId is provided
-  let propertyInfo: { id: string; name: string; stage?: string | null } | null = null;
+  let propertyInfo: { id: string; name: string; stage?: string | null; status?: string | null } | null = null;
   let propertyStyleInstructions: string[] = [];
   if (propertyId) {
     try {
       const [propRes, ctxRes] = await Promise.all([
-        db.from('properties').select('id, name').eq('id', propertyId).maybeSingle(),
+        db.from('properties').select('id, name, status').eq('id', propertyId).maybeSingle(),
         db
           .from('property_ai_contexts')
           .select('stage, response_style_instructions')
@@ -269,6 +269,7 @@ export async function executeConversationalTurn(
           id: propRes.data.id,
           name: propRes.data.name,
           stage: STAGE_LABELS[rawStage] || rawStage,
+          status: (propRes.data.status as string | null) ?? 'ativo',
         };
       }
       propertyStyleInstructions = Array.isArray(ctxRes.data?.response_style_instructions)

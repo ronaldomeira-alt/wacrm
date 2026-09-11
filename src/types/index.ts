@@ -227,11 +227,28 @@ export interface PropertyAiContext {
 /** Real estate listing an appointment can reference (migration 045).
  *  Deliberately minimal — just enough to name/select a property from
  *  the appointment form; not a full listings module. */
+export type PropertyStatus = 'provisorio' | 'ativo';
+
 export interface Property {
   id: string;
   account_id: string;
   user_id: string;
   name: string;
+  /** 'provisorio' = auto-created by the learning cron from recurring
+   *  WhatsApp mentions, not yet reviewed/promoted by the corretor. */
+  status: PropertyStatus;
+  created_from_learning: boolean;
+  /** Compact identity form of `name` — lowercase, accent-stripped, ALL
+   *  separators removed (mirrors compactForMatch() in
+   *  property-identity.ts, the same notion of identity
+   *  resolvePropertyIdentity's own exact-match check uses, so "Live
+   *  Park" and "LivePark" share this value). Populated by the learning
+   *  pipeline's INSERT; null for rows from any other insert path, or
+   *  when the name normalizes to nothing. Backs a partial unique index
+   *  (account_id, normalized_name) — the actual guard against two
+   *  concurrent auto-creations of the same empreendimento, even under
+   *  different spacing/separators (migration 20260911150000). */
+  normalized_name: string | null;
   created_at: string;
   updated_at: string;
 }

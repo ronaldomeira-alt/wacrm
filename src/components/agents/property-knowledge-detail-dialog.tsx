@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -83,6 +84,7 @@ export function PropertyKnowledgeDetailDialog({
   const [styleInstructions, setStyleInstructions] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [promoting, setPromoting] = useState(false)
 
   // CTWA Ad Mappings
   const [adMappings, setAdMappings] = useState<AdMapping[]>([])
@@ -168,6 +170,29 @@ export function PropertyKnowledgeDetailDialog({
       toast.error(msg)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handlePromoteToActive = async () => {
+    setPromoting(true)
+    try {
+      const res = await fetch(`/api/ai/properties/${property.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ativo' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao promover empreendimento')
+      }
+      toast.success(`"${property.name}" promovido para empreendimento ativo!`)
+      onSaved()
+      onOpenChange(false)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao promover empreendimento'
+      toast.error(msg)
+    } finally {
+      setPromoting(false)
     }
   }
 
@@ -326,27 +351,53 @@ export function PropertyKnowledgeDetailDialog({
                 <Building2 className="h-4 w-4" />
               </div>
               <div className="min-w-0">
-                <DialogTitle className="text-base font-semibold text-foreground truncate">
-                  {property.name}
-                </DialogTitle>
+                <div className="flex items-center gap-2 min-w-0">
+                  <DialogTitle className="text-base font-semibold text-foreground truncate">
+                    {property.name}
+                  </DialogTitle>
+                  {property.status === 'provisorio' && (
+                    <Badge
+                      variant="outline"
+                      className="text-[11px] font-normal border-amber-500/30 bg-amber-500/10 text-amber-600 shrink-0"
+                    >
+                      Em aprendizagem
+                    </Badge>
+                  )}
+                </div>
                 <DialogDescription className="text-xs text-muted-foreground">
                   Configuração de Conhecimento e Ficha Técnica da IA
                 </DialogDescription>
               </div>
             </div>
 
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleDeleteProperty}
-              disabled={saving || deleting}
-              className="h-8 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0 gap-1.5"
-            >
-              {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-              <span className="hidden sm:inline">Excluir Empreendimento</span>
-              <span className="sm:hidden">Excluir</span>
-            </Button>
+            <div className="flex items-center gap-2 shrink-0">
+              {property.status === 'provisorio' && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePromoteToActive}
+                  disabled={saving || deleting || promoting}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  {promoting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                  <span className="hidden sm:inline">Promover para Ativo</span>
+                  <span className="sm:hidden">Promover</span>
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleDeleteProperty}
+                disabled={saving || deleting || promoting}
+                className="h-8 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5"
+              >
+                {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                <span className="hidden sm:inline">Excluir Empreendimento</span>
+                <span className="sm:hidden">Excluir</span>
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 

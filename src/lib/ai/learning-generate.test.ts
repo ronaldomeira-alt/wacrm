@@ -6,12 +6,28 @@ const mocks = vi.hoisted(() => ({
   logAiUsage: vi.fn(),
   generateOpenAi: vi.fn(),
   generateAnthropic: vi.fn(),
+  applyPropertySubjectiveLearning: vi.fn(),
+  resolvePropertyIdentity: vi.fn(),
+  findConversationEvidence: vi.fn(),
+  recordPropertyLearningEvidence: vi.fn(),
 }));
 
 vi.mock('./config', () => ({ loadAiConfig: mocks.loadAiConfig }));
 vi.mock('./usage', () => ({ logAiUsage: mocks.logAiUsage }));
 vi.mock('./providers/openai', () => ({ generateOpenAi: mocks.generateOpenAi }));
 vi.mock('./providers/anthropic', () => ({ generateAnthropic: mocks.generateAnthropic }));
+vi.mock('./property-learning-apply', async () => {
+  const actual = await vi.importActual<typeof import('./property-learning-apply')>('./property-learning-apply');
+  return { ...actual, applyPropertySubjectiveLearning: mocks.applyPropertySubjectiveLearning };
+});
+// Identity resolution/evidence itself is covered in property-identity.test.ts —
+// here we only need to control it so the orchestration tests below aren't
+// exercising real fuzzy matching or hitting untracked DB tables.
+vi.mock('./property-identity', () => ({
+  resolvePropertyIdentity: mocks.resolvePropertyIdentity,
+  findConversationEvidence: mocks.findConversationEvidence,
+  recordPropertyLearningEvidence: mocks.recordPropertyLearningEvidence,
+}));
 
 import { generateLearningSuggestions } from './learning-generate';
 
@@ -33,6 +49,7 @@ interface DbOpts {
   messages?: { sender_type: 'customer' | 'agent' | 'bot'; content_text: string | null; created_at: string }[];
   knownDocTitles?: string[];
   pendingLearnings?: { id: string; title: string; payload: Record<string, unknown> }[];
+  ownerUserId?: string | null;
 }
 
 function thenable<T>(data: T) {
@@ -87,6 +104,9 @@ function fakeDb(opts: DbOpts) {
     if (table === 'ai_knowledge_documents') {
       return { select: () => thenable((opts.knownDocTitles ?? []).map((title) => ({ title }))) };
     }
+    if (table === 'accounts') {
+      return { select: () => thenable({ owner_user_id: opts.ownerUserId ?? 'owner-1' }) };
+    }
     if (table === 'ai_suggestions') {
       return {
         select: () => thenable(opts.pendingLearnings ?? []),
@@ -115,6 +135,10 @@ beforeEach(() => {
   mocks.logAiUsage.mockReset().mockResolvedValue(undefined);
   mocks.generateOpenAi.mockReset();
   mocks.generateAnthropic.mockReset();
+  mocks.applyPropertySubjectiveLearning.mockReset();
+  mocks.resolvePropertyIdentity.mockReset().mockResolvedValue({ kind: 'no_match' });
+  mocks.findConversationEvidence.mockReset().mockReturnValue({ mentioned: new Set(), withContext: new Set() });
+  mocks.recordPropertyLearningEvidence.mockReset().mockResolvedValue(undefined);
 });
 
 const BASE_MESSAGES = [
@@ -212,6 +236,203 @@ describe('generateLearningSuggestions', () => {
     expect(inserted).toHaveLength(0);
     const suggUpdate = updated.find((u) => u.table === 'ai_suggestions');
     expect((suggUpdate?.patch.payload as Record<string, unknown>).occurrence_count).toBe(3);
+  });
+
+  it('auto-applies a high-confidence, non-isolated, recurring property_subjective learning (Parte 4)', async () => {
+    mocks.applyPropertySubjectiveLearning.mockResolvedValue({ propertyId: 'prop-x', previousKnowledge: null });
+    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'property_subjective',
+          info: 'Sempre pergunta sobre vaga de garagem dupla no Residencial Aurora.',
+          context_summary: 'Padrão recorrente sobre o Residencial Aurora.',
+          application: null,
+          occurrence_count: 3,
+          confidence: 'high',
+          is_isolated: false,
+          property_name: 'Residencial Aurora',
+        },
+      ]),
+    );
+
+    const result = await generateLearningSuggestions(db, 'account-1');
+    expect(result).toEqual({ created: 1, touched: 0 });
+    expect(mocks.applyPropertySubjectiveLearning).toHaveBeenCalledTimes(1);
+    expect(mocks.applyPropertySubjectiveLearning).toHaveBeenCalledWith(
+      db,
+      'account-1',
+      CONFIG,
+      'owner-1',
+      { propertyName: 'Residencial Aurora', info: 'Sempre pergunta sobre vaga de garagem dupla no Residencial Aurora.' },
+    );
+    expect(inserted[0].status).toBe('approved');
+    const payload = inserted[0].payload as Record<string, unknown>;
+    expect(payload.auto_applied).toBe(true);
+    expect(payload.applied_target).toBe('property_subjective');
+    expect(payload.applied_property_id).toBe('prop-x');
+  });
+
+  it('keeps a property_subjective learning pending when occurrence_count is below the auto-apply threshold', async () => {
+    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'property_subjective',
+          info: 'Cliente perguntou sobre o Residencial Aurora.',
+          occurrence_count: 2,
+          confidence: 'high',
+          is_isolated: false,
+          property_name: 'Residencial Aurora',
+        },
+      ]),
+    );
+
+    const result = await generateLearningSuggestions(db, 'account-1');
+    expect(result).toEqual({ created: 1, touched: 0 });
+    expect(inserted[0].status).toBe('pending');
+    expect(mocks.applyPropertySubjectiveLearning).not.toHaveBeenCalled();
+  });
+
+  it('auto-applies once an existing pending property_subjective suggestion crosses the threshold across scans', async () => {
+    mocks.applyPropertySubjectiveLearning.mockResolvedValue({ propertyId: 'prop-y', previousKnowledge: 'Texto antigo.' });
+    const { db, updated } = fakeDb({
+      conversationIds: ['c1'],
+      messages: BASE_MESSAGES,
+      pendingLearnings: [
+        {
+          id: 'sugg-1',
+          title: 'Cliente perguntou sobre o Residencial Aurora.',
+          payload: {
+            type: 'property_subjective',
+            info: 'Cliente perguntou sobre o Residencial Aurora.',
+            occurrence_count: 2,
+            confidence: 'high',
+            property_name: 'Residencial Aurora',
+          },
+        },
+      ],
+    });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'property_subjective',
+          info: 'Cliente perguntou sobre o Residencial Aurora.',
+          occurrence_count: 1,
+          confidence: 'high',
+          is_isolated: false,
+          property_name: 'Residencial Aurora',
+        },
+      ]),
+    );
+
+    const result = await generateLearningSuggestions(db, 'account-1');
+    expect(result).toEqual({ created: 0, touched: 1 });
+    const suggUpdate = updated.find((u) => u.table === 'ai_suggestions');
+    expect(suggUpdate?.patch.status).toBe('approved');
+    const payload = suggUpdate?.patch.payload as Record<string, unknown>;
+    expect(payload.occurrence_count).toBe(3);
+    expect(payload.auto_applied).toBe(true);
+    expect(payload.applied_property_id).toBe('prop-y');
+  });
+
+  it('records conversation evidence for a property_subjective candidate whose name has no existing match', async () => {
+    mocks.resolvePropertyIdentity.mockResolvedValue({ kind: 'no_match' });
+    mocks.findConversationEvidence.mockReturnValue({
+      mentioned: new Set(['conv-a']),
+      withContext: new Set(['conv-a']),
+    });
+    const { db } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'property_subjective',
+          info: 'Cliente perguntou sobre o Residencial Aurora.',
+          occurrence_count: 1,
+          confidence: 'medium',
+          is_isolated: false,
+          property_name: 'Residencial Aurora',
+        },
+      ]),
+    );
+
+    await generateLearningSuggestions(db, 'account-1');
+    expect(mocks.resolvePropertyIdentity).toHaveBeenCalledWith(db, 'account-1', 'Residencial Aurora');
+    expect(mocks.recordPropertyLearningEvidence).toHaveBeenCalledWith(
+      db,
+      'account-1',
+      'Residencial Aurora',
+      new Set(['conv-a']),
+      new Set(['conv-a']),
+    );
+  });
+
+  it('never records evidence for an AMBIGUOUS property_subjective candidate — only genuine no_match accrues evidence (Problema 1 fix)', async () => {
+    mocks.resolvePropertyIdentity.mockResolvedValue({
+      kind: 'ambiguous',
+      candidates: [
+        { propertyId: 'prop-park', score: 0.7 },
+        { propertyId: 'prop-home', score: 0.68 },
+      ],
+    });
+    const { db } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'property_subjective',
+          info: 'Cliente perguntou sobre o Live.',
+          occurrence_count: 1,
+          confidence: 'medium',
+          is_isolated: false,
+          property_name: 'Live',
+        },
+      ]),
+    );
+
+    await generateLearningSuggestions(db, 'account-1');
+    expect(mocks.findConversationEvidence).not.toHaveBeenCalled();
+    expect(mocks.recordPropertyLearningEvidence).not.toHaveBeenCalled();
+  });
+
+  it('never records evidence for a property_subjective candidate whose name already resolves to an existing property', async () => {
+    mocks.resolvePropertyIdentity.mockResolvedValue({ kind: 'safe_match', propertyId: 'prop-1', score: 0.95 });
+    const { db } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'property_subjective',
+          info: 'Cliente perguntou sobre o Live Park.',
+          occurrence_count: 1,
+          confidence: 'medium',
+          is_isolated: false,
+          property_name: 'Liv Park',
+        },
+      ]),
+    );
+
+    await generateLearningSuggestions(db, 'account-1');
+    expect(mocks.findConversationEvidence).not.toHaveBeenCalled();
+    expect(mocks.recordPropertyLearningEvidence).not.toHaveBeenCalled();
+  });
+
+  it('never auto-applies a non-property_subjective learning, no matter how recurring', async () => {
+    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    mocks.generateOpenAi.mockResolvedValue(
+      scanResponse([
+        {
+          type: 'never_rule',
+          info: 'Nunca prometer prazo de entrega antecipado sem aprovação da equipe.',
+          occurrence_count: 5,
+          confidence: 'high',
+          is_isolated: false,
+        },
+      ]),
+    );
+
+    const result = await generateLearningSuggestions(db, 'account-1');
+    expect(result).toEqual({ created: 1, touched: 0 });
+    expect(inserted[0].status).toBe('pending');
+    expect(mocks.applyPropertySubjectiveLearning).not.toHaveBeenCalled();
   });
 
   it('does not re-suggest something already in the knowledge base', async () => {

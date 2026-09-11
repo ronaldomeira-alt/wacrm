@@ -112,6 +112,19 @@ export async function PATCH(req: Request, context: RouteContext) {
         .eq('account_id', accountId);
     }
 
+    // Optional status update — e.g. "Promover para ativo" on a property
+    // auto-created as `provisorio` by the learning cron.
+    if (typeof body.status === 'string') {
+      if (body.status !== 'provisorio' && body.status !== 'ativo') {
+        return NextResponse.json({ error: 'status deve ser "provisorio" ou "ativo"' }, { status: 400 });
+      }
+      await supabase
+        .from('properties')
+        .update({ status: body.status })
+        .eq('id', propertyId)
+        .eq('account_id', accountId);
+    }
+
     const embeddingsKeyResult = await loadEmbeddingsKey(supabase, accountId);
     const config = { embeddingsApiKey: embeddingsKeyResult.key };
 

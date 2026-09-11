@@ -9,6 +9,9 @@ export interface PromptBuilderArgs {
     id: string;
     name: string;
     stage?: string | null;
+    /** 'provisorio' = auto-created by the learning cron, not yet reviewed
+     *  by the corretor — nothing about it counts as confirmed data yet. */
+    status?: string | null;
   } | null;
   propertyKnowledge?: string[];
   propertyStyleInstructions?: string[];
@@ -99,10 +102,15 @@ ${config.responseStyleInstructions.map((i) => `- ${i}`).join('\n')}`,
   }
 
   // 4. FRONTEIRAS RÍGIDAS & PROIBIÇÕES COMERCIAIS
-  const isPropertyReady = Boolean(
-    property?.stage &&
-    property.stage.toLowerCase().includes('pronto')
-  );
+  // A provisional property (auto-created by the learning cron from
+  // recurring WhatsApp mentions, never reviewed by the corretor) never
+  // gets the "imóvel pronto" price exception — its stage/knowledge came
+  // from unsupervised inference, not a confirmed source, regardless of
+  // what the learned text itself says.
+  const isPropertyProvisional = property?.status === 'provisorio';
+  const isPropertyReady =
+    !isPropertyProvisional &&
+    Boolean(property?.stage && property.stage.toLowerCase().includes('pronto'));
 
   const priceRuleBlock = isPropertyReady
     ? `1. PREÇO E VALORES (PERMITIDO PARA IMÓVEL PRONTO SE PRESENTE NO CONHECIMENTO):
@@ -110,7 +118,11 @@ ${config.responseStyleInstructions.map((i) => `- ${i}`).join('\n')}`,
    - REGRA DE SEGURANÇA: Se o preço NÃO constar no material/conhecimento autorizado deste empreendimento, você NUNCA deve inventar, estimar ou supor valores. Nesse caso de ausência de dados, acolha o interesse e transfira para o atendimento humano.`
     : `1. PREÇO E VALORES:
    - Preço de unidade, valor "a partir de", tabela vigente, custo por m².
-   - REGRA DE OURO SOBRE PREÇO: Mesmo que você veja um valor em um PDF, anotação ou histórico, PREÇO É DADO DINÂMICO E VOCÊ NUNCA INFORMA AO CLIENTE. Para empreendimentos em Pré-Lançamento, Lançamento ou com status não identificado, NUNCA informe preços. Transfira.`;
+   - REGRA DE OURO SOBRE PREÇO: Mesmo que você veja um valor em um PDF, anotação ou histórico, PREÇO É DADO DINÂMICO E VOCÊ NUNCA INFORMA AO CLIENTE. Para empreendimentos em Pré-Lançamento, Lançamento ou com status não identificado, NUNCA informe preços. Transfira.${
+        isPropertyProvisional
+          ? '\n   - ATENÇÃO: Este empreendimento ainda está "Em aprendizagem" (criado automaticamente a partir de conversas, sem revisão do corretor). NENHUM dado sobre ele é considerado confirmado — preço, disponibilidade e condições SEMPRE vão para a equipe, mesmo que o texto de conhecimento pareça mencionar um valor.'
+          : ''
+      }`;
 
   sections.push(
     `=== 4. FRONTEIRAS RÍGIDAS (O QUE VOCÊ NUNCA RESPONDE / SEMPRE TRANSFERE) ===

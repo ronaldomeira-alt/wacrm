@@ -203,6 +203,14 @@ export function PropertyKnowledgeList() {
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">
+                      {prop.status === 'provisorio' && (
+                        <Badge
+                          variant="outline"
+                          className="text-[11px] font-normal border-amber-500/30 bg-amber-500/10 text-amber-600"
+                        >
+                          Em aprendizagem
+                        </Badge>
+                      )}
                       <Badge variant="outline" className="text-[11px] font-normal">
                         {STAGE_LABELS[stage] || stage}
                       </Badge>
