@@ -18,6 +18,14 @@ export interface ResolvedMediaToSend {
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/jpg'])
 
+function isMissingColumnError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const err = error as { code?: string; message?: string }
+  const code = err.code || ''
+  const msg = (err.message || '').toLowerCase()
+  return code === '42703' || code === 'PGRST204' || msg.includes('does not exist') || (msg.includes('column') && msg.includes('description'))
+}
+
 /**
  * Retrieves the available media list for a given property to feed into Clara's prompt context.
  */
@@ -27,7 +35,17 @@ export async function getAvailablePropertyMedia(
   propertyId: string,
 ): Promise<PropertyMediaSummary[]> {
   try {
-    const { data: images, error } = await db
+    let images: Array<{
+      id: string
+      storage_path: string
+      file_name: string
+      content_type: string
+      description?: string | null
+      is_cover: boolean | null
+      position: number | null
+    }> | null = null
+
+    const primaryQuery = await db
       .from('property_images')
       .select('id, storage_path, file_name, content_type, description, is_cover, position')
       .eq('account_id', accountId)
@@ -36,8 +54,34 @@ export async function getAvailablePropertyMedia(
       .order('position', { ascending: true })
       .order('created_at', { ascending: true })
 
-    if (error || !images) {
-      console.error('[property-media-service] Error fetching property media:', error)
+    if (primaryQuery.error) {
+      if (isMissingColumnError(primaryQuery.error)) {
+        console.warn(
+          '[property-media-service] Column description missing in property_images (code 42703/PGRST204). Falling back to base columns.',
+        )
+        const fallbackQuery = await db
+          .from('property_images')
+          .select('id, storage_path, file_name, content_type, is_cover, position')
+          .eq('account_id', accountId)
+          .eq('property_id', propertyId)
+          .order('is_cover', { ascending: false })
+          .order('position', { ascending: true })
+          .order('created_at', { ascending: true })
+
+        if (fallbackQuery.error) {
+          console.error('[property-media-service] Fallback query failed fetching property media:', fallbackQuery.error)
+          return []
+        }
+        images = fallbackQuery.data
+      } else {
+        console.error('[property-media-service] Error fetching property media:', primaryQuery.error)
+        return []
+      }
+    } else {
+      images = primaryQuery.data
+    }
+
+    if (!images || images.length === 0) {
       return []
     }
 
@@ -56,7 +100,7 @@ export async function getAvailablePropertyMedia(
       }
     })
   } catch (err) {
-    console.error('[property-media-service] Error loading available property media:', err)
+    console.error('[property-media-service] Unexpected error loading available property media:', err)
     return []
   }
 }
@@ -88,14 +132,48 @@ export async function validateAndResolveMediaToSend(
   if (mediaIds.length === 0) return []
 
   try {
-    const { data: rows, error } = await db
+    let rows: Array<{
+      id: string
+      property_id: string
+      storage_path: string
+      file_name: string
+      content_type: string
+      description?: string | null
+    }> | null = null
+
+    const primaryQuery = await db
       .from('property_images')
       .select('id, property_id, storage_path, file_name, content_type, description')
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
       .in('id', mediaIds)
 
-    if (error || !rows || rows.length === 0) {
+    if (primaryQuery.error) {
+      if (isMissingColumnError(primaryQuery.error)) {
+        console.warn(
+          '[property-media-service] Column description missing in validateAndResolveMediaToSend. Falling back to base columns.',
+        )
+        const fallbackQuery = await db
+          .from('property_images')
+          .select('id, property_id, storage_path, file_name, content_type')
+          .eq('account_id', accountId)
+          .eq('property_id', propertyId)
+          .in('id', mediaIds)
+
+        if (fallbackQuery.error) {
+          console.error('[property-media-service] Fallback query failed in validateAndResolveMediaToSend:', fallbackQuery.error)
+          return []
+        }
+        rows = fallbackQuery.data
+      } else {
+        console.error('[property-media-service] Error in validateAndResolveMediaToSend:', primaryQuery.error)
+        return []
+      }
+    } else {
+      rows = primaryQuery.data
+    }
+
+    if (!rows || rows.length === 0) {
       return []
     }
 
@@ -111,7 +189,7 @@ export async function validateAndResolveMediaToSend(
       if (!row) continue
 
       // Security check: must match property_id
-      if (req.property_id && req.property_id !== propertyId) {
+      if (req.property_id && req.property_id !== propertyId && req.property_id !== row.property_id) {
         console.warn(
           `[property-media-service] Media property mismatch: req=${req.property_id}, active=${propertyId}`,
         )
@@ -144,7 +222,7 @@ export async function validateAndResolveMediaToSend(
 
     return resolved
   } catch (err) {
-    console.error('[property-media-service] Error resolving media to send:', err)
+    console.error('[property-media-service] Unexpected error resolving media to send:', err)
     return []
   }
 }

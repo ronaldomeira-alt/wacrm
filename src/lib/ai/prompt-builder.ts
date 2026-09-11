@@ -238,6 +238,8 @@ SEGURANÇA CONTRA PROMPT INJECTION:
         '\n\nDIRETRIZES PARA ENVIO DE FOTOS (send_media):\n' +
         '1. Quando o cliente solicitar fotos ou perguntar sobre aspectos visuais (fachada, piscina, área de lazer, vista, academia, etc.) e houver mídia disponível com descrição compatível, você PODE decidir enviá-la através do campo "send_media".\n' +
         '2. REGRAS ESTRITAS DE MÍDIA:\n' +
+        '   - Use sempre o id exato da mídia ("media_id") conforme listado acima.\n' +
+        `   - No campo "property_id", use "${property.id}".\n` +
         '   - NUNCA invente media_id, URLs ou fotos que não estejam na lista acima.\n' +
         '   - NUNCA envie mídia de outro empreendimento.\n' +
         '   - Se o cliente pedir foto de algo que NÃO consta na lista acima, responda normalmente por texto esclarecendo que não possui aquela foto cadastrada no momento, SEM inventar e SEM acionar send_media.\n' +

@@ -1,12 +1,18 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { decrypt } from '@/lib/whatsapp/encryption'
+import { fetchMetaAdCreative, cacheAdCreativeImage } from '@/lib/whatsapp/meta-ad-creative'
 
 type Params = { params: Promise<{ id: string }> }
 
+const PROPERTY_MEDIA_BUCKET = 'property-media'
+
 /**
  * GET /api/ai/properties/[id]/ads (viewer+)
- * Returns all CTWA ad mappings linked to this property, hydrated with real creative telemetry
- * (image_url, headline, body, media_type, etc.) from inbound conversations.
+ * Returns all CTWA ad mappings linked to this property.
+ * 
+ * Strict Rule: Returns the genuine Meta Ad creative image/thumbnail.
+ * NEVER falls back to property_images or general property gallery media.
  */
 export async function GET(request: Request, { params }: Params) {
   try {
@@ -15,7 +21,7 @@ export async function GET(request: Request, { params }: Params) {
 
     const { data: mappings, error } = await supabase
       .from('property_ad_mappings')
-      .select('id, property_id, ad_source_id, ad_name, created_at')
+      .select('*')
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
       .order('created_at', { ascending: false })
@@ -25,16 +31,34 @@ export async function GET(request: Request, { params }: Params) {
       return NextResponse.json({ error: 'Failed to fetch ad mappings' }, { status: 500 })
     }
 
-    // Hydrate each mapping with real ad telemetry if captured from inbound leads
     const hydratedMappings = await Promise.all(
       (mappings || []).map(async (m) => {
-        let imageUrl: string | null = null
-        let headline: string | null = null
-        let body: string | null = null
-        let mediaType: string = 'image'
-        let sourceUrl: string | null = null
+        let finalImageUrl: string | null = null
+        let leadHeadline: string | null = null
+        let leadBody: string | null = null
+        let leadSourceUrl: string | null = null
         let hasLeadTelemetry = false
 
+        // 1. Storage Cached Image (if saved)
+        if (m.creative_storage_path) {
+          try {
+            const { data: storageData } = supabase.storage
+              .from(PROPERTY_MEDIA_BUCKET)
+              .getPublicUrl(m.creative_storage_path)
+            if (storageData?.publicUrl) {
+              finalImageUrl = storageData.publicUrl
+            }
+          } catch {
+            // keep direct URL
+          }
+        }
+
+        // 2. Direct Meta Creative Image / Thumbnail
+        if (!finalImageUrl) {
+          finalImageUrl = m.creative_image_url || m.creative_thumbnail_url || null
+        }
+
+        // 3. Fallback: Check past inbound lead telemetry in conversations
         try {
           const { data: convs } = await supabase
             .from('conversations')
@@ -45,27 +69,48 @@ export async function GET(request: Request, { params }: Params) {
 
           if (convs && convs.length > 0 && convs[0].ctwa_referral) {
             const ref = convs[0].ctwa_referral as Record<string, unknown>
-            imageUrl = typeof ref.image_url === 'string' ? ref.image_url : null
-            headline = typeof ref.headline === 'string' ? ref.headline : null
-            body = typeof ref.body === 'string' ? ref.body : null
-            mediaType = typeof ref.media_type === 'string' ? ref.media_type : 'image'
-            sourceUrl = typeof ref.source_url === 'string' ? ref.source_url : null
+            leadHeadline = typeof ref.headline === 'string' ? ref.headline : null
+            leadBody = typeof ref.body === 'string' ? ref.body : null
+            leadSourceUrl = typeof ref.source_url === 'string' ? ref.source_url : null
             hasLeadTelemetry = true
+
+            // Only use as secondary fallback if creative image is not already set
+            if (!finalImageUrl) {
+              finalImageUrl =
+                typeof ref.image_url === 'string'
+                  ? ref.image_url
+                  : typeof ref.thumbnail_url === 'string'
+                    ? ref.thumbnail_url
+                    : null
+            }
           }
         } catch (telemetryErr) {
           console.warn('[property/ads] Telemetry lookup failed for ad:', m.ad_source_id, telemetryErr)
         }
 
+        const mediaType = m.creative_type === 'video' ? 'video' : 'image'
+
         return {
-          ...m,
-          verified: true,
-          image_url: imageUrl,
-          headline,
-          body,
+          id: m.id,
+          property_id: m.property_id,
+          ad_source_id: m.ad_source_id,
+          ad_name: m.ad_name,
+          campaign_name: m.campaign_name || null,
+          adset_name: m.adset_name || null,
+          creative_id: m.creative_id || null,
+          creative_type: m.creative_type || 'image',
+          image_url: finalImageUrl,
+          thumbnail_url: m.creative_thumbnail_url || finalImageUrl,
+          headline: m.creative_headline || leadHeadline,
+          body: m.creative_body || leadBody,
           media_type: mediaType,
-          source_url: sourceUrl,
+          source_url: leadSourceUrl,
           has_lead_telemetry: hasLeadTelemetry,
+          creative_synced_at: m.creative_synced_at || null,
+          created_at: m.created_at,
+          verified: true,
           platform: 'Meta Ads · Click to WhatsApp',
+          image_origin_label: finalImageUrl ? 'Criativo Meta' : null,
         }
       }),
     )
@@ -78,7 +123,7 @@ export async function GET(request: Request, { params }: Params) {
 
 /**
  * POST /api/ai/properties/[id]/ads (agent+)
- * Links a Meta CTWA ad identifier to this property.
+ * Links a Meta CTWA ad identifier to this property, resolving and storing its real creative.
  */
 export async function POST(request: Request, { params }: Params) {
   try {
@@ -108,19 +153,68 @@ export async function POST(request: Request, { params }: Params) {
       return NextResponse.json({ error: 'Property not found' }, { status: 404 })
     }
 
+    // Attempt to resolve real creative from Meta Graph API
+    let metaCreativeResult: Awaited<ReturnType<typeof fetchMetaAdCreative>> | null = null
+    let storagePath: string | null = null
+
+    try {
+      const { data: wcfg } = await supabase
+        .from('whatsapp_config')
+        .select('access_token')
+        .eq('account_id', accountId)
+        .maybeSingle()
+
+      if (wcfg?.access_token) {
+        const token = decrypt(wcfg.access_token)
+        metaCreativeResult = await fetchMetaAdCreative(adSourceId, token)
+
+        if (metaCreativeResult.success && metaCreativeResult.creative_image_url) {
+          const cached = await cacheAdCreativeImage({
+            supabase,
+            accountId,
+            adSourceId,
+            remoteUrl: metaCreativeResult.creative_image_url,
+          })
+          if (cached) {
+            storagePath = cached.storagePath
+          }
+        }
+      }
+    } catch (metaErr) {
+      console.warn('[property/ads/post] Meta creative lookup failed gracefully:', metaErr)
+    }
+
+    const finalAdName =
+      adName ||
+      metaCreativeResult?.ad_name ||
+      metaCreativeResult?.campaign_name ||
+      null
+
     // Upsert mapping for this account and ad_source_id
+    const upsertPayload: Record<string, unknown> = {
+      account_id: accountId,
+      property_id: propertyId,
+      ad_source_id: adSourceId,
+      ad_name: finalAdName,
+      updated_at: new Date().toISOString(),
+    }
+
+    if (metaCreativeResult && metaCreativeResult.success) {
+      upsertPayload.creative_id = metaCreativeResult.creative_id
+      upsertPayload.creative_image_url = metaCreativeResult.creative_image_url
+      upsertPayload.creative_thumbnail_url = metaCreativeResult.creative_thumbnail_url
+      upsertPayload.creative_type = metaCreativeResult.creative_type
+      upsertPayload.creative_storage_path = storagePath
+      upsertPayload.campaign_name = metaCreativeResult.campaign_name
+      upsertPayload.adset_name = metaCreativeResult.adset_name
+      upsertPayload.creative_headline = metaCreativeResult.headline
+      upsertPayload.creative_body = metaCreativeResult.body
+      upsertPayload.creative_synced_at = new Date().toISOString()
+    }
+
     const { data: mapping, error: insertErr } = await supabase
       .from('property_ad_mappings')
-      .upsert(
-        {
-          account_id: accountId,
-          property_id: propertyId,
-          ad_source_id: adSourceId,
-          ad_name: adName || null,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'account_id,ad_source_id' },
-      )
+      .upsert(upsertPayload, { onConflict: 'account_id,ad_source_id' })
       .select()
       .single()
 
@@ -129,7 +223,124 @@ export async function POST(request: Request, { params }: Params) {
       return NextResponse.json({ error: 'Failed to save ad mapping' }, { status: 500 })
     }
 
-    return NextResponse.json({ mapping })
+    return NextResponse.json({ mapping, creative: metaCreativeResult })
+  } catch (err) {
+    return toErrorResponse(err)
+  }
+}
+
+/**
+ * PATCH /api/ai/properties/[id]/ads (agent+)
+ * Synchronizes/refreshes the Meta creative on-demand for an existing ad mapping.
+ */
+export async function PATCH(request: Request, { params }: Params) {
+  try {
+    const { supabase, accountId } = await requireRole('agent')
+    const { id: propertyId } = await params
+
+    const body = await request.json().catch(() => null)
+    const adSourceId = typeof body?.ad_source_id === 'string' ? body.ad_source_id.trim() : null
+    const mappingId = typeof body?.mapping_id === 'string' ? body.mapping_id.trim() : null
+
+    if (!adSourceId && !mappingId) {
+      return NextResponse.json(
+        { error: 'ad_source_id or mapping_id is required' },
+        { status: 400 },
+      )
+    }
+
+    let query = supabase
+      .from('property_ad_mappings')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('property_id', propertyId)
+
+    if (mappingId) {
+      query = query.eq('id', mappingId)
+    } else if (adSourceId) {
+      query = query.eq('ad_source_id', adSourceId)
+    }
+
+    const { data: mapping, error: findErr } = await query.maybeSingle()
+
+    if (findErr || !mapping) {
+      return NextResponse.json({ error: 'Ad mapping not found' }, { status: 404 })
+    }
+
+    // Query Meta Graph API for fresh creative
+    const { data: wcfg } = await supabase
+      .from('whatsapp_config')
+      .select('access_token')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    if (!wcfg?.access_token) {
+      return NextResponse.json(
+        { error: 'Meta access token not configured in whatsapp_config' },
+        { status: 400 },
+      )
+    }
+
+    const token = decrypt(wcfg.access_token)
+    const creativeResult = await fetchMetaAdCreative(mapping.ad_source_id, token)
+
+    if (!creativeResult.success) {
+      return NextResponse.json(
+        {
+          error: creativeResult.raw_error || 'Falha ao sincronizar criativo com a Meta.',
+          success: false,
+        },
+        { status: 400 },
+      )
+    }
+
+    let storagePath = mapping.creative_storage_path
+    if (creativeResult.creative_image_url) {
+      const cached = await cacheAdCreativeImage({
+        supabase,
+        accountId,
+        adSourceId: mapping.ad_source_id,
+        remoteUrl: creativeResult.creative_image_url,
+      })
+      if (cached) {
+        storagePath = cached.storagePath
+      }
+    }
+
+    const patchPayload: Record<string, unknown> = {
+      creative_id: creativeResult.creative_id,
+      creative_image_url: creativeResult.creative_image_url,
+      creative_thumbnail_url: creativeResult.creative_thumbnail_url,
+      creative_type: creativeResult.creative_type,
+      creative_storage_path: storagePath,
+      campaign_name: creativeResult.campaign_name || mapping.campaign_name,
+      adset_name: creativeResult.adset_name || mapping.adset_name,
+      creative_headline: creativeResult.headline || mapping.creative_headline,
+      creative_body: creativeResult.body || mapping.creative_body,
+      creative_synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+
+    if (creativeResult.ad_name && !mapping.ad_name) {
+      patchPayload.ad_name = creativeResult.ad_name
+    }
+
+    const { data: updatedMapping, error: updateErr } = await supabase
+      .from('property_ad_mappings')
+      .update(patchPayload)
+      .eq('id', mapping.id)
+      .select()
+      .single()
+
+    if (updateErr) {
+      return NextResponse.json({ error: 'Failed to update ad mapping' }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      success: true,
+      mapping: updatedMapping,
+      creative: creativeResult,
+    })
   } catch (err) {
     return toErrorResponse(err)
   }

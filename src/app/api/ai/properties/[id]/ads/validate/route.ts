@@ -1,18 +1,19 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { fetchMetaAdCreative } from '@/lib/whatsapp/meta-ad-creative'
 
 type Params = { params: Promise<{ id: string }> }
 
 /**
  * POST /api/ai/properties/[id]/ads/validate (viewer+)
- * Validates a Meta CTWA ad identifier before linking.
+ * Validates a Meta CTWA ad identifier before linking and resolves its real creative.
  * 
  * Performs:
  * 1. Syntax/format validation (Meta Ad IDs are 10-24 digits numeric).
  * 2. Uniqueness & conflict check with other properties in the same account.
- * 3. Meta Graph API inquiry (if WhatsApp/Meta token is available and has permissions).
- * 4. Local inbound CTWA referral history lookup in conversations.
+ * 3. Real Meta Ad Creative inquiry via Meta Graph API.
+ * 4. Local inbound CTWA referral history lookup in conversations as secondary fallback.
  */
 export async function POST(request: Request, { params }: Params) {
   try {
@@ -69,15 +70,8 @@ export async function POST(request: Request, { params }: Params) {
       }
     }
 
-    // 3. Attempt Meta Graph API verification if access_token is configured
-    let metaConfirmed = false
-    let metaDetails: {
-      id?: string | null
-      name?: string | null
-      status?: string | null
-      campaign_name?: string | null
-      adset_name?: string | null
-    } | null = null
+    // 3. Query Meta Graph API for real Ad & Creative assets
+    let metaCreativeResult: Awaited<ReturnType<typeof fetchMetaAdCreative>> | null = null
 
     try {
       const { data: wcfg } = await supabase
@@ -88,64 +82,31 @@ export async function POST(request: Request, { params }: Params) {
 
       if (wcfg?.access_token) {
         const token = decrypt(wcfg.access_token)
-        
-        // 1. Try querying as an Ad first (with campaign and adset nested)
-        let graphRes = await fetch(
-          `https://graph.facebook.com/v21.0/${adSourceId}?fields=id,name,status,campaign{id,name},adset{id,name}&access_token=${encodeURIComponent(
-            token,
-          )}`,
-          { method: 'GET', headers: { 'Content-Type': 'application/json' } },
-        )
-
-        let graphData = graphRes.ok ? await graphRes.json().catch(() => null) : null
-
-        if (graphData && graphData.id && !graphData.error) {
-          metaConfirmed = true
-          metaDetails = {
-            id: graphData.id,
-            name: graphData.name || null,
-            status: graphData.status || null,
-            campaign_name: graphData.campaign?.name || null,
-            adset_name: graphData.adset?.name || null,
-          }
-        } else {
-          // 2. If it's a Campaign or AdSet ID, query standard object fields
-          graphRes = await fetch(
-            `https://graph.facebook.com/v21.0/${adSourceId}?fields=id,name,status,objective&access_token=${encodeURIComponent(
-              token,
-            )}`,
-            { method: 'GET', headers: { 'Content-Type': 'application/json' } },
-          )
-          graphData = graphRes.ok ? await graphRes.json().catch(() => null) : null
-
-          if (graphData && graphData.id && !graphData.error) {
-            metaConfirmed = true
-            metaDetails = {
-              id: graphData.id,
-              name: graphData.name || null,
-              status: graphData.status || null,
-              campaign_name: graphData.name || null,
-              adset_name: null,
-            }
-          }
-        }
+        metaCreativeResult = await fetchMetaAdCreative(adSourceId, token)
       }
     } catch (err) {
       console.warn('[property/ads/validate] Graph API check skipped/failed:', err)
     }
 
-    if (metaConfirmed && metaDetails) {
+    if (metaCreativeResult && metaCreativeResult.success) {
       return NextResponse.json({
         valid: true,
         confirmed: true,
         source: 'meta_api',
         ad_source_id: adSourceId,
-        ad_name: metaDetails.name || adName || null,
-        campaign_name: metaDetails.campaign_name || null,
-        adset_name: metaDetails.adset_name || null,
-        ad_status: metaDetails.status || null,
+        ad_name: metaCreativeResult.ad_name || adName || null,
+        campaign_name: metaCreativeResult.campaign_name || null,
+        adset_name: metaCreativeResult.adset_name || null,
+        ad_status: metaCreativeResult.ad_status || null,
+        creative_id: metaCreativeResult.creative_id || null,
+        creative_image_url: metaCreativeResult.creative_image_url || null,
+        creative_thumbnail_url: metaCreativeResult.creative_thumbnail_url || null,
+        creative_type: metaCreativeResult.creative_type,
+        headline: metaCreativeResult.headline || null,
+        body: metaCreativeResult.body || null,
+        source_url: metaCreativeResult.source_url || null,
         warning: conflictWarning,
-        message: 'Anúncio confirmado com sucesso via Meta Graph API.',
+        message: 'Anúncio e criativo confirmados com sucesso via Meta Graph API.',
       })
     }
 
@@ -163,6 +124,7 @@ export async function POST(request: Request, { params }: Params) {
         const refHeadline = typeof ref.headline === 'string' ? ref.headline : null
         const refBody = typeof ref.body === 'string' ? ref.body : null
         const refImageUrl = typeof ref.image_url === 'string' ? ref.image_url : null
+        const refThumbnailUrl = typeof ref.thumbnail_url === 'string' ? ref.thumbnail_url : null
 
         return NextResponse.json({
           valid: true,
@@ -175,6 +137,9 @@ export async function POST(request: Request, { params }: Params) {
           referral_headline: refHeadline,
           referral_body: refBody,
           referral_image_url: refImageUrl,
+          creative_image_url: refImageUrl || refThumbnailUrl,
+          creative_thumbnail_url: refThumbnailUrl || refImageUrl,
+          creative_type: 'image',
           warning: conflictWarning,
           message: 'Anúncio confirmado através de leads CTWA recebidos recentemente.',
         })
@@ -190,6 +155,8 @@ export async function POST(request: Request, { params }: Params) {
       source: 'syntax_validated',
       ad_source_id: adSourceId,
       ad_name: adName,
+      creative_image_url: null,
+      creative_type: 'unknown',
       warning: conflictWarning,
       message:
         'Formato do ID validado. Pronto para vincular e resolver automaticamente todos os leads deste anúncio.',
