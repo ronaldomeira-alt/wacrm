@@ -5,7 +5,8 @@ type Params = { params: Promise<{ id: string }> }
 
 /**
  * GET /api/ai/properties/[id]/ads (viewer+)
- * Returns all CTWA ad mappings linked to this property.
+ * Returns all CTWA ad mappings linked to this property, hydrated with real creative telemetry
+ * (image_url, headline, body, media_type, etc.) from inbound conversations.
  */
 export async function GET(request: Request, { params }: Params) {
   try {
@@ -24,7 +25,52 @@ export async function GET(request: Request, { params }: Params) {
       return NextResponse.json({ error: 'Failed to fetch ad mappings' }, { status: 500 })
     }
 
-    return NextResponse.json({ mappings: mappings || [] })
+    // Hydrate each mapping with real ad telemetry if captured from inbound leads
+    const hydratedMappings = await Promise.all(
+      (mappings || []).map(async (m) => {
+        let imageUrl: string | null = null
+        let headline: string | null = null
+        let body: string | null = null
+        let mediaType: string = 'image'
+        let sourceUrl: string | null = null
+        let hasLeadTelemetry = false
+
+        try {
+          const { data: convs } = await supabase
+            .from('conversations')
+            .select('id, ctwa_referral')
+            .eq('account_id', accountId)
+            .filter('ctwa_referral->>source_id', 'eq', m.ad_source_id)
+            .limit(1)
+
+          if (convs && convs.length > 0 && convs[0].ctwa_referral) {
+            const ref = convs[0].ctwa_referral as Record<string, unknown>
+            imageUrl = typeof ref.image_url === 'string' ? ref.image_url : null
+            headline = typeof ref.headline === 'string' ? ref.headline : null
+            body = typeof ref.body === 'string' ? ref.body : null
+            mediaType = typeof ref.media_type === 'string' ? ref.media_type : 'image'
+            sourceUrl = typeof ref.source_url === 'string' ? ref.source_url : null
+            hasLeadTelemetry = true
+          }
+        } catch (telemetryErr) {
+          console.warn('[property/ads] Telemetry lookup failed for ad:', m.ad_source_id, telemetryErr)
+        }
+
+        return {
+          ...m,
+          verified: true,
+          image_url: imageUrl,
+          headline,
+          body,
+          media_type: mediaType,
+          source_url: sourceUrl,
+          has_lead_telemetry: hasLeadTelemetry,
+          platform: 'Meta Ads · Click to WhatsApp',
+        }
+      }),
+    )
+
+    return NextResponse.json({ mappings: hydratedMappings })
   } catch (err) {
     return toErrorResponse(err)
   }

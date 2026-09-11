@@ -10,7 +10,6 @@ import {
   Sparkles,
   Megaphone,
   Plus,
-  Tag,
   SlidersHorizontal,
   CheckCircle2,
   AlertCircle,
@@ -25,6 +24,11 @@ import {
   User,
   Star,
   Check,
+  Copy,
+  MoreHorizontal,
+  ArrowRight,
+  ExternalLink,
+  Bot,
 } from 'lucide-react'
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor'
 import { ExpandableKnowledgeSection } from './expandable-knowledge-section'
@@ -49,6 +53,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
 import { PROPERTY_MEDIA_BUCKET } from '@/lib/storage/upload-media'
 import { STAGE_LABELS, type PropertyWithAiContext, type PropertyStage, type PropertyImage } from '@/types'
@@ -59,6 +69,14 @@ interface AdMapping {
   ad_source_id: string
   ad_name: string | null
   created_at: string
+  verified?: boolean
+  image_url?: string | null
+  headline?: string | null
+  body?: string | null
+  media_type?: string | null
+  source_url?: string | null
+  has_lead_telemetry?: boolean
+  platform?: string
 }
 
 interface ValidationResult {
@@ -118,6 +136,7 @@ export function PropertyKnowledgeDetailDialog({
 
   // CTWA Ad Mappings
   const [adMappings, setAdMappings] = useState<AdMapping[]>([])
+  const [adSort, setAdSort] = useState<'recent' | 'oldest' | 'name'>('recent')
   const [loadingAds, setLoadingAds] = useState(false)
   const [showAddAd, setShowAddAd] = useState(false)
   const [newAdSourceId, setNewAdSourceId] = useState('')
@@ -217,6 +236,20 @@ export function PropertyKnowledgeDetailDialog({
   const adsCount = useMemo(() => {
     return adMappings.length
   }, [adMappings])
+
+  const sortedAdMappings = useMemo(() => {
+    const list = [...adMappings]
+    if (adSort === 'recent') {
+      return list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    }
+    if (adSort === 'oldest') {
+      return list.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    }
+    if (adSort === 'name') {
+      return list.sort((a, b) => (a.ad_name || a.ad_source_id).localeCompare(b.ad_name || b.ad_source_id))
+    }
+    return list
+  }, [adMappings, adSort])
 
   // AI Configuration Status
   const aiStatus = useMemo(() => {
@@ -1017,274 +1050,605 @@ export function PropertyKnowledgeDetailDialog({
             )}
 
             {activeTab === 'anuncios' && (
-              <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-[11px] text-muted-foreground max-w-md">
-                Mapeamento determinístico de anúncios Click to WhatsApp (Meta Ads).
-              </p>
-
-              {!showAddAd && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1 text-xs shrink-0"
-                  onClick={() => {
-                    setShowAddAd(true)
-                    setValidationResult(null)
-                  }}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Vincular Anúncio
-                </Button>
-              )}
-            </div>
-
-            {showAddAd && (
-              <form onSubmit={handleAddAdMapping} className="rounded-lg border border-border bg-background p-3.5 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs font-medium">ID do Anúncio (source_id Meta) *</Label>
-                    <Input
-                      placeholder="Ex: 120250622441180493"
-                      value={newAdSourceId}
-                      onChange={(e) => {
-                        setNewAdSourceId(e.target.value)
-                        setValidationResult(null) // Invalida validação anterior se alterar ID
-                      }}
-                      required
-                      className="h-8 text-xs mt-1 font-mono"
-                      autoFocus
-                    />
-                    <p className="text-[10px] text-muted-foreground mt-1">
-                      Copie o ID numérico do anúncio no Gerenciador de Anúncios da Meta.
-                    </p>
+              <div className="space-y-4">
+                {/* 1. Header Section */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 border border-primary/20 text-primary shrink-0 mt-0.5">
+                      <Megaphone className="h-4.5 w-4.5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground tracking-tight">
+                        Anúncios vinculados
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        Anúncios da Meta que direcionam leads para este empreendimento.
+                      </p>
+                    </div>
                   </div>
 
-                  <div>
-                    <Label className="text-xs font-medium">Identificação / Campanha (Opcional)</Label>
-                    <Input
-                      placeholder="Ex: Campanha 2Q Bessa - Set/2026"
-                      value={newAdName}
-                      onChange={(e) => setNewAdName(e.target.value)}
-                      className="h-8 text-xs mt-1"
-                    />
-                    <p className="text-[10px] text-muted-foreground mt-1">
-                      Nome descritivo para fácil identificação da equipe.
-                    </p>
+                  {!showAddAd && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8.5 px-3.5 gap-1.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 shadow-xs shrink-0 self-start sm:self-auto cursor-pointer"
+                      onClick={() => {
+                        setShowAddAd(true)
+                        setValidationResult(null)
+                      }}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Vincular Anúncio
+                    </Button>
+                  )}
+                </div>
+
+                {/* 2. Informative Explanatory Banner */}
+                <div className="relative overflow-hidden rounded-xl border border-sky-500/30 bg-gradient-to-r from-sky-500/10 via-sky-500/5 to-transparent p-3.5 sm:p-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                      <Info className="h-4 w-4 text-sky-400 shrink-0 mt-0.5" />
+                      <p className="text-xs text-sky-200/90 leading-relaxed font-normal">
+                        Quando um lead chega pelo WhatsApp através de um destes anúncios, a Clara identifica automaticamente o empreendimento e já utiliza o conhecimento e as regras configuradas para este imóvel.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/60 border border-border/60 shrink-0 self-start sm:self-auto">
+                      <svg className="h-4 w-4 text-[#0081FB] shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C6.477 2 2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.879V14.89h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.989C18.343 21.129 22 16.99 22 12c0-5.523-4.477-10-10-10z" />
+                      </svg>
+                      <div className="text-[11px] leading-tight">
+                        <div className="font-semibold text-foreground">Meta Ads</div>
+                        <div className="text-[10px] text-muted-foreground">Click to WhatsApp</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {validationResult && (
-                  <div
-                    className={`rounded-lg p-3 text-xs space-y-2 transition-all border ${
-                      validationResult.valid
-                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600'
-                        : 'border-destructive/30 bg-destructive/10 text-destructive'
-                    }`}
+                {/* 3. Link Ad Form (Collapsible) */}
+                {showAddAd && (
+                  <form
+                    onSubmit={handleAddAdMapping}
+                    className="rounded-xl border border-border bg-card/70 p-4 space-y-3.5 shadow-xs"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 font-semibold">
-                        {validationResult.valid ? (
-                          <>
-                            <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
-                            <span className="text-emerald-600 font-medium">
-                              {validationResult.confirmed
-                                ? 'Anúncio identificado com sucesso'
-                                : 'Anúncio validado (Formato correto)'}
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-                            <span className="text-destructive font-medium">Não foi possível validar este anúncio</span>
-                          </>
-                        )}
+                    <div className="flex items-center justify-between border-b border-border/50 pb-2.5">
+                      <div className="flex items-center gap-2">
+                        <Plus className="h-4 w-4 text-primary" />
+                        <h4 className="text-xs font-semibold text-foreground">
+                          Vincular novo anúncio da Meta
+                        </h4>
                       </div>
-
-                      {validationResult.valid && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-medium bg-emerald-500/15 text-emerald-600 border border-emerald-500/30">
-                          {validationResult.source === 'meta_api'
-                            ? 'Meta Ads API'
-                            : validationResult.source === 'inbound_leads'
-                              ? 'Lead CTWA'
-                              : 'Formato'}
-                        </span>
-                      )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
+                        onClick={() => {
+                          setShowAddAd(false)
+                          setValidationResult(null)
+                        }}
+                      >
+                        ✕
+                      </Button>
                     </div>
 
-                    {validationResult.valid ? (
-                      <div className="rounded-md bg-background/60 border border-emerald-500/20 p-2.5 space-y-1.5 text-[11px] leading-relaxed">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5">
-                          <div>
-                            <span className="text-muted-foreground font-medium">ID do Anúncio:</span>{' '}
-                            <span className="font-mono text-emerald-600 font-semibold">
-                              {validationResult.ad_source_id || newAdSourceId}
-                            </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                      <div>
+                        <Label className="text-xs font-medium text-foreground">
+                          ID do Anúncio (source_id Meta) <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                          placeholder="Ex: 120251178888720493"
+                          value={newAdSourceId}
+                          onChange={(e) => {
+                            setNewAdSourceId(e.target.value)
+                            setValidationResult(null)
+                          }}
+                          required
+                          className="h-8.5 text-xs mt-1.5 font-mono"
+                          autoFocus
+                        />
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          Copie o ID numérico do anúncio no Gerenciador de Anúncios da Meta.
+                        </p>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs font-medium text-foreground">
+                          Nome de Identificação / Campanha (Opcional)
+                        </Label>
+                        <Input
+                          placeholder="Ex: Anúncio Avant"
+                          value={newAdName}
+                          onChange={(e) => setNewAdName(e.target.value)}
+                          className="h-8.5 text-xs mt-1.5"
+                        />
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          Nome amigável para identificar visualmente o criativo.
+                        </p>
+                      </div>
+                    </div>
+
+                    {validationResult && (
+                      <div
+                        className={`rounded-xl p-3.5 text-xs space-y-2.5 transition-all border ${
+                          validationResult.valid
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                            : 'border-destructive/30 bg-destructive/10 text-destructive'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 font-semibold">
+                            {validationResult.valid ? (
+                              <>
+                                <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+                                <span className="text-emerald-300 font-medium">
+                                  {validationResult.confirmed
+                                    ? 'Anúncio identificado com sucesso'
+                                    : 'Formato de ID validado'}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+                                <span className="text-destructive font-medium">
+                                  Não foi possível validar este anúncio
+                                </span>
+                              </>
+                            )}
                           </div>
 
-                          {(validationResult.ad_name || newAdName.trim()) && (
-                            <div>
-                              <span className="text-muted-foreground font-medium">Identificação / Anúncio:</span>{' '}
-                              <span className="text-foreground font-medium">
-                                {validationResult.ad_name || newAdName.trim()}
-                              </span>
-                            </div>
-                          )}
-
-                          {validationResult.campaign_name && (
-                            <div>
-                              <span className="text-muted-foreground font-medium">Campanha:</span>{' '}
-                              <span className="text-foreground">{validationResult.campaign_name}</span>
-                            </div>
-                          )}
-
-                          {validationResult.adset_name && (
-                            <div>
-                              <span className="text-muted-foreground font-medium">Conjunto de Anúncios:</span>{' '}
-                              <span className="text-foreground">{validationResult.adset_name}</span>
-                            </div>
-                          )}
-
-                          {validationResult.referral_headline && !validationResult.ad_name && (
-                            <div>
-                              <span className="text-muted-foreground font-medium">Título (Criativo):</span>{' '}
-                              <span className="text-foreground">{validationResult.referral_headline}</span>
-                            </div>
-                          )}
-
-                          {validationResult.referral_body && (
-                            <div className="sm:col-span-2">
-                              <span className="text-muted-foreground font-medium">Texto do Criativo:</span>{' '}
-                              <span className="text-foreground">{validationResult.referral_body}</span>
-                            </div>
+                          {validationResult.valid && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-mono font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              {validationResult.source === 'meta_api'
+                                ? 'Meta Graph API'
+                                : validationResult.source === 'inbound_leads'
+                                  ? 'Lead CTWA'
+                                  : 'Sintaxe'}
+                            </span>
                           )}
                         </div>
 
-                        {validationResult.warning && (
-                          <p className="text-amber-600 font-medium pt-1 border-t border-border/30">
-                            ⚠️ {validationResult.warning}
-                          </p>
-                        )}
+                        {validationResult.valid ? (
+                          <div className="rounded-lg bg-background/80 border border-emerald-500/20 p-3 space-y-2 text-[11px] leading-relaxed">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+                              <div>
+                                <span className="text-muted-foreground font-medium">ID do Anúncio:</span>{' '}
+                                <span className="font-mono text-emerald-400 font-semibold">
+                                  {validationResult.ad_source_id || newAdSourceId}
+                                </span>
+                              </div>
 
-                        <p className="pt-1 text-[11px] font-medium border-t border-emerald-500/20 text-emerald-600">
-                          {validationResult.confirmed
-                            ? '✓ Confira os dados acima para confirmar que este é o anúncio correto antes de salvar.'
-                            : '✓ Formato do ID validado. Digite o nome da campanha acima para fácil identificação e clique em Salvar Vínculo.'}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="text-[11px] leading-relaxed text-destructive/90 pl-5.5">
-                        <p>{validationResult.message}</p>
+                              {(validationResult.ad_name || newAdName.trim()) && (
+                                <div>
+                                  <span className="text-muted-foreground font-medium">Identificação:</span>{' '}
+                                  <span className="text-foreground font-medium">
+                                    {validationResult.ad_name || newAdName.trim()}
+                                  </span>
+                                </div>
+                              )}
+
+                              {validationResult.campaign_name && (
+                                <div>
+                                  <span className="text-muted-foreground font-medium">Campanha:</span>{' '}
+                                  <span className="text-foreground">{validationResult.campaign_name}</span>
+                                </div>
+                              )}
+
+                              {validationResult.adset_name && (
+                                <div>
+                                  <span className="text-muted-foreground font-medium">Conjunto:</span>{' '}
+                                  <span className="text-foreground">{validationResult.adset_name}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            {validationResult.warning && (
+                              <p className="text-amber-400 font-medium pt-1.5 border-t border-border/40">
+                                ⚠️ {validationResult.warning}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-destructive/90">
+                            <p>{validationResult.message}</p>
+                          </div>
+                        )}
                       </div>
                     )}
-                  </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-border/50">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => {
+                          setShowAddAd(false)
+                          setValidationResult(null)
+                        }}
+                        disabled={addingAd || validatingAd}
+                      >
+                        Cancelar
+                      </Button>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs gap-1.5 cursor-pointer"
+                        onClick={handleValidateAd}
+                        disabled={validatingAd || !newAdSourceId.trim()}
+                      >
+                        {validatingAd ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Conferindo...
+                          </>
+                        ) : (
+                          <>
+                            <Search className="h-3.5 w-3.5 text-primary" />
+                            Conferir anúncio
+                          </>
+                        )}
+                      </Button>
+
+                      <Button
+                        type="submit"
+                        size="sm"
+                        className="h-8 text-xs gap-1.5 font-medium cursor-pointer"
+                        disabled={addingAd || !validationResult?.valid}
+                      >
+                        {addingAd ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Salvando...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Salvar Vínculo
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </form>
                 )}
 
-                {/* Buttons: Validate vs Save */}
-                <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-border/50">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-xs"
-                    onClick={() => {
-                      setShowAddAd(false)
-                      setValidationResult(null)
-                    }}
-                    disabled={addingAd || validatingAd}
-                  >
-                    Cancelar
-                  </Button>
+                {/* 4. Controls Bar: Dynamic Count + Ordering */}
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <span className="text-xs font-semibold text-foreground">
+                    {adMappings.length === 1
+                      ? '1 anúncio vinculado'
+                      : `${adMappings.length} anúncios vinculados`}
+                  </span>
 
-                  {/* Step 1: Validate Button */}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs gap-1.5"
-                    onClick={handleValidateAd}
-                    disabled={validatingAd || !newAdSourceId.trim()}
-                  >
-                    {validatingAd ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Conferindo anúncio...
-                      </>
-                    ) : (
-                      <>
-                        <Search className="h-3.5 w-3.5 text-primary" />
-                        Conferir anúncio
-                      </>
-                    )}
-                  </Button>
-
-                  {/* Step 2: Save Button (Enabled only when validated) */}
-                  <Button
-                    type="submit"
-                    size="sm"
-                    className="h-8 text-xs gap-1.5 font-medium"
-                    disabled={addingAd || !validationResult?.valid}
-                  >
-                    {addingAd ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Salvando...
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        Salvar Vínculo
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </form>
-            )}
-
-            {loadingAds ? (
-              <div className="flex items-center justify-center p-3 text-xs text-muted-foreground">
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                Carregando anúncios vinculados...
-              </div>
-            ) : adMappings.length > 0 ? (
-              <div className="space-y-1.5">
-                {adMappings.map((ad) => (
-                  <div
-                    key={ad.id}
-                    className="flex items-center justify-between rounded-lg border border-border bg-background/80 hover:bg-background px-3 py-2 text-xs gap-2 transition-colors"
-                  >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <Tag className="h-3.5 w-3.5 text-primary shrink-0" />
-                      <span className="font-mono font-semibold text-foreground shrink-0">{ad.ad_source_id}</span>
-                      {ad.ad_name ? (
-                        <span className="truncate text-foreground font-medium bg-muted/60 px-2 py-0.5 rounded border border-border/50 text-[11px]">
-                          {ad.ad_name}
-                        </span>
-                      ) : (
-                        <span className="truncate text-muted-foreground italic text-[11px]">(Sem identificação)</span>
-                      )}
+                  {adMappings.length > 1 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-muted-foreground hidden sm:inline">
+                        Ordenar por
+                      </span>
+                      <Select
+                        value={adSort}
+                        onValueChange={(val) => {
+                          if (val === 'recent' || val === 'oldest' || val === 'name') {
+                            setAdSort(val)
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="h-7.5 w-[130px] text-xs bg-card/60 border-border">
+                          <SelectValue placeholder="Ordenar" />
+                        </SelectTrigger>
+                        <SelectContent align="end">
+                          <SelectItem value="recent" className="text-xs">
+                            Mais recentes
+                          </SelectItem>
+                          <SelectItem value="oldest" className="text-xs">
+                            Mais antigos
+                          </SelectItem>
+                          <SelectItem value="name" className="text-xs">
+                            Nome
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0"
-                      onClick={() => handleDeleteAdMapping(ad.id)}
-                      title="Remover vínculo"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              !showAddAd && (
-                <div className="rounded-lg border border-dashed border-border bg-background/50 p-3 text-center text-xs text-muted-foreground">
-                  Nenhum anúncio explicitamente mapeado. O sistema usará reconhecimento textual de título e mensagem do anúncio como fallback.
+                  )}
                 </div>
-              )
-            )}
+
+                {/* 5. Main Content: Loading / List / Empty State */}
+                {loadingAds ? (
+                  <div className="flex flex-col items-center justify-center p-12 text-xs text-muted-foreground space-y-2 rounded-xl border border-border/40 bg-card/30">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <span>Carregando anúncios vinculados...</span>
+                  </div>
+                ) : sortedAdMappings.length > 0 ? (
+                  <div className="space-y-3.5">
+                    {sortedAdMappings.map((ad) => {
+                      const formattedDate = ad.created_at
+                        ? new Date(ad.created_at).toLocaleDateString('pt-BR', {
+                            day: 'numeric',
+                            month: 'long',
+                            year: 'numeric',
+                          })
+                        : null
+                      const formattedTime = ad.created_at
+                        ? new Date(ad.created_at).toLocaleTimeString('pt-BR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : null
+
+                      return (
+                        <div
+                          key={ad.id}
+                          className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/80 hover:bg-card hover:border-border transition-all duration-200 shadow-xs"
+                        >
+                          <div className="flex flex-col md:flex-row items-stretch">
+                            {/* Left Column: Real Creative Image or Elegant Placeholder */}
+                            <div className="relative w-full md:w-[280px] lg:w-[320px] shrink-0 bg-muted/40 aspect-16/10 md:aspect-auto overflow-hidden border-b md:border-b-0 md:border-r border-border/60">
+                              {ad.image_url ? (
+                                <>
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={ad.image_url}
+                                    alt={ad.ad_name || 'Criativo do Anúncio'}
+                                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-103"
+                                    loading="lazy"
+                                  />
+                                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
+                                </>
+                              ) : (
+                                <div className="w-full h-full min-h-[160px] flex flex-col items-center justify-center p-6 text-center space-y-2 bg-gradient-to-b from-muted/30 to-muted/60">
+                                  <div className="h-10 w-10 rounded-xl bg-background/80 border border-border flex items-center justify-center text-muted-foreground shadow-xs">
+                                    <ImageIcon className="h-5 w-5" />
+                                  </div>
+                                  <span className="text-[11px] font-medium text-foreground/80">
+                                    {ad.ad_name || 'Anúncio Meta'}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    Criativo exibido no WhatsApp
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Right Column: Metadata & Intelligent Clara Context */}
+                            <div className="flex-1 p-4 sm:p-5 flex flex-col justify-between space-y-4">
+                              {/* Card Header: Title, Platform, Verified Badge, Actions */}
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="space-y-1 min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2.5">
+                                    <h4 className="text-base font-semibold text-foreground tracking-tight truncate">
+                                      {ad.ad_name || `Anúncio ${property.name}`}
+                                    </h4>
+                                    <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                      <CheckCircle2 className="h-3 w-3" />
+                                      Vínculo verificado
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">
+                                    {ad.platform || 'Meta Ads · Click to WhatsApp'}
+                                  </p>
+                                </div>
+
+                                {/* Actions Menu */}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger
+                                    type="button"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/80 cursor-pointer shrink-0 transition-colors focus-visible:outline-none"
+                                    aria-label="Opções do anúncio"
+                                  >
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-48">
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(ad.ad_source_id)
+                                        toast.success('ID copiado para a área de transferência!')
+                                      }}
+                                      className="text-xs cursor-pointer gap-2"
+                                    >
+                                      <Copy className="h-3.5 w-3.5" />
+                                      Copiar ID do Anúncio
+                                    </DropdownMenuItem>
+                                    {ad.source_url && (
+                                      <DropdownMenuItem
+                                        onClick={() => window.open(ad.source_url!, '_blank')}
+                                        className="text-xs cursor-pointer gap-2"
+                                      >
+                                        <ExternalLink className="h-3.5 w-3.5" />
+                                        Abrir Link do Anúncio
+                                      </DropdownMenuItem>
+                                    )}
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        const confirmDelete = window.confirm(
+                                          `Desvincular o anúncio "${ad.ad_name || ad.ad_source_id}" deste empreendimento?`,
+                                        )
+                                        if (confirmDelete) {
+                                          handleDeleteAdMapping(ad.id)
+                                        }
+                                      }}
+                                      className="text-xs text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer gap-2"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                      Desvincular anúncio
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
+
+                              {/* Grid of Identifiers: ID, Campanha, Conjunto, Formato */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1 border-t border-border/50">
+                                <div>
+                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                    ID do anúncio
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(ad.ad_source_id)
+                                      toast.success('ID copiado!')
+                                    }}
+                                    className="group/id inline-flex items-center gap-1 font-mono text-xs font-semibold text-foreground hover:text-primary transition-colors text-left"
+                                    title="Clique para copiar"
+                                  >
+                                    <span className="truncate max-w-[110px] sm:max-w-[130px]">
+                                      {ad.ad_source_id}
+                                    </span>
+                                    <Copy className="h-3 w-3 text-muted-foreground group-hover/id:text-primary shrink-0 opacity-70 group-hover/id:opacity-100" />
+                                  </button>
+                                </div>
+
+                                <div>
+                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                    Campanha
+                                  </span>
+                                  <span className="text-xs font-medium text-foreground truncate block">
+                                    {ad.ad_name || `${property.name} - Campanha`}
+                                  </span>
+                                </div>
+
+                                <div>
+                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                    Conjunto de anúncios
+                                  </span>
+                                  <span className="text-xs font-medium text-foreground truncate block">
+                                    {ad.headline ? ad.headline : 'Conversões WhatsApp'}
+                                  </span>
+                                </div>
+
+                                <div>
+                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                    Formato
+                                  </span>
+                                  <span className="text-xs font-medium text-foreground block">
+                                    {ad.media_type === 'video' ? 'Vídeo' : 'Imagem'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Two Context Intelligence Cards */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {/* Card A: Empreendimento Vinculado */}
+                                <div className="rounded-xl border border-border/70 bg-muted/20 p-3 flex items-center gap-3">
+                                  <div className="h-8.5 w-8.5 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+                                    <Building2 className="h-4 w-4" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold block">
+                                      Empreendimento vinculado
+                                    </span>
+                                    <span className="text-xs font-semibold text-foreground truncate block">
+                                      {property.name}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Card B: Contexto da Clara */}
+                                <div className="rounded-xl border border-border/70 bg-muted/20 p-3 flex items-center gap-3">
+                                  <div className="h-8.5 w-8.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
+                                    <Bot className="h-4 w-4" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                                        Contexto da Clara
+                                      </span>
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
+                                        ● Ativo
+                                      </span>
+                                    </div>
+                                    <span className="text-[11px] text-muted-foreground truncate block">
+                                      Leads deste anúncio entram com o contexto do {property.name}.
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Card Footer: Flow Summary & Timestamp */}
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-border/50 text-[11px]">
+                                <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                                  <ArrowRight className="h-3.5 w-3.5 shrink-0" />
+                                  <span>
+                                    Leads deste anúncio <span className="text-muted-foreground">→</span>{' '}
+                                    contexto inicial:{' '}
+                                    <strong className="text-foreground font-semibold">
+                                      {property.name}
+                                    </strong>
+                                  </span>
+                                </div>
+
+                                {formattedDate && (
+                                  <span className="text-muted-foreground text-[10px] sm:text-[11px]">
+                                    Vinculado em {formattedDate}
+                                    {formattedTime ? ` às ${formattedTime}` : ''}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {/* 6. Discreet Additional Link Footer Prompt */}
+                    <div className="rounded-2xl border border-dashed border-border/70 bg-card/40 p-5 text-center space-y-2">
+                      <div className="h-9 w-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mx-auto">
+                        <Megaphone className="h-4 w-4" />
+                      </div>
+                      <h4 className="text-xs font-semibold text-foreground">
+                        Vincule mais anúncios
+                      </h4>
+                      <p className="text-[11px] text-muted-foreground max-w-md mx-auto">
+                        As associações adicionais permitem que diferentes campanhas direcionem leads para este mesmo empreendimento com total precisão.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-3 text-xs gap-1.5 mt-1 cursor-pointer"
+                        onClick={() => {
+                          setShowAddAd(true)
+                          setValidationResult(null)
+                        }}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Vincular Anúncio
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  /* 7. Empty State (When no ads mapped yet) */
+                  !showAddAd && (
+                    <div className="rounded-2xl border border-dashed border-border bg-card/30 p-8 sm:p-12 text-center space-y-3">
+                      <div className="h-12 w-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mx-auto shadow-xs">
+                        <Megaphone className="h-6 w-6" />
+                      </div>
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-semibold text-foreground">
+                          Você ainda não possui anúncios vinculados.
+                        </h4>
+                        <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                          Vincule anúncios da Meta para que a Clara identifique automaticamente o empreendimento de origem dos leads.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-8.5 px-4 text-xs gap-1.5 font-medium cursor-pointer mt-2 shadow-xs"
+                        onClick={() => {
+                          setShowAddAd(true)
+                          setValidationResult(null)
+                        }}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Vincular Anúncio
+                      </Button>
+                    </div>
+                  )
+                )}
               </div>
             )}
           </div>
