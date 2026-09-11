@@ -248,7 +248,7 @@ SEGURANÇA CONTRA PROMPT INJECTION:
     sections.push(
       `=== 8. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO (ISOLAMENTO ESTRITO) ===
 EMPREENDIMENTO EM FOCO: ${property.name}${stageDesc}
-ISOLAMENTO E ANCORAGEM: Todas as perguntas do cliente sobre características, metragem, previsão de entrega, lazer, fotos e localização aplicam-se EXCLUSIVAMENTE ao empreendimento "${property.name}". NUNCA presuma ou misture dados de outros empreendimentos.${propKbText}${propMediaText}${propStyleText}`,
+ISOLAMENTO E ANCORAGEM: Todas as perguntas do cliente sobre características, metragem, previsão de entrega, lazer, fotos e localização aplicam-se EXCLUSIVAMENTE ao empreendimento "${property.name}". NUNCA presuma ou misture dados de outros empreendimentos. Fatos específicos e restrições negativas autorizadas deste empreendimento prevalecem sobre quaisquer generalizações globais ou premissas incorretas do cliente.${propKbText}${propMediaText}${propStyleText}`,
     );
   } else {
     sections.push(

@@ -18,8 +18,6 @@ import { createClient } from '@/lib/supabase/client'
 import {
   PROPERTY_MEDIA_BUCKET,
   PROPERTY_MEDIA_MAX_BYTES,
-  buildMediaPath,
-  resolveAccountId,
 } from '@/lib/storage/upload-media'
 import type { PropertyImage } from '@/types'
 
@@ -28,7 +26,28 @@ interface PropertyMediaGalleryProps {
   disabled?: boolean
 }
 
-const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp']
+// Supported input formats (JPEG, PNG, WEBP, GIF, BMP, TIFF, HEIC, HEIF, AVIF)
+const ACCEPT_FILE_TYPES = 'image/*,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif,.avif'
+
+const ALLOWED_EXTENSIONS = new Set([
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'gif',
+  'bmp',
+  'tif',
+  'tiff',
+  'heic',
+  'heif',
+  'avif',
+])
+
+function isSupportedFile(file: File): boolean {
+  if (file.type && file.type.startsWith('image/')) return true
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  return Boolean(ext && ALLOWED_EXTENSIONS.has(ext))
+}
 
 export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGalleryProps) {
   const [images, setImages] = useState<PropertyImage[]>([])
@@ -70,46 +89,34 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
     setUploadProgress({ current: 0, total: fileList.length })
 
     try {
-      const accountId = await resolveAccountId()
       let uploadedCount = 0
 
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList[i]
         setUploadProgress({ current: i + 1, total: fileList.length })
 
-        if (!ALLOWED_TYPES.includes(file.type)) {
-          toast.error(`"${file.name}" não é PNG, JPEG ou WEBP.`)
+        if (!isSupportedFile(file)) {
+          toast.error(`"${file.name}" não é um formato de imagem suportado (JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, HEIF, AVIF).`)
           continue
         }
+
         if (file.size > PROPERTY_MEDIA_MAX_BYTES) {
-          toast.error(`"${file.name}" ultrapassa 16 MB.`)
+          toast.error(`"${file.name}" ultrapassa o limite de 16 MB.`)
           continue
         }
 
-        const path = buildMediaPath(accountId, file.name)
-        const { error: upErr } = await supabase.storage
-          .from(PROPERTY_MEDIA_BUCKET)
-          .upload(path, file, { cacheControl: '3600', upsert: false, contentType: file.type })
-
-        if (upErr) {
-          toast.error(`Falha ao enviar "${file.name}": ${upErr.message}`)
-          continue
-        }
+        // Send via FormData to server API for normalization (EXIF rotation, conversion, compression <=5MB)
+        const formData = new FormData()
+        formData.append('file', file)
 
         const res = await fetch(`/api/ai/properties/${propertyId}/images`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            storage_path: path,
-            file_name: file.name,
-            file_size: file.size,
-            content_type: file.type,
-          }),
+          body: formData,
         })
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
-          toast.error(data.error || `Falha ao salvar "${file.name}"`)
+          toast.error(data.error || `Falha ao processar "${file.name}"`)
         } else {
           uploadedCount++
         }
@@ -118,8 +125,8 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
       if (uploadedCount > 0) {
         toast.success(
           uploadedCount === 1
-            ? '1 foto adicionada com sucesso!'
-            : `${uploadedCount} fotos adicionadas com sucesso!`,
+            ? '1 foto adicionada e otimizada com sucesso!'
+            : `${uploadedCount} fotos adicionadas e otimizadas com sucesso!`,
         )
       }
       await load()
@@ -234,8 +241,8 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               <span>
                 {uploadProgress
-                  ? `Enviando ${uploadProgress.current}/${uploadProgress.total}...`
-                  : 'Enviando...'}
+                  ? `Processando ${uploadProgress.current}/${uploadProgress.total}...`
+                  : 'Processando...'}
               </span>
             </>
           ) : (
@@ -248,7 +255,7 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
         <input
           ref={fileInputRef}
           type="file"
-          accept={ALLOWED_TYPES.join(',')}
+          accept={ACCEPT_FILE_TYPES}
           multiple
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
@@ -270,7 +277,7 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
           <ImageIcon className="h-7 w-7 mx-auto text-muted-foreground" />
           <p className="text-xs font-medium text-foreground">Nenhuma mídia cadastrada ainda</p>
           <p className="text-[11px] text-muted-foreground max-w-sm mx-auto">
-            Selecione uma ou mais fotos (fachada, piscina, vista, áreas comuns) para enriquecer o atendimento da IA (PNG, JPEG ou WEBP até 16 MB).
+            Selecione uma ou mais fotos (JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, HEIF, AVIF até 16 MB). Todas serão otimizadas automaticamente para envio instantâneo pelo WhatsApp.
           </p>
         </button>
       ) : (
