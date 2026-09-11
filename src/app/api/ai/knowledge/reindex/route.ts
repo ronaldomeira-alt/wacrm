@@ -21,7 +21,7 @@ export async function POST() {
 
     const { data: docs, error } = await supabase
       .from('ai_knowledge_documents')
-      .select('id, content')
+      .select('id, content, property_id')
       .eq('account_id', accountId)
     if (error) {
       console.error('[ai/knowledge/reindex] fetch error:', error)
@@ -53,7 +53,14 @@ export async function POST() {
     let reindexed = 0
     for (const doc of docs ?? []) {
       try {
-        await ingestDocument(supabase, accountId, { embeddingsApiKey }, doc.id, doc.content)
+        await ingestDocument(
+          supabase,
+          accountId,
+          { embeddingsApiKey },
+          doc.id,
+          doc.content,
+          doc.property_id ?? null,
+        )
         reindexed += 1
       } catch (err) {
         // One bad document (e.g. a mid-run embeddings rate-limit) should
