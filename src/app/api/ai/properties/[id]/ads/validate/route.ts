@@ -76,6 +76,7 @@ export async function POST(request: Request, { params }: Params) {
       name?: string
       status?: string
       campaign_name?: string
+      adset_name?: string
     } | null = null
 
     try {
@@ -88,7 +89,7 @@ export async function POST(request: Request, { params }: Params) {
       if (wcfg?.access_token) {
         const token = decrypt(wcfg.access_token)
         const graphRes = await fetch(
-          `https://graph.facebook.com/v21.0/${adSourceId}?fields=id,name,status,campaign{id,name}&access_token=${encodeURIComponent(
+          `https://graph.facebook.com/v21.0/${adSourceId}?fields=id,name,status,campaign{id,name},adset{id,name}&access_token=${encodeURIComponent(
             token,
           )}`,
           { method: 'GET', headers: { 'Content-Type': 'application/json' } },
@@ -103,6 +104,7 @@ export async function POST(request: Request, { params }: Params) {
               name: graphData.name || null,
               status: graphData.status || null,
               campaign_name: graphData.campaign?.name || null,
+              adset_name: graphData.adset?.name || null,
             }
           }
         }
@@ -117,8 +119,10 @@ export async function POST(request: Request, { params }: Params) {
         confirmed: true,
         source: 'meta_api',
         ad_source_id: adSourceId,
-        ad_name: adName || metaDetails.name || null,
+        ad_name: metaDetails.name || adName || null,
         campaign_name: metaDetails.campaign_name || null,
+        adset_name: metaDetails.adset_name || null,
+        ad_status: metaDetails.status || null,
         warning: conflictWarning,
         message: 'Anúncio confirmado com sucesso via Meta Graph API.',
       })
@@ -144,7 +148,9 @@ export async function POST(request: Request, { params }: Params) {
           confirmed: true,
           source: 'inbound_leads',
           ad_source_id: adSourceId,
-          ad_name: adName || refHeadline || null,
+          ad_name: refHeadline || adName || null,
+          campaign_name: null,
+          adset_name: null,
           referral_headline: refHeadline,
           referral_body: refBody,
           referral_image_url: refImageUrl,

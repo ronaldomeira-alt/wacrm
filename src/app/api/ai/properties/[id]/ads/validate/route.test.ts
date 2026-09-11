@@ -13,6 +13,7 @@ vi.mock('@/lib/auth/account', () => ({
 }))
 
 import { POST } from './route'
+import { encrypt } from '@/lib/whatsapp/encryption'
 
 describe('POST /api/ai/properties/[id]/ads/validate', () => {
   const mockAccountId = 'acc-123'
@@ -182,5 +183,77 @@ describe('POST /api/ai/properties/[id]/ads/validate', () => {
     expect(json.source).toBe('inbound_leads')
     expect(json.referral_headline).toBe('wa.me - Live Park')
     expect(json.referral_body).toBe('Studios a 1 quadra da praia')
+  })
+
+  it('confirms ad via Meta Graph API when token is valid and returns ad, campaign and adset names', async () => {
+    const mockSupabase = {
+      from: vi.fn((table: string) => {
+        if (table === 'property_ad_mappings') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: null }),
+          }
+        }
+        if (table === 'whatsapp_config') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                access_token: encrypt('test-meta-token'),
+              },
+            }),
+          }
+        }
+        if (table === 'conversations') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            filter: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({ data: [] }),
+          }
+        }
+        return {}
+      }),
+    }
+
+    mocks.requireRole.mockResolvedValue({
+      supabase: mockSupabase,
+      accountId: mockAccountId,
+      user: { id: 'user-1' },
+      role: 'agent',
+    })
+
+    const originalFetch = global.fetch
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: '120251178888700493',
+        name: 'Apartamento mobiliado no Bessa',
+        status: 'ACTIVE',
+        campaign: { id: 'camp-1', name: 'Locação Bessa — Setembro/2026' },
+        adset: { id: 'adset-1', name: 'Apartamentos para locação' },
+      }),
+    }) as unknown as typeof fetch
+
+    try {
+      const req = new Request('http://localhost/api/ai/properties/prop-456/ads/validate', {
+        method: 'POST',
+        body: JSON.stringify({ ad_source_id: '120251178888700493' }),
+      })
+
+      const res = await POST(req, { params: Promise.resolve({ id: mockPropertyId }) })
+      expect(res.status).toBe(200)
+      const json = await res.json()
+      expect(json.valid).toBe(true)
+      expect(json.confirmed).toBe(true)
+      expect(json.source).toBe('meta_api')
+      expect(json.ad_name).toBe('Apartamento mobiliado no Bessa')
+      expect(json.campaign_name).toBe('Locação Bessa — Setembro/2026')
+      expect(json.adset_name).toBe('Apartamentos para locação')
+    } finally {
+      global.fetch = originalFetch
+    }
   })
 })

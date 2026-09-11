@@ -54,8 +54,11 @@ interface ValidationResult {
   ad_source_id?: string
   ad_name?: string | null
   campaign_name?: string | null
+  adset_name?: string | null
+  ad_status?: string | null
   referral_headline?: string | null
   referral_body?: string | null
+  referral_image_url?: string | null
   warning?: string | null
   message?: string
 }
@@ -224,7 +227,11 @@ export function PropertyKnowledgeDetailDialog({
 
       setValidationResult(data)
       if (data.valid) {
-        toast.success('Anúncio validado com sucesso!')
+        if (data.confirmed) {
+          toast.success('Anúncio identificado com sucesso!')
+        } else {
+          toast.info('Formato do ID validado.')
+        }
       } else {
         toast.error(data.message || 'ID do anúncio inválido.')
       }
@@ -500,48 +507,119 @@ export function PropertyKnowledgeDetailDialog({
                 {/* Validation Feedback Banner */}
                 {validationResult && (
                   <div
-                    className={`rounded-lg p-3 text-xs space-y-1.5 transition-all border ${
-                      validationResult.valid
-                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-950 dark:text-emerald-200'
-                        : 'border-destructive/30 bg-destructive/10 text-destructive'
+                    className={`rounded-lg p-3 text-xs space-y-2 transition-all border ${
+                      !validationResult.valid
+                        ? 'border-destructive/30 bg-destructive/10 text-destructive'
+                        : validationResult.confirmed
+                          ? 'border-emerald-500/40 bg-emerald-950/20 dark:bg-emerald-950/40 text-emerald-300'
+                          : 'border-amber-500/40 bg-amber-950/20 dark:bg-amber-950/30 text-amber-200'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5 font-semibold">
-                      {validationResult.valid ? (
-                        <>
-                          <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                          <span>Anúncio validado com sucesso</span>
-                        </>
-                      ) : (
-                        <>
-                          <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-                          <span>Não foi possível validar este anúncio</span>
-                        </>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 font-semibold">
+                        {!validationResult.valid ? (
+                          <>
+                            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+                            <span className="text-destructive font-medium">Não foi possível validar este anúncio</span>
+                          </>
+                        ) : validationResult.confirmed ? (
+                          <>
+                            <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+                            <span className="text-emerald-400 font-medium">Anúncio identificado</span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
+                            <span className="text-amber-300 font-medium">ID reconhecido (Formato válido)</span>
+                          </>
+                        )}
+                      </div>
+
+                      {validationResult.valid && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium ${
+                            validationResult.confirmed
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          }`}
+                        >
+                          {validationResult.source === 'meta_api'
+                            ? 'Meta Ads API'
+                            : validationResult.source === 'inbound_leads'
+                              ? 'Lead CTWA'
+                              : 'Formato'}
+                        </span>
                       )}
                     </div>
 
-                    <div className="text-[11px] leading-relaxed space-y-0.5 opacity-90 pl-5.5">
-                      <p>
-                        <span className="font-medium">ID Meta:</span>{' '}
-                        <span className="font-mono">{validationResult.ad_source_id || newAdSourceId}</span>
-                      </p>
-                      {validationResult.campaign_name && (
-                        <p>
-                          <span className="font-medium">Campanha:</span> {validationResult.campaign_name}
+                    {validationResult.valid ? (
+                      <div className="rounded-md bg-black/20 dark:bg-black/40 border border-border/40 p-2.5 space-y-1.5 text-[11px] leading-relaxed">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+                          <div>
+                            <span className="text-muted-foreground font-medium">ID do Anúncio:</span>{' '}
+                            <span className="font-mono text-foreground font-semibold">
+                              {validationResult.ad_source_id || newAdSourceId}
+                            </span>
+                          </div>
+
+                          {validationResult.ad_name && (
+                            <div>
+                              <span className="text-muted-foreground font-medium">Título / Anúncio:</span>{' '}
+                              <span className="text-foreground font-medium">{validationResult.ad_name}</span>
+                            </div>
+                          )}
+
+                          {validationResult.campaign_name && (
+                            <div>
+                              <span className="text-muted-foreground font-medium">Campanha:</span>{' '}
+                              <span className="text-foreground">{validationResult.campaign_name}</span>
+                            </div>
+                          )}
+
+                          {validationResult.adset_name && (
+                            <div>
+                              <span className="text-muted-foreground font-medium">Conjunto de Anúncios:</span>{' '}
+                              <span className="text-foreground">{validationResult.adset_name}</span>
+                            </div>
+                          )}
+
+                          {validationResult.referral_headline && !validationResult.ad_name && (
+                            <div>
+                              <span className="text-muted-foreground font-medium">Título (Referral):</span>{' '}
+                              <span className="text-foreground">{validationResult.referral_headline}</span>
+                            </div>
+                          )}
+
+                          {validationResult.referral_body && (
+                            <div className="sm:col-span-2">
+                              <span className="text-muted-foreground font-medium">Texto do Criativo:</span>{' '}
+                              <span className="text-foreground">{validationResult.referral_body}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {validationResult.warning && (
+                          <p className="text-amber-400 dark:text-amber-300 font-medium pt-1 border-t border-border/30">
+                            ⚠️ {validationResult.warning}
+                          </p>
+                        )}
+
+                        <p
+                          className={`pt-1 text-[11px] font-medium border-t border-border/30 ${
+                            validationResult.confirmed ? 'text-emerald-400' : 'text-amber-300/90'
+                          }`}
+                        >
+                          {validationResult.confirmed
+                            ? '✓ Confira os dados acima para confirmar que este é o anúncio correto antes de salvar.'
+                            : validationResult.message ||
+                              'O formato do ID é válido, mas não foi possível confirmar os dados do anúncio no Meta.'}
                         </p>
-                      )}
-                      {validationResult.referral_headline && (
-                        <p>
-                          <span className="font-medium">Criativo/Título:</span> {validationResult.referral_headline}
-                        </p>
-                      )}
-                      {validationResult.warning && (
-                        <p className="text-amber-600 dark:text-amber-400 font-medium pt-0.5">
-                          ⚠️ {validationResult.warning}
-                        </p>
-                      )}
-                      <p className="pt-0.5 text-muted-foreground">{validationResult.message}</p>
-                    </div>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] leading-relaxed text-destructive/90 pl-5.5">
+                        <p>{validationResult.message}</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
