@@ -6,8 +6,12 @@ const BASE_CONFIG: AiConfig = {
   provider: 'openai',
   model: 'gpt-4o-mini',
   apiKey: 'sk-test',
-  enabled: true,
+  systemPrompt: null,
+  isActive: true,
   autoReplyEnabled: true,
+  autoReplyMaxPerConversation: 8,
+  handoffAgentId: null,
+  embeddingsApiKey: null,
 };
 
 describe('Conversational AI — Stage-Based Price Rules', () => {
