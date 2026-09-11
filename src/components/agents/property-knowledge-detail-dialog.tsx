@@ -258,7 +258,12 @@ export function PropertyKnowledgeDetailDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ad_source_id: newAdSourceId.trim(),
-          ad_name: newAdName.trim() || validationResult.campaign_name || null,
+          ad_name:
+            newAdName.trim() ||
+            validationResult.ad_name ||
+            validationResult.campaign_name ||
+            validationResult.referral_headline ||
+            null,
         }),
       })
 
@@ -562,10 +567,12 @@ export function PropertyKnowledgeDetailDialog({
                             </span>
                           </div>
 
-                          {validationResult.ad_name && (
+                          {(validationResult.ad_name || newAdName.trim()) && (
                             <div>
-                              <span className="text-muted-foreground font-medium">Título / Anúncio:</span>{' '}
-                              <span className="text-foreground font-medium">{validationResult.ad_name}</span>
+                              <span className="text-muted-foreground font-medium">Identificação / Anúncio:</span>{' '}
+                              <span className="text-foreground font-medium">
+                                {validationResult.ad_name || newAdName.trim()}
+                              </span>
                             </div>
                           )}
 
@@ -585,7 +592,7 @@ export function PropertyKnowledgeDetailDialog({
 
                           {validationResult.referral_headline && !validationResult.ad_name && (
                             <div>
-                              <span className="text-muted-foreground font-medium">Título (Referral):</span>{' '}
+                              <span className="text-muted-foreground font-medium">Título (Criativo):</span>{' '}
                               <span className="text-foreground">{validationResult.referral_headline}</span>
                             </div>
                           )}
@@ -694,13 +701,17 @@ export function PropertyKnowledgeDetailDialog({
                 {adMappings.map((ad) => (
                   <div
                     key={ad.id}
-                    className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-xs gap-2"
+                    className="flex items-center justify-between rounded-lg border border-border bg-background/80 hover:bg-background px-3 py-2 text-xs gap-2 transition-colors"
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <Tag className="h-3.5 w-3.5 text-primary shrink-0" />
-                      <span className="font-mono font-medium text-foreground truncate">{ad.ad_source_id}</span>
-                      {ad.ad_name && (
-                        <span className="truncate text-muted-foreground">({ad.ad_name})</span>
+                      <span className="font-mono font-semibold text-foreground shrink-0">{ad.ad_source_id}</span>
+                      {ad.ad_name ? (
+                        <span className="truncate text-foreground font-medium bg-muted/60 px-2 py-0.5 rounded border border-border/50 text-[11px]">
+                          {ad.ad_name}
+                        </span>
+                      ) : (
+                        <span className="truncate text-muted-foreground italic text-[11px]">(Sem identificação)</span>
                       )}
                     </div>
                     <Button
