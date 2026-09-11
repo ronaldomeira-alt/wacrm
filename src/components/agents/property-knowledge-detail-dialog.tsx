@@ -227,10 +227,21 @@ export function PropertyKnowledgeDetailDialog({
 
       setValidationResult(data)
       if (data.valid) {
+        // Auto-fill input field if empty and we found a name/campaign/headline
+        const detectedName =
+          data.ad_name ||
+          data.campaign_name ||
+          data.referral_headline ||
+          data.adset_name ||
+          ''
+        if (detectedName && !newAdName.trim()) {
+          setNewAdName(detectedName)
+        }
+
         if (data.confirmed) {
           toast.success('Anúncio identificado com sucesso!')
         } else {
-          toast.info('Formato do ID validado.')
+          toast.success('Formato do ID validado!')
         }
       } else {
         toast.error(data.message || 'ID do anúncio inválido.')
@@ -513,41 +524,32 @@ export function PropertyKnowledgeDetailDialog({
                 {validationResult && (
                   <div
                     className={`rounded-lg p-3 text-xs space-y-2 transition-all border ${
-                      !validationResult.valid
-                        ? 'border-destructive/30 bg-destructive/10 text-destructive'
-                        : validationResult.confirmed
-                          ? 'border-emerald-500/40 bg-emerald-950/20 dark:bg-emerald-950/40 text-emerald-300'
-                          : 'border-amber-500/40 bg-amber-950/20 dark:bg-amber-950/30 text-amber-200'
+                      validationResult.valid
+                        ? 'border-emerald-500/40 bg-emerald-950/30 dark:bg-emerald-950/50 text-emerald-300'
+                        : 'border-destructive/30 bg-destructive/10 text-destructive'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 font-semibold">
-                        {!validationResult.valid ? (
-                          <>
-                            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-                            <span className="text-destructive font-medium">Não foi possível validar este anúncio</span>
-                          </>
-                        ) : validationResult.confirmed ? (
+                        {validationResult.valid ? (
                           <>
                             <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
-                            <span className="text-emerald-400 font-medium">Anúncio identificado</span>
+                            <span className="text-emerald-400 font-medium">
+                              {validationResult.confirmed
+                                ? 'Anúncio identificado com sucesso'
+                                : 'Anúncio validado (Formato correto)'}
+                            </span>
                           </>
                         ) : (
                           <>
-                            <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
-                            <span className="text-amber-300 font-medium">ID reconhecido (Formato válido)</span>
+                            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+                            <span className="text-destructive font-medium">Não foi possível validar este anúncio</span>
                           </>
                         )}
                       </div>
 
                       {validationResult.valid && (
-                        <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium ${
-                            validationResult.confirmed
-                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                          }`}
-                        >
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                           {validationResult.source === 'meta_api'
                             ? 'Meta Ads API'
                             : validationResult.source === 'inbound_leads'
@@ -558,11 +560,11 @@ export function PropertyKnowledgeDetailDialog({
                     </div>
 
                     {validationResult.valid ? (
-                      <div className="rounded-md bg-black/20 dark:bg-black/40 border border-border/40 p-2.5 space-y-1.5 text-[11px] leading-relaxed">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+                      <div className="rounded-md bg-black/30 dark:bg-black/50 border border-emerald-500/20 p-2.5 space-y-1.5 text-[11px] leading-relaxed">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5">
                           <div>
                             <span className="text-muted-foreground font-medium">ID do Anúncio:</span>{' '}
-                            <span className="font-mono text-foreground font-semibold">
+                            <span className="font-mono text-emerald-300 font-semibold">
                               {validationResult.ad_source_id || newAdSourceId}
                             </span>
                           </div>
@@ -611,15 +613,10 @@ export function PropertyKnowledgeDetailDialog({
                           </p>
                         )}
 
-                        <p
-                          className={`pt-1 text-[11px] font-medium border-t border-border/30 ${
-                            validationResult.confirmed ? 'text-emerald-400' : 'text-amber-300/90'
-                          }`}
-                        >
+                        <p className="pt-1 text-[11px] font-medium border-t border-emerald-500/20 text-emerald-400">
                           {validationResult.confirmed
                             ? '✓ Confira os dados acima para confirmar que este é o anúncio correto antes de salvar.'
-                            : validationResult.message ||
-                              'O formato do ID é válido, mas não foi possível confirmar os dados do anúncio no Meta.'}
+                            : '✓ Formato do ID validado. Digite o nome da campanha acima para fácil identificação e clique em Salvar Vínculo.'}
                         </p>
                       </div>
                     ) : (
