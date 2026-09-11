@@ -358,7 +358,11 @@ export function PropertyKnowledgeDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-full sm:max-w-2xl md:max-w-4xl h-[calc(100dvh-2rem)] sm:h-[640px] max-h-[90dvh] sm:max-h-[90vh] flex flex-col gap-0 overflow-hidden p-0">
+      {/* 50% larger than the original sm:max-w-2xl(672px)/md:max-w-4xl(896px)/h-[640px] —
+          arbitrary values instead of jumping named Tailwind steps so the increase is
+          exactly proportional. Still safely clamped on small screens by the Dialog
+          primitive's own `max-w-[calc(100%-2rem)]` base and by `max-h-[90vh]` here. */}
+      <DialogContent className="w-full sm:max-w-[63rem] md:max-w-[84rem] h-[calc(100dvh-2rem)] sm:h-[960px] max-h-[90dvh] sm:max-h-[90vh] flex flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 gap-1 border-b border-border px-4 py-4 sm:px-6">
           <div className="flex items-center justify-between gap-2 pr-8">
             <div className="flex items-center gap-2 min-w-0">
