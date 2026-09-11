@@ -137,6 +137,7 @@ export async function POST(request: Request) {
       draft: turnResult.responseText,
       handoff: turnResult.handoff,
       decision: turnResult.decision,
+      media: turnResult.validatedMediaToSend || [],
     })
   } catch (err) {
     if (err instanceof AiError) {

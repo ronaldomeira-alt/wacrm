@@ -50,6 +50,7 @@ export async function POST(request: Request, { params }: Params) {
     const fileName = typeof body?.file_name === 'string' ? body.file_name.trim() : ''
     const fileSize = typeof body?.file_size === 'number' ? body.file_size : null
     const contentType = typeof body?.content_type === 'string' ? body.content_type : null
+    const description = typeof body?.description === 'string' ? body.description.trim() || null : null
 
     if (!storagePath || !fileName) {
       return NextResponse.json(
@@ -83,8 +84,10 @@ export async function POST(request: Request, { params }: Params) {
         file_name: fileName,
         file_size: fileSize,
         content_type: contentType,
+        description: description,
         is_cover: !count,
         position: count ?? 0,
+        updated_at: new Date().toISOString(),
       })
       .select()
       .single()

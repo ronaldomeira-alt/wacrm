@@ -56,6 +56,8 @@ interface TurnDiagnostic {
   retrievedKnowledgeCount?: number;
   retrievedKnowledge?: string[];
   propertyInfo?: { id: string; name: string; stage?: string | null } | null;
+  media?: Array<{ mediaId: string; propertyId: string; publicUrl: string; caption: string | null; fileName: string }>;
+  availableMedia?: Array<{ id: string; type: string; description: string | null; file_name: string }>;
   businessHoursContext?: { isBusinessHours: boolean; startHour: string; endHour: string; instructionForModel: string };
   systemPrompt?: string;
   usage?: AiUsage | null;
@@ -254,6 +256,8 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           propertyInfo: data.propertyInfo,
           businessHoursContext: data.businessHoursContext,
           systemPrompt: data.systemPrompt,
+          media: data.media,
+          availableMedia: data.availableMedia,
           usage: data.usage,
           latencyMs: data.latencyMs,
           model: data.model,
@@ -483,6 +487,30 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                       : 'rounded-bl-sm bg-muted/80 text-foreground border border-border/50',
                   )}
                 >
+                  {t.diagnostic?.media && t.diagnostic.media.length > 0 && (
+                    <div className="mb-2.5 flex flex-wrap gap-2">
+                      {t.diagnostic.media.map((m, idx) => (
+                        <div
+                          key={idx}
+                          className="group/img relative rounded-lg overflow-hidden border border-border bg-card shadow-2xs max-w-[180px]"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={m.publicUrl}
+                            alt={m.caption || m.fileName}
+                            className="h-28 w-full object-cover"
+                            loading="lazy"
+                          />
+                          {m.caption && (
+                            <p className="p-1.5 text-[10.5px] leading-tight text-foreground bg-muted/90 font-medium">
+                              {m.caption}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {t.content && <p className="whitespace-pre-wrap leading-relaxed">{t.content}</p>}
 
                   {t.role === 'assistant' && (
@@ -499,6 +527,12 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                               <ShieldCheck className="mr-1 h-3 w-3" />
                               Território Livre
                             </Badge>
+                          )}
+
+                          {t.diagnostic?.media && t.diagnostic.media.length > 0 && (
+                            <span className="text-primary font-medium text-[10px] bg-primary/10 px-1.5 py-0.5 rounded border border-primary/20">
+                              📷 {t.diagnostic.media.length} foto(s) enviada(s)
+                            </span>
                           )}
 
                           {typeof t.diagnostic?.retrievedKnowledgeCount === 'number' && t.diagnostic.retrievedKnowledgeCount > 0 && (

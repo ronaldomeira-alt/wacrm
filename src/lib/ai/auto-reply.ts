@@ -3,7 +3,7 @@ import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { executeConversationalTurn } from './conversation-engine'
 import { logAiUsage } from './usage'
-import { engineSendText } from '@/lib/flows/meta-send'
+import { engineSendMedia, engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { sendPushToAccount } from '@/lib/push/send'
 import { resolvePropertyForConversation } from './property-resolution'
@@ -210,7 +210,26 @@ export async function dispatchInboundToAiReply(
     }
     if (claimed !== true) return // Lost the slot race
 
-    // 10. SEND TO META CLOUD API
+    // 10. SEND MEDIA & TEXT TO META CLOUD API
+    if (turnResult.validatedMediaToSend && turnResult.validatedMediaToSend.length > 0) {
+      for (const mediaItem of turnResult.validatedMediaToSend) {
+        try {
+          await engineSendMedia({
+            accountId,
+            userId: configOwnerUserId,
+            conversationId,
+            contactId,
+            kind: 'image',
+            link: mediaItem.publicUrl,
+            caption: mediaItem.caption || undefined,
+            aiGenerated: true,
+          })
+        } catch (mediaSendErr) {
+          console.error(`[ai auto-reply] Failed to send media ${mediaItem.mediaId}:`, mediaSendErr)
+        }
+      }
+    }
+
     if (turnResult.responseText && turnResult.responseText.trim().length > 0) {
       await engineSendText({
         accountId,

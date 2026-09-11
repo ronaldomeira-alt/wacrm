@@ -167,16 +167,18 @@ interface SendMediaEngineArgs {
   caption?: string
   /** Document-only; ignored by Meta for image/video. */
   filename?: string
+  /** Marks the persisted message row ai_generated = true when sent by AI */
+  aiGenerated?: boolean
 }
 
 /**
- * Send an image / video / document from the Flows engine.
+ * Send an image / video / document from the Flows engine or AI auto-reply.
  *
- * Used by the runner's `send_media` node. Auto-advances after the
- * send lands (same suspend semantics as send_message). Same
- * phone-variant retry + DB persistence as the text/interactive
- * senders; persists the outgoing message with `content_type` matching
- * the media kind so the inbox renders the right preview.
+ * Used by the runner's `send_media` node and AI Clara media actions.
+ * Auto-advances after the send lands. Same phone-variant retry + DB
+ * persistence as the text/interactive senders; persists the outgoing
+ * message with `content_type` matching the media kind and `media_url`
+ * matching the public link so the inbox renders the right preview.
  */
 export async function engineSendMedia(
   args: SendMediaEngineArgs,
@@ -254,8 +256,10 @@ export async function engineSendMedia(
     sender_type: 'bot',
     content_type: args.kind,
     content_text: args.caption ?? null,
+    media_url: args.link,
     message_id: waMessageId,
     status: 'sent',
+    ai_generated: args.aiGenerated ?? false,
   })
   if (msgErr) {
     throw new Error(`sent to Meta but DB insert failed: ${msgErr.message}`)

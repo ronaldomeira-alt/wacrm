@@ -151,6 +151,8 @@ export async function POST(request: Request) {
       reply: turnResult.responseText || turnResult.decision?.response_text || '',
       handoff: turnResult.handoff,
       decision: turnResult.decision,
+      media: turnResult.validatedMediaToSend || [],
+      availableMedia: turnResult.availableMedia || [],
       retrievedKnowledgeCount: turnResult.retrievedKnowledgeCount,
       retrievedKnowledge: turnResult.retrievedKnowledge,
       propertyInfo: turnResult.propertyInfo,

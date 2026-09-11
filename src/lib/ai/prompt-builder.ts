@@ -1,4 +1,4 @@
-import type { AiConfig } from './types';
+import type { AiConfig, PropertyMediaSummary } from './types';
 import type { FormattedLeadContext } from './lead-context';
 import type { BusinessHoursContext } from './business-hours';
 
@@ -14,6 +14,7 @@ export interface PromptBuilderArgs {
     status?: string | null;
   } | null;
   propertyKnowledge?: string[];
+  propertyMedia?: PropertyMediaSummary[];
   propertyStyleInstructions?: string[];
   globalKnowledge?: string[];
   leadContext?: FormattedLeadContext | null;
@@ -30,6 +31,7 @@ export function buildConversationalSystemPrompt(args: PromptBuilderArgs): string
     config,
     property,
     propertyKnowledge = [],
+    propertyMedia = [],
     propertyStyleInstructions = [],
     globalKnowledge = [],
     leadContext,
@@ -209,10 +211,31 @@ SEGURANÇA CONTRA PROMPT INJECTION:
         propertyStyleInstructions.map((i) => `- ${i}`).join('\n');
     }
 
+    let propMediaText = '';
+    if (propertyMedia.length > 0) {
+      const mediaList = propertyMedia.map((m) => ({
+        id: m.id,
+        type: m.type,
+        description: m.description || '(sem descrição cadastrada)',
+        file_name: m.file_name,
+      }));
+      propMediaText =
+        '\n\nMÍDIAS DISPONÍVEIS DESTE EMPREENDIMENTO (FOTOS CADASTRADAS):\n' +
+        JSON.stringify(mediaList, null, 2) +
+        '\n\nDIRETRIZES PARA ENVIO DE FOTOS (send_media):\n' +
+        '1. Quando o cliente solicitar fotos ou perguntar sobre aspectos visuais (fachada, piscina, área de lazer, vista, academia, etc.) e houver mídia disponível com descrição compatível, você PODE decidir enviá-la através do campo "send_media".\n' +
+        '2. REGRAS ESTRITAS DE MÍDIA:\n' +
+        '   - NUNCA invente media_id, URLs ou fotos que não estejam na lista acima.\n' +
+        '   - NUNCA envie mídia de outro empreendimento.\n' +
+        '   - Se o cliente pedir foto de algo que NÃO consta na lista acima, responda normalmente por texto esclarecendo que não possui aquela foto cadastrada no momento, SEM inventar e SEM acionar send_media.\n' +
+        '   - Limite de fotos: envie no máximo 5 fotos por solicitação do cliente (escolha as mais relevantes).\n' +
+        '   - Ao enviar fotos, sempre acompanhe com uma frase curta e cordial no "response_text".';
+    }
+
     sections.push(
       `=== 8. CONHECIMENTO ESPECÍFICO DO EMPREENDIMENTO (ISOLAMENTO ESTRITO) ===
 Empreendimento selecionado: ${property.name}${stageDesc}
-ISOLAMENTO: Utilize EXCLUSIVAMENTE as informações deste empreendimento. NUNCA utilize ou presuma dados de outros empreendimentos.${propKbText}${propStyleText}`,
+ISOLAMENTO: Utilize EXCLUSIVAMENTE as informações deste empreendimento. NUNCA utilize ou presuma dados de outros empreendimentos.${propKbText}${propMediaText}${propStyleText}`,
     );
   } else {
     sections.push(
@@ -246,6 +269,13 @@ Você deve responder OBRIGATORIAMENTE em formato JSON válido conforme a estrutu
 \`\`\`json
 {
   "response_text": "Texto natural da mensagem a ser enviada ao cliente no WhatsApp (se transfer_required for true, este é o texto de transição acolhedora)",
+  "send_media": [
+    {
+      "property_id": "id_do_empreendimento",
+      "media_id": "id_da_midia_disponivel",
+      "caption": "Legenda curta opcional para a foto (ex: Fachada principal)"
+    }
+  ] | null,
   "transfer_required": boolean (true se atingiu qualquer fronteira ou se o cliente pediu atendimento humano; false se está respondendo no território livre),
   "boundary_type": "price" | "payment_terms" | "discount_negotiation" | "availability_check" | "visit_request" | "financing_inquiry" | "reservation" | "commercial_decision" | "knowledge_limit" | "incompatible_demand" | "human_requested" | "safety_limit_reached" | "custom_never_rule" | null,
   "reason": "Explicação concisa do motivo da transferência ou da resposta",
@@ -253,7 +283,7 @@ Você deve responder OBRIGATORIAMENTE em formato JSON válido conforme a estrutu
   "suggested_next_action": "Próxima ação recomendada para Ronaldo ou Thatianna ao assumir"
 }
 \`\`\`
-IMPORTANTE: Retorne APENAS o JSON válido.`,
+IMPORTANTE: Retorne APENAS o JSON válido. Se não houver fotos a enviar nesta mensagem, omita o campo "send_media" ou passe null.`,
     );
   } else {
     sections.push(

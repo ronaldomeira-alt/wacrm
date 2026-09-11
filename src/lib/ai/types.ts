@@ -62,6 +62,23 @@ export type BoundaryType =
   | 'custom_never_rule'
   | null
 
+export interface AiMediaSendAction {
+  property_id?: string
+  media_id: string
+  caption?: string | null
+}
+
+export interface PropertyMediaSummary {
+  id: string
+  type: 'image' | 'video'
+  description: string | null
+  file_name: string
+  is_cover: boolean
+  url?: string
+}
+
+export const MAX_AI_MEDIA_PER_TURN = 5
+
 export interface AiDecision {
   response_text: string
   transfer_required: boolean
@@ -69,6 +86,7 @@ export interface AiDecision {
   reason: string | null
   context_summary: string | null
   suggested_next_action: string | null
+  send_media?: AiMediaSendAction[] | null
 }
 
 /** A single conversation turn in the shape both providers accept. */

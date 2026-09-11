@@ -1,10 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type {
-  AiConfig,
-  AiDecision,
-  AiUsage,
-  BoundaryType,
-  ChatMessage,
+import {
+  MAX_AI_MEDIA_PER_TURN,
+  type AiConfig,
+  type AiDecision,
+  type AiMediaSendAction,
+  type AiUsage,
+  type BoundaryType,
+  type ChatMessage,
+  type PropertyMediaSummary,
 } from './types';
 import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults';
 import { generateOpenAi } from './providers/openai';
@@ -14,6 +17,11 @@ import { latestUserMessage } from './query';
 import { getLeadContext, type FormattedLeadContext } from './lead-context';
 import { getBusinessHoursContext, type BusinessHoursContext } from './business-hours';
 import { buildConversationalSystemPrompt } from './prompt-builder';
+import {
+  getAvailablePropertyMedia,
+  validateAndResolveMediaToSend,
+  type ResolvedMediaToSend,
+} from './property-media-service';
 import { STAGE_LABELS, type PropertyStage } from '@/types';
 
 export interface ConversationalTurnArgs {
@@ -40,6 +48,8 @@ export interface ConversationalTurnResult {
   retrievedKnowledge: string[];
   systemPrompt: string;
   propertyInfo: { id: string; name: string; stage?: string | null; status?: string | null } | null;
+  availableMedia: PropertyMediaSummary[];
+  validatedMediaToSend: ResolvedMediaToSend[];
   businessHoursContext: BusinessHoursContext;
   leadContext: FormattedLeadContext | null;
 }
@@ -156,6 +166,60 @@ export function parseStructuredDecision(rawText: string): AiDecision {
               ? rec.proxima_acao.trim()
               : null;
 
+      const rawMedia =
+        rec.send_media ??
+        rec.sendMedia ??
+        rec.send_property_media ??
+        rec.sendPropertyMedia ??
+        rec.media ??
+        null;
+
+      let send_media: AiMediaSendAction[] | null = null;
+      if (Array.isArray(rawMedia)) {
+        send_media = rawMedia
+          .filter((m): m is Record<string, unknown> => Boolean(m && typeof m === 'object'))
+          .map((m) => ({
+            property_id: typeof m.property_id === 'string' ? m.property_id : undefined,
+            media_id:
+              typeof m.media_id === 'string'
+                ? m.media_id.trim()
+                : typeof m.id === 'string'
+                  ? m.id.trim()
+                  : '',
+            caption:
+              typeof m.caption === 'string'
+                ? m.caption.trim()
+                : typeof m.description === 'string'
+                  ? m.description.trim()
+                  : null,
+          }))
+          .filter((m) => Boolean(m.media_id))
+          .slice(0, MAX_AI_MEDIA_PER_TURN);
+        if (send_media.length === 0) send_media = null;
+      } else if (rawMedia && typeof rawMedia === 'object') {
+        const m = rawMedia as Record<string, unknown>;
+        const media_id =
+          typeof m.media_id === 'string'
+            ? m.media_id.trim()
+            : typeof m.id === 'string'
+              ? m.id.trim()
+              : '';
+        if (media_id) {
+          send_media = [
+            {
+              property_id: typeof m.property_id === 'string' ? m.property_id : undefined,
+              media_id,
+              caption:
+                typeof m.caption === 'string'
+                  ? m.caption.trim()
+                  : typeof m.description === 'string'
+                    ? m.description.trim()
+                    : null,
+            },
+          ];
+        }
+      }
+
       return {
         response_text:
           response_text ||
@@ -167,6 +231,7 @@ export function parseStructuredDecision(rawText: string): AiDecision {
         reason,
         context_summary,
         suggested_next_action,
+        send_media,
       };
     }
   } catch {
@@ -244,23 +309,27 @@ export async function executeConversationalTurn(
       retrievedKnowledge: [],
       systemPrompt: 'System prompt omitted for safety limit early-out.',
       propertyInfo: null,
+      availableMedia: [],
+      validatedMediaToSend: [],
       businessHoursContext: businessHours,
       leadContext: null,
     };
   }
 
-  // 2. Load Property Details if propertyId is provided
+  // 2. Load Property Details & Media if propertyId is provided
   let propertyInfo: { id: string; name: string; stage?: string | null; status?: string | null } | null = null;
   let propertyStyleInstructions: string[] = [];
+  let availableMedia: PropertyMediaSummary[] = [];
   if (propertyId) {
     try {
-      const [propRes, ctxRes] = await Promise.all([
+      const [propRes, ctxRes, mediaList] = await Promise.all([
         db.from('properties').select('id, name, status').eq('id', propertyId).maybeSingle(),
         db
           .from('property_ai_contexts')
           .select('stage, response_style_instructions')
           .eq('property_id', propertyId)
           .maybeSingle(),
+        getAvailablePropertyMedia(db, accountId, propertyId),
       ]);
 
       if (propRes.data) {
@@ -275,6 +344,7 @@ export async function executeConversationalTurn(
       propertyStyleInstructions = Array.isArray(ctxRes.data?.response_style_instructions)
         ? ctxRes.data.response_style_instructions
         : [];
+      availableMedia = mediaList;
     } catch (err) {
       console.error('[conversation engine] error loading property info:', err);
     }
@@ -317,6 +387,7 @@ export async function executeConversationalTurn(
     mode: mode || 'auto_reply',
     property: propertyInfo,
     propertyKnowledge: propertyId ? knowledgeResult.propertyChunks : [],
+    propertyMedia: availableMedia,
     propertyStyleInstructions: propertyId ? propertyStyleInstructions : [],
     globalKnowledge: knowledgeResult.globalChunks,
     leadContext,
@@ -342,6 +413,14 @@ export async function executeConversationalTurn(
   // 7. Parse Decision
   const decision = parseStructuredDecision(rawResult.text);
 
+  // 8. Validate and Resolve any media items requested by the model
+  const validatedMediaToSend = await validateAndResolveMediaToSend(
+    db,
+    accountId,
+    propertyId || null,
+    decision.send_media,
+  );
+
   return {
     responseText: decision.response_text,
     handoff: decision.transfer_required,
@@ -351,6 +430,8 @@ export async function executeConversationalTurn(
     retrievedKnowledge: knowledgeResult.allChunks,
     systemPrompt,
     propertyInfo,
+    availableMedia,
+    validatedMediaToSend,
     businessHoursContext: businessHours,
     leadContext,
   };

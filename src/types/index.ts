@@ -267,10 +267,14 @@ export interface PropertyImage {
   file_name: string;
   file_size: number | null;
   content_type: string | null;
+  description?: string | null;
   is_cover: boolean;
   position: number;
   created_at: string;
+  updated_at?: string;
 }
+
+export type PropertyMedia = PropertyImage;
 
 export type AiKnowledgeSourceType = 'text' | 'pdf_book' | 'subjective_text';
 

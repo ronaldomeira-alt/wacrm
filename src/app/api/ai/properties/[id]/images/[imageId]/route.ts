@@ -7,10 +7,10 @@ type Params = { params: Promise<{ id: string; imageId: string }> }
 /**
  * PATCH /api/ai/properties/[id]/images/[imageId] (agent+)
  *
- * Only supported change today is `{ is_cover: true }` — sets this image
- * as the property's cover and unsets any previous one (the DB has a
- * partial unique index enforcing exactly one cover per property, so the
- * unset must happen first or the insert-side of this update conflicts).
+ * Supports:
+ * - `{ is_cover: true }`: sets this image as property's cover and unsets any previous one.
+ * - `{ description: string | null }`: updates the media description.
+ * - `{ position: number }`: updates display order.
  */
 export async function PATCH(request: Request, { params }: Params) {
   try {
@@ -18,34 +18,56 @@ export async function PATCH(request: Request, { params }: Params) {
     const { id: propertyId, imageId } = await params
 
     const body = await request.json().catch(() => null)
-    if (body?.is_cover !== true) {
-      return NextResponse.json({ error: 'Only { is_cover: true } is supported' }, { status: 400 })
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     }
 
-    const { error: clearErr } = await supabase
-      .from('property_images')
-      .update({ is_cover: false })
-      .eq('account_id', accountId)
-      .eq('property_id', propertyId)
-      .eq('is_cover', true)
-
-    if (clearErr) {
-      console.error('[property/images] Error clearing previous cover:', clearErr)
-      return NextResponse.json({ error: 'Failed to update cover' }, { status: 500 })
+    const updates: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
     }
 
-    const { data: image, error: setErr } = await supabase
+    if (body.is_cover === true) {
+      const { error: clearErr } = await supabase
+        .from('property_images')
+        .update({ is_cover: false })
+        .eq('account_id', accountId)
+        .eq('property_id', propertyId)
+        .eq('is_cover', true)
+
+      if (clearErr) {
+        console.error('[property/images] Error clearing previous cover:', clearErr)
+        return NextResponse.json({ error: 'Failed to update cover' }, { status: 500 })
+      }
+      updates.is_cover = true
+    }
+
+    if ('description' in body) {
+      updates.description = typeof body.description === 'string' ? body.description.trim() || null : null
+    }
+
+    if (typeof body.position === 'number') {
+      updates.position = body.position
+    }
+
+    if (Object.keys(updates).length <= 1 && !('description' in body) && body.is_cover !== true) {
+      return NextResponse.json(
+        { error: 'Supported updates: { is_cover: true }, { description: string }, { position: number }' },
+        { status: 400 },
+      )
+    }
+
+    const { data: image, error: updateErr } = await supabase
       .from('property_images')
-      .update({ is_cover: true })
+      .update(updates)
       .eq('id', imageId)
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
       .select()
       .single()
 
-    if (setErr || !image) {
-      console.error('[property/images] Error setting cover:', setErr)
-      return NextResponse.json({ error: 'Image not found' }, { status: 404 })
+    if (updateErr || !image) {
+      console.error('[property/images] Error updating image:', updateErr)
+      return NextResponse.json({ error: 'Image not found or update failed' }, { status: 404 })
     }
 
     return NextResponse.json({ image })
