@@ -11,6 +11,7 @@ import {
   PROPERTY_MEDIA_BUCKET,
   buildMediaPath,
 } from '@/lib/storage/upload-media'
+import type { PropertyImage } from '@/types'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -166,7 +167,7 @@ export async function POST(request: Request, { params }: Params) {
       const position = count ?? 0
 
       // Attempt insert with all fields (schema v2 with description & updated_at)
-      let image: any = null
+      let image: PropertyImage | null = null
       const fullPayload = {
         account_id: accountId,
         property_id: propertyId,
@@ -249,7 +250,7 @@ export async function POST(request: Request, { params }: Params) {
     const isCover = !count || count === 0
     const position = count ?? 0
 
-    let image: any = null
+    let image: PropertyImage | null = null
     const fullPayload = {
       account_id: accountId,
       property_id: propertyId,
