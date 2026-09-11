@@ -138,11 +138,11 @@ export async function POST(request: Request, { params }: Params) {
       const normalizedFileName = `${baseNameWithoutExt}.${baseExt}`
       const storagePath = buildMediaPath(accountId, normalizedFileName)
 
-      // Upload normalized buffer to Supabase Storage via supabaseAdmin
+      // Upload normalized Blob to Supabase Storage via supabaseAdmin
       const admin = supabaseAdmin()
       const { error: uploadErr } = await admin.storage
         .from(PROPERTY_MEDIA_BUCKET)
-        .upload(storagePath, normalized.buffer, {
+        .upload(storagePath, normalized.blob, {
           contentType: normalized.contentType,
           cacheControl: '3600',
           upsert: true,

@@ -5,6 +5,7 @@ export const MAX_UPLOAD_INPUT_BYTES = 16 * 1024 * 1024 // 16 MB
 
 export interface NormalizeImageResult {
   buffer: Buffer
+  blob: Blob
   contentType: 'image/jpeg' | 'image/png'
   format: 'jpeg' | 'png'
   fileSize: number
@@ -71,7 +72,7 @@ export function isSupportedImageMime(mimeType?: string | null): boolean {
 }
 
 /**
- * Converts various buffer/typed array types to a standard Buffer.
+ * Converts various buffer/typed array types to a standard clean Node Buffer.
  */
 function toBuffer(input: Buffer | Uint8Array | ArrayBuffer): Buffer {
   if (Buffer.isBuffer(input)) return input
@@ -211,12 +212,27 @@ export async function normalizePropertyImage(
 
   // Final metadata read for accurate width/height
   const finalMeta = await sharp(currentBuffer).metadata()
+  const targetContentType = currentFormat === 'png' ? 'image/png' : 'image/jpeg'
+
+  // Construct a brand new detached ArrayBuffer / Uint8Array to eliminate any SharedArrayBuffer / buffer pool slicing issues in fetch/undici
+  const cleanArrayBuffer = new ArrayBuffer(currentBuffer.byteLength)
+  const cleanUint8 = new Uint8Array(cleanArrayBuffer)
+  cleanUint8.set(
+    new Uint8Array(
+      currentBuffer.buffer,
+      currentBuffer.byteOffset,
+      currentBuffer.byteLength,
+    ),
+  )
+  const cleanBuffer = Buffer.from(cleanArrayBuffer)
+  const cleanBlob = new Blob([cleanUint8], { type: targetContentType })
 
   return {
-    buffer: currentBuffer,
-    contentType: currentFormat === 'png' ? 'image/png' : 'image/jpeg',
+    buffer: cleanBuffer,
+    blob: cleanBlob,
+    contentType: targetContentType,
     format: currentFormat,
-    fileSize: currentBuffer.length,
+    fileSize: cleanBuffer.length,
     width: finalMeta.width ?? 0,
     height: finalMeta.height ?? 0,
     originalFormat,
