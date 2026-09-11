@@ -257,6 +257,21 @@ export interface PropertyWithAiContext extends Property {
   ai_context?: PropertyAiContext | null;
 }
 
+/** One uploaded photo/plan for a property's AI knowledge (migration
+ *  20260911201110) — the "Mídia" tab of the property knowledge modal. */
+export interface PropertyImage {
+  id: string;
+  account_id: string;
+  property_id: string;
+  storage_path: string;
+  file_name: string;
+  file_size: number | null;
+  content_type: string | null;
+  is_cover: boolean;
+  position: number;
+  created_at: string;
+}
+
 export type AiKnowledgeSourceType = 'text' | 'pdf_book' | 'subjective_text';
 
 export interface AiKnowledgeDocument {

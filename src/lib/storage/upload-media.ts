@@ -27,6 +27,14 @@ export const MEDIA_MAX_BYTES = 16 * 1024 * 1024;
 export const CHAT_MEDIA_BUCKET = "chat-media";
 
 /**
+ * Supabase Storage bucket holding property photos/plans shown in the
+ * property AI knowledge modal's "Mídia" tab (migration 20260911201110).
+ * Images only, 8 MB/file cap (see the bucket's own file_size_limit).
+ */
+export const PROPERTY_MEDIA_BUCKET = "property-media";
+export const PROPERTY_MEDIA_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
  * Per-kind upload ceilings that mirror Meta's WhatsApp Cloud API caps so
  * a file that the bucket would accept but Meta would reject is caught
  * client-side BEFORE upload — otherwise it lands in storage as an orphan

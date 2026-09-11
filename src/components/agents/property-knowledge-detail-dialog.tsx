@@ -16,9 +16,12 @@ import {
   AlertCircle,
   ShieldCheck,
   Search,
+  ImageIcon,
 } from 'lucide-react'
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor'
 import { ExpandableKnowledgeSection } from './expandable-knowledge-section'
+import { PropertyMediaGallery } from './property-media-gallery'
+import { cn } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -71,12 +74,23 @@ interface PropertyKnowledgeDetailDialogProps {
   onSaved: () => void
 }
 
+type DetailTab = 'geral' | 'saber' | 'regras' | 'midia' | 'anuncios'
+
+const TABS: { id: DetailTab; label: string; icon: typeof Building2 }[] = [
+  { id: 'geral', label: 'Geral', icon: Building2 },
+  { id: 'saber', label: 'Saber', icon: FileText },
+  { id: 'regras', label: 'Regras', icon: SlidersHorizontal },
+  { id: 'midia', label: 'Mídia', icon: ImageIcon },
+  { id: 'anuncios', label: 'Anúncios', icon: Megaphone },
+]
+
 export function PropertyKnowledgeDetailDialog({
   property,
   open,
   onOpenChange,
   onSaved,
 }: PropertyKnowledgeDetailDialogProps) {
+  const [activeTab, setActiveTab] = useState<DetailTab>('geral')
   const [name, setName] = useState('')
   const [stage, setStage] = useState<PropertyStage>('lancamento')
   const [bookSummary, setBookSummary] = useState('')
@@ -99,6 +113,7 @@ export function PropertyKnowledgeDetailDialog({
   // Sync state when property changes
   useEffect(() => {
     if (property) {
+      setActiveTab('geral')
       setName(property.name || '')
       setStage(property.ai_context?.stage || 'lancamento')
       setBookSummary(property.ai_context?.book_extracted_text || '')
@@ -343,9 +358,9 @@ export function PropertyKnowledgeDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-full sm:max-w-2xl md:max-w-3xl max-h-[90dvh] sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-6">
-        <DialogHeader className="space-y-1">
-          <div className="flex items-center justify-between gap-2">
+      <DialogContent className="w-full sm:max-w-2xl md:max-w-4xl h-[calc(100dvh-2rem)] sm:h-[640px] max-h-[90dvh] sm:max-h-[90vh] flex flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 gap-1 border-b border-border px-4 py-4 sm:px-6">
+          <div className="flex items-center justify-between gap-2 pr-8">
             <div className="flex items-center gap-2 min-w-0">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
                 <Building2 className="h-4 w-4" />
@@ -401,130 +416,167 @@ export function PropertyKnowledgeDetailDialog({
           </div>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
-          {/* Nome e Estágio */}
-          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
-            <div className="sm:col-span-7 space-y-1.5">
-              <Label htmlFor="edit-prop-name" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
-                Nome do Empreendimento
-              </Label>
-              <Input
-                id="edit-prop-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={saving || deleting}
-                className="h-9 text-sm"
-              />
-            </div>
-
-            <div className="sm:col-span-5 space-y-1.5">
-              <Label htmlFor="edit-prop-stage" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
-                Estágio do Empreendimento
-              </Label>
-              <Select
-                value={stage}
-                onValueChange={(val) => val && setStage(val as PropertyStage)}
-                disabled={saving || deleting}
+        {/* Mobile: horizontal scrollable tab strip (rail below is desktop-only) */}
+        <div className="flex sm:hidden shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {TABS.map((tab) => {
+            const Icon = tab.icon
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  'flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-3.5 text-xs font-medium transition-colors',
+                  activeTab === tab.id
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground active:bg-muted',
+                )}
               >
-                <SelectTrigger id="edit-prop-stage" className="w-full h-9 text-sm">
-                  <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(STAGE_LABELS).map(([k, label]) => (
-                    <SelectItem key={k} value={k} className="text-sm">
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+                <Icon className="h-3.5 w-3.5" />
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
 
-          {/* Ficha Técnica / Resumo do Book (Expandable & Compact) */}
-          <ExpandableKnowledgeSection
-            id="edit-book-summary"
-            title="Ficha Técnica / Resumo do Book Técnico"
-            icon={<FileText className="h-4 w-4" />}
-            subtitle="A IA usa estes dados técnicos para responder aos interessados sobre características, lazer, metragens e previsão da obra."
-            value={bookSummary}
-            onChange={setBookSummary}
-            placeholder="Cole aqui o resumo gerado pela IA ou a ficha técnica completa: localização exata, tipologias, metragens, quantidade de quartos/suítes, itens da área de lazer, acabamentos, diferenciais construtivos e previsão de entrega."
-            emptyPrompt="Nenhuma ficha técnica cadastrada para este empreendimento."
-            addButtonText="Adicionar Ficha Técnica"
-            disabled={saving || deleting}
-            rows={6}
-          />
+        <div className="flex flex-1 min-h-0">
+          {/* Desktop: vertical icon rail */}
+          <nav className="hidden sm:flex sm:w-20 md:w-[92px] shrink-0 flex-col items-center gap-1 border-r border-border bg-muted/30 py-4">
+            {TABS.map((tab) => {
+              const Icon = tab.icon
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={cn(
+                    'flex w-16 flex-col items-center gap-1 rounded-lg py-2.5 text-[10px] font-medium transition-colors',
+                    activeTab === tab.id
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                  )}
+                >
+                  <Icon className="h-[18px] w-[18px]" />
+                  {tab.label}
+                </button>
+              )
+            })}
+          </nav>
 
-          {/* Visão do Corretor / Dicas Práticas (Expandable & Compact) */}
-          <ExpandableKnowledgeSection
-            id="edit-subjective-knowledge"
-            title="Visão do Corretor / Dicas Práticas"
-            icon={<Sparkles className="h-4 w-4" />}
-            subtitle="Anotações e percepções comerciais consultadas exclusivamente no atendimento aos interessados neste empreendimento."
-            value={subjectiveKnowledge}
-            onChange={setSubjectiveKnowledge}
-            placeholder="Digite argumentos de venda, perfil do comprador ideal (investidor, família, veraneio), pontos fortes da região, dicas para quebrar objeções e orientações práticas para a IA."
-            emptyPrompt="Nenhuma visão do corretor cadastrada para este empreendimento."
-            addButtonText="Adicionar Visão do Corretor"
-            disabled={saving || deleting}
-            rows={4}
-          />
+          <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6">
+            {activeTab === 'geral' && (
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
+                <div className="sm:col-span-7 space-y-1.5">
+                  <Label htmlFor="edit-prop-name" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
+                    Nome do Empreendimento
+                  </Label>
+                  <Input
+                    id="edit-prop-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    disabled={saving || deleting}
+                    className="h-9 text-sm"
+                  />
+                </div>
 
-          {/* Exceções de Comportamento (100% Preserved) */}
-          <div className="rounded-xl border border-border/80 bg-card p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
-                <SlidersHorizontal className="h-4 w-4" />
+                <div className="sm:col-span-5 space-y-1.5">
+                  <Label htmlFor="edit-prop-stage" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
+                    Estágio do Empreendimento
+                  </Label>
+                  <Select
+                    value={stage}
+                    onValueChange={(val) => val && setStage(val as PropertyStage)}
+                    disabled={saving || deleting}
+                  >
+                    <SelectTrigger id="edit-prop-stage" className="w-full h-9 text-sm">
+                      <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(STAGE_LABELS).map(([k, label]) => (
+                        <SelectItem key={k} value={k} className="text-sm">
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <Label className="text-xs font-semibold text-foreground uppercase tracking-wide">
-                  Exceções de Comportamento
-                </Label>
-                <p className="text-[11px] text-muted-foreground">
+            )}
+
+            {activeTab === 'saber' && (
+              <div className="space-y-4">
+                {/* Ficha Técnica / Resumo do Book (Expandable & Compact) */}
+                <ExpandableKnowledgeSection
+                  id="edit-book-summary"
+                  title="Ficha Técnica / Resumo do Book Técnico"
+                  icon={<FileText className="h-4 w-4" />}
+                  subtitle="A IA usa estes dados técnicos para responder aos interessados sobre características, lazer, metragens e previsão da obra."
+                  value={bookSummary}
+                  onChange={setBookSummary}
+                  placeholder="Cole aqui o resumo gerado pela IA ou a ficha técnica completa: localização exata, tipologias, metragens, quantidade de quartos/suítes, itens da área de lazer, acabamentos, diferenciais construtivos e previsão de entrega."
+                  emptyPrompt="Nenhuma ficha técnica cadastrada para este empreendimento."
+                  addButtonText="Adicionar Ficha Técnica"
+                  disabled={saving || deleting}
+                  rows={6}
+                />
+
+                {/* Visão do Corretor / Dicas Práticas (Expandable & Compact) */}
+                <ExpandableKnowledgeSection
+                  id="edit-subjective-knowledge"
+                  title="Visão do Corretor / Dicas Práticas"
+                  icon={<Sparkles className="h-4 w-4" />}
+                  subtitle="Anotações e percepções comerciais consultadas exclusivamente no atendimento aos interessados neste empreendimento."
+                  value={subjectiveKnowledge}
+                  onChange={setSubjectiveKnowledge}
+                  placeholder="Digite argumentos de venda, perfil do comprador ideal (investidor, família, veraneio), pontos fortes da região, dicas para quebrar objeções e orientações práticas para a IA."
+                  emptyPrompt="Nenhuma visão do corretor cadastrada para este empreendimento."
+                  addButtonText="Adicionar Visão do Corretor"
+                  disabled={saving || deleting}
+                  rows={4}
+                />
+              </div>
+            )}
+
+            {activeTab === 'regras' && (
+              <div className="space-y-3">
+                <p className="text-[11px] text-muted-foreground leading-relaxed max-w-xl">
                   Ajustes específicos deste empreendimento que sobrepõem apenas as regras globais com as quais entram em conflito.
                 </p>
+
+                <ResponseStyleInstructionsEditor
+                  mode="property_exceptions"
+                  propertyName={property.name}
+                  instructions={styleInstructions}
+                  onAdd={async (text) => setStyleInstructions((prev) => [...prev, text])}
+                  onRemove={async (index) => setStyleInstructions((prev) => prev.filter((_, i) => i !== index))}
+                  onEdit={async (index, text) =>
+                    setStyleInstructions((prev) => prev.map((v, i) => (i === index ? text : v)))
+                  }
+                />
+
+                <p className="text-[11px] text-muted-foreground">
+                  As alterações feitas aqui são gravadas ao clicar em &quot;Salvar Conhecimento&quot; abaixo. Para efeito e teste imediatos em tempo real, você também pode ajustá-las pelo Playground.
+                </p>
               </div>
-            </div>
+            )}
 
-            <ResponseStyleInstructionsEditor
-              mode="property_exceptions"
-              propertyName={property.name}
-              instructions={styleInstructions}
-              onAdd={async (text) => setStyleInstructions((prev) => [...prev, text])}
-              onRemove={async (index) => setStyleInstructions((prev) => prev.filter((_, i) => i !== index))}
-              onEdit={async (index, text) =>
-                setStyleInstructions((prev) => prev.map((v, i) => (i === index ? text : v)))
-              }
-            />
+            {activeTab === 'midia' && (
+              <PropertyMediaGallery propertyId={property.id} disabled={saving || deleting} />
+            )}
 
-            <p className="text-[11px] text-muted-foreground">
-              As alterações feitas aqui são gravadas ao clicar em &quot;Salvar Conhecimento&quot; abaixo. Para efeito e teste imediatos em tempo real, você também pode ajustá-las pelo Playground.
-            </p>
-          </div>
-
-          {/* Anúncios CTWA Vinculados (Meta Ads) com Validação Prévia */}
-          <div className="rounded-xl border border-border/80 bg-card p-4 space-y-3">
+            {activeTab === 'anuncios' && (
+              <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
-                  <Megaphone className="h-4 w-4" />
-                </div>
-                <div>
-                  <Label className="text-xs font-semibold text-foreground">
-                    Anúncios CTWA Vinculados (Meta Ads)
-                  </Label>
-                  <p className="text-[11px] text-muted-foreground">
-                    Mapeamento determinístico de anúncios Click to WhatsApp.
-                  </p>
-                </div>
-              </div>
+              <p className="text-[11px] text-muted-foreground max-w-md">
+                Mapeamento determinístico de anúncios Click to WhatsApp (Meta Ads).
+              </p>
 
               {!showAddAd && (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1 text-xs"
+                  className="h-8 gap-1 text-xs shrink-0"
                   onClick={() => {
                     setShowAddAd(true)
                     setValidationResult(null)
@@ -571,12 +623,20 @@ export function PropertyKnowledgeDetailDialog({
                   </div>
                 </div>
 
-                {/* Validation Feedback Banner */}
+                {/* Validation Feedback Banner — theme tokens only: this app
+                    switches light/dark via `data-mode` on <html>, not a
+                    `.dark` class, so Tailwind's `dark:` variant never
+                    actually fires here (it's wired to `&:is(.dark *)` in
+                    globals.css) — a hardcoded `dark:*` class is dead code
+                    that silently leaves the LIGHT-mode value active in
+                    both modes. Every color below is mode-agnostic on
+                    purpose (opacity-based tints over the current surface,
+                    single mid-tone text colors) instead of relying on that. */}
                 {validationResult && (
                   <div
                     className={`rounded-lg p-3 text-xs space-y-2 transition-all border ${
                       validationResult.valid
-                        ? 'border-emerald-500/40 bg-emerald-950/30 dark:bg-emerald-950/50 text-emerald-300'
+                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600'
                         : 'border-destructive/30 bg-destructive/10 text-destructive'
                     }`}
                   >
@@ -584,8 +644,8 @@ export function PropertyKnowledgeDetailDialog({
                       <div className="flex items-center gap-1.5 font-semibold">
                         {validationResult.valid ? (
                           <>
-                            <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
-                            <span className="text-emerald-400 font-medium">
+                            <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
+                            <span className="text-emerald-600 font-medium">
                               {validationResult.confirmed
                                 ? 'Anúncio identificado com sucesso'
                                 : 'Anúncio validado (Formato correto)'}
@@ -600,7 +660,7 @@ export function PropertyKnowledgeDetailDialog({
                       </div>
 
                       {validationResult.valid && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-medium bg-emerald-500/15 text-emerald-600 border border-emerald-500/30">
                           {validationResult.source === 'meta_api'
                             ? 'Meta Ads API'
                             : validationResult.source === 'inbound_leads'
@@ -611,11 +671,11 @@ export function PropertyKnowledgeDetailDialog({
                     </div>
 
                     {validationResult.valid ? (
-                      <div className="rounded-md bg-black/30 dark:bg-black/50 border border-emerald-500/20 p-2.5 space-y-1.5 text-[11px] leading-relaxed">
+                      <div className="rounded-md bg-background/60 border border-emerald-500/20 p-2.5 space-y-1.5 text-[11px] leading-relaxed">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5">
                           <div>
                             <span className="text-muted-foreground font-medium">ID do Anúncio:</span>{' '}
-                            <span className="font-mono text-emerald-300 font-semibold">
+                            <span className="font-mono text-emerald-600 font-semibold">
                               {validationResult.ad_source_id || newAdSourceId}
                             </span>
                           </div>
@@ -659,12 +719,12 @@ export function PropertyKnowledgeDetailDialog({
                         </div>
 
                         {validationResult.warning && (
-                          <p className="text-amber-400 dark:text-amber-300 font-medium pt-1 border-t border-border/30">
+                          <p className="text-amber-600 font-medium pt-1 border-t border-border/30">
                             ⚠️ {validationResult.warning}
                           </p>
                         )}
 
-                        <p className="pt-1 text-[11px] font-medium border-t border-emerald-500/20 text-emerald-400">
+                        <p className="pt-1 text-[11px] font-medium border-t border-emerald-500/20 text-emerald-600">
                           {validationResult.confirmed
                             ? '✓ Confira os dados acima para confirmar que este é o anúncio correto antes de salvar.'
                             : '✓ Formato do ID validado. Digite o nome da campanha acima para fácil identificação e clique em Salvar Vínculo.'}
@@ -782,10 +842,12 @@ export function PropertyKnowledgeDetailDialog({
                 </div>
               )
             )}
+              </div>
+            )}
           </div>
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0 pt-2 flex items-center justify-between sm:justify-between w-full">
+        <DialogFooter className="mx-0 mb-0 shrink-0 gap-2 rounded-b-xl border-t bg-muted/30 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-4 sm:flex-row sm:justify-between">
           <Button
             type="button"
             variant="ghost"
