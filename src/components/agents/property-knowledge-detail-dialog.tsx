@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { toast } from 'sonner'
 import {
   Building2,
@@ -17,6 +17,14 @@ import {
   ShieldCheck,
   Search,
   ImageIcon,
+  Camera,
+  ChevronRight,
+  Info,
+  Clock,
+  Calendar,
+  User,
+  Star,
+  Check,
 } from 'lucide-react'
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor'
 import { ExpandableKnowledgeSection } from './expandable-knowledge-section'
@@ -41,7 +49,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { STAGE_LABELS, type PropertyWithAiContext, type PropertyStage } from '@/types'
+import { createClient } from '@/lib/supabase/client'
+import { PROPERTY_MEDIA_BUCKET } from '@/lib/storage/upload-media'
+import { STAGE_LABELS, type PropertyWithAiContext, type PropertyStage, type PropertyImage } from '@/types'
 export { STAGE_LABELS }
 
 interface AdMapping {
@@ -100,6 +110,12 @@ export function PropertyKnowledgeDetailDialog({
   const [deleting, setDeleting] = useState(false)
   const [promoting, setPromoting] = useState(false)
 
+  // Media list for Cover Photo & Stats
+  const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([])
+  const [loadingImages, setLoadingImages] = useState(false)
+  const [coverModalOpen, setCoverModalOpen] = useState(false)
+  const [settingCoverId, setSettingCoverId] = useState<string | null>(null)
+
   // CTWA Ad Mappings
   const [adMappings, setAdMappings] = useState<AdMapping[]>([])
   const [loadingAds, setLoadingAds] = useState(false)
@@ -109,6 +125,38 @@ export function PropertyKnowledgeDetailDialog({
   const [validatingAd, setValidatingAd] = useState(false)
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null)
   const [addingAd, setAddingAd] = useState(false)
+
+  const supabase = createClient()
+
+  const loadImages = useCallback(async (propId: string) => {
+    setLoadingImages(true)
+    try {
+      const res = await fetch(`/api/ai/properties/${propId}/images`)
+      if (res.ok) {
+        const data = await res.json()
+        setPropertyImages(data.images || [])
+      }
+    } catch (err) {
+      console.error('Failed to load property images:', err)
+    } finally {
+      setLoadingImages(false)
+    }
+  }, [])
+
+  const loadAdMappings = useCallback(async (propId: string) => {
+    setLoadingAds(true)
+    try {
+      const res = await fetch(`/api/ai/properties/${propId}/ads`)
+      if (res.ok) {
+        const data = await res.json()
+        setAdMappings(data.mappings || [])
+      }
+    } catch (err) {
+      console.error('Failed to load ad mappings:', err)
+    } finally {
+      setLoadingAds(false)
+    }
+  }, [])
 
   // Sync state when property changes
   useEffect(() => {
@@ -123,26 +171,120 @@ export function PropertyKnowledgeDetailDialog({
           ? property.ai_context.response_style_instructions
           : [],
       )
+      loadImages(property.id)
       loadAdMappings(property.id)
       setShowAddAd(false)
       setNewAdSourceId('')
       setNewAdName('')
       setValidationResult(null)
     }
+  }, [property, loadImages, loadAdMappings])
+
+  // When switching to 'midia' tab and back, reload images to keep cover & counts in sync
+  useEffect(() => {
+    if (property?.id && activeTab === 'geral') {
+      loadImages(property.id)
+    }
+  }, [activeTab, property?.id, loadImages])
+
+  // Cover Image computation
+  const coverImage = useMemo(() => {
+    return propertyImages.find((img) => img.is_cover) || propertyImages[0] || null
+  }, [propertyImages])
+
+  const publicImageUrl = useCallback(
+    (storagePath: string) =>
+      supabase.storage.from(PROPERTY_MEDIA_BUCKET).getPublicUrl(storagePath).data.publicUrl,
+    [supabase],
+  )
+
+  // Dynamic Metrics Calculation
+  const knowledgeCount = useMemo(() => {
+    let count = 0
+    if (bookSummary.trim().length > 0) count++
+    if (subjectiveKnowledge.trim().length > 0) count++
+    return count
+  }, [bookSummary, subjectiveKnowledge])
+
+  const rulesCount = useMemo(() => {
+    return styleInstructions.length
+  }, [styleInstructions])
+
+  const mediaCount = useMemo(() => {
+    return propertyImages.length
+  }, [propertyImages])
+
+  const adsCount = useMemo(() => {
+    return adMappings.length
+  }, [adMappings])
+
+  // AI Configuration Status
+  const aiStatus = useMemo(() => {
+    const hasKnowledge = knowledgeCount > 0
+    const hasMedia = mediaCount > 0
+    const hasRules = rulesCount > 0
+
+    if (hasKnowledge && (hasMedia || hasRules)) {
+      return {
+        label: 'Configurado',
+        description: 'Este empreendimento está pronto para ser utilizado pela Clara.',
+        color: 'emerald',
+      }
+    }
+    if (hasKnowledge) {
+      return {
+        label: 'Configuração parcial',
+        description: 'Conhecimento cadastrado. Adicione mídias ou regras para enriquecer o atendimento.',
+        color: 'amber',
+      }
+    }
+    return {
+      label: 'Requer atenção',
+      description: 'Cadastre a ficha técnica ou visão do corretor na aba Saber.',
+      color: 'rose',
+    }
+  }, [knowledgeCount, mediaCount, rulesCount])
+
+  // Last Update display
+  const lastUpdatedDisplay = useMemo(() => {
+    const rawDate = property?.ai_context?.updated_at || property?.updated_at || property?.created_at
+    if (!rawDate) return null
+    try {
+      const d = new Date(rawDate)
+      return {
+        dateStr: d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }),
+        timeStr: d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      }
+    } catch {
+      return null
+    }
   }, [property])
 
-  const loadAdMappings = async (propId: string) => {
-    setLoadingAds(true)
+  const handleSelectCover = async (image: PropertyImage) => {
+    if (!property) return
+    setSettingCoverId(image.id)
     try {
-      const res = await fetch(`/api/ai/properties/${propId}/ads`)
-      if (res.ok) {
-        const data = await res.json()
-        setAdMappings(data.mappings || [])
+      const res = await fetch(`/api/ai/properties/${property.id}/images/${image.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_cover: true }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Falha ao atualizar foto de capa')
       }
-    } catch (err) {
-      console.error('Failed to load ad mappings:', err)
+      toast.success('Foto de capa atualizada!')
+      setPropertyImages((prev) =>
+        prev.map((img) => ({
+          ...img,
+          is_cover: img.id === image.id,
+        })),
+      )
+      setCoverModalOpen(false)
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao definir capa')
     } finally {
-      setLoadingAds(false)
+      setSettingCoverId(null)
     }
   }
 
@@ -358,10 +500,6 @@ export function PropertyKnowledgeDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* 50% larger than the original sm:max-w-2xl(672px)/md:max-w-4xl(896px)/h-[640px] —
-          arbitrary values instead of jumping named Tailwind steps so the increase is
-          exactly proportional. Still safely clamped on small screens by the Dialog
-          primitive's own `max-w-[calc(100%-2rem)]` base and by `max-h-[90vh]` here. */}
       <DialogContent className="w-full sm:max-w-[63rem] md:max-w-[84rem] h-[calc(100dvh-2rem)] sm:h-[960px] max-h-[90dvh] sm:max-h-[90vh] flex flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 gap-1 border-b border-border px-4 py-4 sm:px-6">
           <div className="flex items-center justify-between gap-2 pr-8">
@@ -468,41 +606,351 @@ export function PropertyKnowledgeDetailDialog({
           </nav>
 
           <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6">
+            {/* ========================================================================= */}
+            {/* ABA GERAL REDESENHADA (Identidade + Resumo IA + Indicadores + Status)     */}
+            {/* ========================================================================= */}
             {activeTab === 'geral' && (
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
-                <div className="sm:col-span-7 space-y-1.5">
-                  <Label htmlFor="edit-prop-name" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
-                    Nome do Empreendimento
-                  </Label>
-                  <Input
-                    id="edit-prop-name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    disabled={saving || deleting}
-                    className="h-9 text-sm"
-                  />
+              <div className="space-y-6 max-w-5xl mx-auto">
+                {/* 1. HERO COVER BANNER */}
+                <div className="relative w-full h-44 sm:h-52 md:h-56 rounded-xl overflow-hidden border border-border bg-card shadow-xs group">
+                  {coverImage ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={publicImageUrl(coverImage.storage_path)}
+                        alt={name || 'Capa do empreendimento'}
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-102"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent" />
+                    </>
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-muted/20 text-muted-foreground p-6 text-center">
+                      <div className="h-10 w-10 rounded-full bg-muted/40 flex items-center justify-center mb-2">
+                        <Camera className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <p className="text-xs font-semibold text-foreground">Nenhuma foto de capa</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 max-w-xs">
+                        Adicione fotos na aba Mídia para exibir a capa deste empreendimento.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Top Left / Bottom Info on Cover */}
+                  <div className="absolute bottom-3 sm:bottom-4 left-4 sm:left-5 right-4 flex items-end justify-between gap-3">
+                    <div className="min-w-0 text-white space-y-1 drop-shadow-sm">
+                      <h2 className="text-lg sm:text-xl md:text-2xl font-bold tracking-tight truncate">
+                        {name || 'Nome do Empreendimento'}
+                      </h2>
+                      <div className="flex items-center gap-2 flex-wrap text-xs text-white/90">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/50 backdrop-blur-xs border border-white/20 text-[11px] font-medium text-white">
+                          <Building2 className="h-3 w-3 text-primary" />
+                          {STAGE_LABELS[stage]}
+                        </span>
+                        {coverImage?.description && (
+                          <span className="text-[11px] text-white/80 truncate max-w-sm hidden sm:inline">
+                            • {coverImage.description}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Change cover button */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (propertyImages.length === 0) {
+                          setActiveTab('midia')
+                        } else {
+                          setCoverModalOpen(true)
+                        }
+                      }}
+                      className="h-8 text-xs gap-1.5 shrink-0 bg-black/60 hover:bg-black/80 text-white border-white/20 backdrop-blur-xs shadow-sm transition-all"
+                    >
+                      <Camera className="h-3.5 w-3.5" />
+                      <span>{propertyImages.length === 0 ? 'Adicionar fotos' : 'Alterar foto de capa'}</span>
+                    </Button>
+                  </div>
                 </div>
 
-                <div className="sm:col-span-5 space-y-1.5">
-                  <Label htmlFor="edit-prop-stage" className="text-xs font-medium text-foreground flex items-center h-5 leading-none">
-                    Estágio do Empreendimento
-                  </Label>
-                  <Select
-                    value={stage}
-                    onValueChange={(val) => val && setStage(val as PropertyStage)}
-                    disabled={saving || deleting}
-                  >
-                    <SelectTrigger id="edit-prop-stage" className="w-full h-9 text-sm">
-                      <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(STAGE_LABELS).map(([k, label]) => (
-                        <SelectItem key={k} value={k} className="text-sm">
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                {/* 2. INFORMAÇÕES BÁSICAS (Campos editáveis mantidos) */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    <div>
+                      <h3 className="text-xs font-semibold text-foreground">Informações básicas</h3>
+                      <p className="text-[11px] text-muted-foreground">
+                        Dados principais do empreendimento, utilizados pela Clara nas conversas.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 pt-1">
+                    <div className="sm:col-span-7 space-y-1.5">
+                      <Label htmlFor="edit-prop-name" className="text-xs font-medium text-foreground">
+                        Nome do Empreendimento
+                      </Label>
+                      <Input
+                        id="edit-prop-name"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        disabled={saving || deleting}
+                        placeholder="Ex: Avant Home"
+                        className="h-9 text-sm"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-5 space-y-1.5">
+                      <Label htmlFor="edit-prop-stage" className="text-xs font-medium text-foreground">
+                        Estágio do Empreendimento
+                      </Label>
+                      <Select
+                        value={stage}
+                        onValueChange={(val) => val && setStage(val as PropertyStage)}
+                        disabled={saving || deleting}
+                      >
+                        <SelectTrigger id="edit-prop-stage" className="w-full h-9 text-sm">
+                          <SelectValue>{STAGE_LABELS[stage]}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.entries(STAGE_LABELS).map(([k, label]) => (
+                            <SelectItem key={k} value={k} className="text-sm">
+                              {label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. RESUMO DA CONFIGURAÇÃO DA IA (4 Cards Indicadores Dinâmicos Clicáveis) */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xs font-semibold text-foreground">Resumo da configuração da IA</h3>
+                      <p className="text-[11px] text-muted-foreground">
+                        Visão geral dos dados que alimentam a Clara sobre este empreendimento.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1">
+                    {/* CARD 1: Conhecimentos específicos */}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('saber')}
+                      className="group flex flex-col justify-between p-3.5 rounded-xl border border-border bg-card hover:bg-muted/40 hover:border-primary/40 transition-all text-left shadow-2xs cursor-pointer"
+                    >
+                      <div className="flex items-start justify-between w-full">
+                        <div className="h-8 w-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                          <FileText className="h-4 w-4" />
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                      </div>
+                      <div className="mt-3">
+                        <span className="text-2xl font-bold font-mono tracking-tight text-foreground">
+                          {knowledgeCount}
+                        </span>
+                        <p className="text-xs font-medium text-foreground mt-0.5">
+                          Conhecimentos específicos
+                        </p>
+                        <p className="text-[10.5px] text-muted-foreground">
+                          {knowledgeCount === 1 ? '1 cadastrado' : `${knowledgeCount} cadastrados`}
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* CARD 2: Regras cadastradas */}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('regras')}
+                      className="group flex flex-col justify-between p-3.5 rounded-xl border border-border bg-card hover:bg-muted/40 hover:border-primary/40 transition-all text-left shadow-2xs cursor-pointer"
+                    >
+                      <div className="flex items-start justify-between w-full">
+                        <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+                          <SlidersHorizontal className="h-4 w-4" />
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                      </div>
+                      <div className="mt-3">
+                        <span className="text-2xl font-bold font-mono tracking-tight text-foreground">
+                          {rulesCount}
+                        </span>
+                        <p className="text-xs font-medium text-foreground mt-0.5">
+                          Regras
+                        </p>
+                        <p className="text-[10.5px] text-muted-foreground">
+                          {rulesCount === 1 ? '1 ativa/cadastrada' : `${rulesCount} ativas/cadastradas`}
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* CARD 3: Mídias */}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('midia')}
+                      className="group flex flex-col justify-between p-3.5 rounded-xl border border-border bg-card hover:bg-muted/40 hover:border-primary/40 transition-all text-left shadow-2xs cursor-pointer"
+                    >
+                      <div className="flex items-start justify-between w-full">
+                        <div className="h-8 w-8 rounded-lg bg-purple-500/10 text-purple-600 flex items-center justify-center">
+                          <ImageIcon className="h-4 w-4" />
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                      </div>
+                      <div className="mt-3">
+                        <span className="text-2xl font-bold font-mono tracking-tight text-foreground">
+                          {mediaCount}
+                        </span>
+                        <p className="text-xs font-medium text-foreground mt-0.5">
+                          Mídias
+                        </p>
+                        <p className="text-[10.5px] text-muted-foreground">
+                          {mediaCount === 1 ? '1 foto cadastrada' : `${mediaCount} fotos cadastradas`}
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* CARD 4: Anúncios */}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('anuncios')}
+                      className="group flex flex-col justify-between p-3.5 rounded-xl border border-border bg-card hover:bg-muted/40 hover:border-primary/40 transition-all text-left shadow-2xs cursor-pointer"
+                    >
+                      <div className="flex items-start justify-between w-full">
+                        <div className="h-8 w-8 rounded-lg bg-amber-500/10 text-amber-600 flex items-center justify-center">
+                          <Megaphone className="h-4 w-4" />
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                      </div>
+                      <div className="mt-3">
+                        <span className="text-2xl font-bold font-mono tracking-tight text-foreground">
+                          {adsCount}
+                        </span>
+                        <p className="text-xs font-medium text-foreground mt-0.5">
+                          Anúncios
+                        </p>
+                        <p className="text-[10.5px] text-muted-foreground">
+                          {adsCount === 1 ? '1 vinculado' : `${adsCount} vinculados`}
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4. STATUS DA CONFIGURAÇÃO & ÚLTIMA ATUALIZAÇÃO */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                  {/* Status da Configuração Card */}
+                  <div className="p-4 rounded-xl border border-border bg-card space-y-3 shadow-2xs">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-primary" />
+                      <div>
+                        <h4 className="text-xs font-semibold text-foreground">Status da configuração</h4>
+                        <p className="text-[11px] text-muted-foreground">
+                          Acompanhe o nível de preparo da Clara para este empreendimento.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div
+                      className={cn(
+                        'p-3 rounded-lg border text-xs space-y-1',
+                        aiStatus.color === 'emerald'
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600'
+                          : aiStatus.color === 'amber'
+                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-600'
+                            : 'border-rose-500/30 bg-rose-500/10 text-rose-600',
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5 font-semibold text-xs">
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                        <span>{aiStatus.label}</span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        {aiStatus.description}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground pt-1 border-t border-border/50">
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle2
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0',
+                            knowledgeCount > 0 ? 'text-emerald-500' : 'text-muted-foreground/40',
+                          )}
+                        />
+                        <span>Conhecimento específico</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle2
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0',
+                            rulesCount > 0 ? 'text-emerald-500' : 'text-muted-foreground/40',
+                          )}
+                        />
+                        <span>Regras configuradas</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle2
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0',
+                            mediaCount > 0 ? 'text-emerald-500' : 'text-muted-foreground/40',
+                          )}
+                        />
+                        <span>Mídias disponíveis</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle2
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0',
+                            adsCount > 0 ? 'text-emerald-500' : 'text-muted-foreground/40',
+                          )}
+                        />
+                        <span>Anúncio vinculado</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Informações Secundárias / Última Atualização */}
+                  <div className="p-4 rounded-xl border border-border bg-card space-y-3 shadow-2xs flex flex-col justify-between">
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-primary" />
+                        <div>
+                          <h4 className="text-xs font-semibold text-foreground">Última atualização</h4>
+                          <p className="text-[11px] text-muted-foreground">
+                            Informações sobre a última alteração neste empreendimento.
+                          </p>
+                        </div>
+                      </div>
+
+                      {lastUpdatedDisplay ? (
+                        <div className="space-y-1.5 text-xs text-foreground bg-muted/30 p-2.5 rounded-lg border border-border/50">
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="font-medium">{lastUpdatedDisplay.dateStr}</span>
+                            <span className="text-muted-foreground">às {lastUpdatedDisplay.timeStr}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <User className="h-3.5 w-3.5" />
+                            <span>Administrador / Corretor da conta</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-muted-foreground italic">
+                          Data de atualização não disponível.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-primary/5 border border-primary/10 flex items-start gap-2 text-[11px] text-muted-foreground">
+                      <Info className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
+                      <p>
+                        As informações deste empreendimento são utilizadas pela Clara para responder perguntas, apresentar o imóvel e qualificar leads no WhatsApp.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -627,15 +1075,6 @@ export function PropertyKnowledgeDetailDialog({
                   </div>
                 </div>
 
-                {/* Validation Feedback Banner — theme tokens only: this app
-                    switches light/dark via `data-mode` on <html>, not a
-                    `.dark` class, so Tailwind's `dark:` variant never
-                    actually fires here (it's wired to `&:is(.dark *)` in
-                    globals.css) — a hardcoded `dark:*` class is dead code
-                    that silently leaves the LIGHT-mode value active in
-                    both modes. Every color below is mode-agnostic on
-                    purpose (opacity-based tints over the current surface,
-                    single mid-tone text colors) instead of relying on that. */}
                 {validationResult && (
                   <div
                     className={`rounded-lg p-3 text-xs space-y-2 transition-all border ${
@@ -872,6 +1311,121 @@ export function PropertyKnowledgeDetailDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* MODAL PARA SELEÇÃO DE FOTO DE CAPA ENTRE AS MÍDIAS EXISTENTES */}
+      <Dialog open={coverModalOpen} onOpenChange={setCoverModalOpen}>
+        <DialogContent className="w-full sm:max-w-2xl max-h-[85vh] flex flex-col p-0">
+          <DialogHeader className="p-4 sm:p-5 border-b border-border">
+            <DialogTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Camera className="h-4 w-4 text-primary" />
+              Selecionar Foto de Capa
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Escolha uma das fotos cadastradas no empreendimento para ser a capa principal.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="p-4 sm:p-5 overflow-y-auto flex-1">
+            {loadingImages ? (
+              <div className="flex items-center justify-center p-8 text-xs text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Carregando mídias...
+              </div>
+            ) : propertyImages.length === 0 ? (
+              <div className="text-center p-8 space-y-2">
+                <ImageIcon className="h-8 w-8 mx-auto text-muted-foreground" />
+                <p className="text-xs font-medium text-foreground">Nenhuma mídia cadastrada</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Adicione fotos na aba Mídia para selecioná-las como capa.
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setCoverModalOpen(false)
+                    setActiveTab('midia')
+                  }}
+                  className="h-8 text-xs mt-2"
+                >
+                  Ir para aba Mídia
+                </Button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {propertyImages.map((img) => {
+                  const isCover = img.is_cover || coverImage?.id === img.id
+                  const isBusy = settingCoverId === img.id
+
+                  return (
+                    <button
+                      key={img.id}
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => handleSelectCover(img)}
+                      className={cn(
+                        'group relative aspect-4/3 rounded-lg overflow-hidden border text-left transition-all cursor-pointer',
+                        isCover
+                          ? 'border-primary ring-2 ring-primary/30 shadow-sm'
+                          : 'border-border hover:border-foreground/40 hover:shadow-xs',
+                      )}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={publicImageUrl(img.storage_path)}
+                        alt={img.description || img.file_name}
+                        className="w-full h-full object-cover transition-transform group-hover:scale-103"
+                        loading="lazy"
+                      />
+
+                      {/* Cover Badge */}
+                      {isCover && (
+                        <span className="absolute top-2 left-2 flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground shadow-xs">
+                          <Star className="h-2.5 w-2.5 fill-current" />
+                          Capa Atual
+                        </span>
+                      )}
+
+                      {/* Hover Overlay */}
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        {isBusy ? (
+                          <Loader2 className="h-5 w-5 text-white animate-spin" />
+                        ) : isCover ? (
+                          <span className="text-xs font-semibold text-white flex items-center gap-1">
+                            <Check className="h-3.5 w-3.5" /> Selecionada
+                          </span>
+                        ) : (
+                          <span className="text-xs font-medium text-white bg-black/60 px-2.5 py-1 rounded-full backdrop-blur-xs">
+                            Definir como Capa
+                          </span>
+                        )}
+                      </div>
+
+                      {img.description && (
+                        <p className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-2 text-[10px] text-white truncate">
+                          {img.description}
+                        </p>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="p-3 border-t bg-muted/20 flex justify-between sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setCoverModalOpen(false)}
+              className="h-8 text-xs"
+            >
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   )
 }

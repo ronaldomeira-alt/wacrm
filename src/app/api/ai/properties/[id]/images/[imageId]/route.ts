@@ -56,7 +56,7 @@ export async function PATCH(request: Request, { params }: Params) {
       )
     }
 
-    const { data: image, error: updateErr } = await supabase
+    let { data: image, error: updateErr } = await supabase
       .from('property_images')
       .update(updates)
       .eq('id', imageId)
@@ -64,6 +64,35 @@ export async function PATCH(request: Request, { params }: Params) {
       .eq('property_id', propertyId)
       .select()
       .single()
+
+    // If updated_at or description is missing in DB schema cache, strip them and retry
+    if (updateErr && updateErr.code === 'PGRST204') {
+      const strippedUpdates = { ...updates }
+      delete strippedUpdates.updated_at
+      delete strippedUpdates.description
+      if (Object.keys(strippedUpdates).length > 0) {
+        const retryRes = await supabase
+          .from('property_images')
+          .update(strippedUpdates)
+          .eq('id', imageId)
+          .eq('account_id', accountId)
+          .eq('property_id', propertyId)
+          .select()
+          .single()
+        image = retryRes.data
+        updateErr = retryRes.error
+      } else {
+        // Only description/updated_at were being updated, fetch existing row
+        const fetchRes = await supabase
+          .from('property_images')
+          .select('*')
+          .eq('id', imageId)
+          .eq('account_id', accountId)
+          .single()
+        image = fetchRes.data
+        updateErr = null
+      }
+    }
 
     if (updateErr || !image) {
       console.error('[property/images] Error updating image:', updateErr)

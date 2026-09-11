@@ -165,24 +165,56 @@ export async function POST(request: Request, { params }: Params) {
       const isCover = !count || count === 0
       const position = count ?? 0
 
-      const { data: image, error: insertErr } = await supabase
+      // Attempt insert with all fields (schema v2 with description & updated_at)
+      let image: any = null
+      const fullPayload = {
+        account_id: accountId,
+        property_id: propertyId,
+        storage_path: storagePath,
+        file_name: fileName, // keep original filename for reference
+        file_size: normalized.fileSize,
+        content_type: normalized.contentType,
+        description: description,
+        is_cover: isCover,
+        position: position,
+        updated_at: new Date().toISOString(),
+      }
+
+      const { data: insertedFull, error: insertErr } = await supabase
         .from('property_images')
-        .insert({
-          account_id: accountId,
-          property_id: propertyId,
-          storage_path: storagePath,
-          file_name: fileName, // keep original filename for reference
-          file_size: normalized.fileSize,
-          content_type: normalized.contentType,
-          description: description,
-          is_cover: isCover,
-          position: position,
-          updated_at: new Date().toISOString(),
-        })
+        .insert(fullPayload)
         .select()
         .single()
 
-      if (insertErr) {
+      if (!insertErr && insertedFull) {
+        image = insertedFull
+      } else if (insertErr && insertErr.code === 'PGRST204') {
+        // Fallback for schema v1 (without description/updated_at columns)
+        console.warn('[property/images] Schema fallback: inserting without description/updated_at')
+        const basePayload = {
+          account_id: accountId,
+          property_id: propertyId,
+          storage_path: storagePath,
+          file_name: fileName,
+          file_size: normalized.fileSize,
+          content_type: normalized.contentType,
+          is_cover: isCover,
+          position: position,
+        }
+
+        const { data: insertedBase, error: baseInsertErr } = await supabase
+          .from('property_images')
+          .insert(basePayload)
+          .select()
+          .single()
+
+        if (baseInsertErr || !insertedBase) {
+          console.error('[property/images] DB insert fallback error:', baseInsertErr)
+          await admin.storage.from(PROPERTY_MEDIA_BUCKET).remove([storagePath]).catch(() => {})
+          return NextResponse.json({ error: 'Falha ao salvar registro da imagem' }, { status: 500 })
+        }
+        image = insertedBase
+      } else {
         console.error('[property/images] DB insert error:', insertErr)
         // Clean up storage if DB insert fails
         await admin.storage.from(PROPERTY_MEDIA_BUCKET).remove([storagePath]).catch(() => {})
@@ -217,24 +249,51 @@ export async function POST(request: Request, { params }: Params) {
     const isCover = !count || count === 0
     const position = count ?? 0
 
-    const { data: image, error: insertErr } = await supabase
+    let image: any = null
+    const fullPayload = {
+      account_id: accountId,
+      property_id: propertyId,
+      storage_path: storagePath,
+      file_name: fileName,
+      file_size: fileSize,
+      content_type: contentType,
+      description: description,
+      is_cover: isCover,
+      position: position,
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data: insertedFull, error: insertErr } = await supabase
       .from('property_images')
-      .insert({
+      .insert(fullPayload)
+      .select()
+      .single()
+
+    if (!insertErr && insertedFull) {
+      image = insertedFull
+    } else if (insertErr && insertErr.code === 'PGRST204') {
+      const basePayload = {
         account_id: accountId,
         property_id: propertyId,
         storage_path: storagePath,
         file_name: fileName,
         file_size: fileSize,
         content_type: contentType,
-        description: description,
         is_cover: isCover,
         position: position,
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
+      }
+      const { data: insertedBase, error: baseInsertErr } = await supabase
+        .from('property_images')
+        .insert(basePayload)
+        .select()
+        .single()
 
-    if (insertErr) {
+      if (baseInsertErr || !insertedBase) {
+        console.error('[property/images] Error saving image:', baseInsertErr)
+        return NextResponse.json({ error: 'Failed to save image' }, { status: 500 })
+      }
+      image = insertedBase
+    } else {
       console.error('[property/images] Error saving image:', insertErr)
       return NextResponse.json({ error: 'Failed to save image' }, { status: 500 })
     }
