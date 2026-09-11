@@ -8,10 +8,12 @@ export interface PropertyResolutionInput {
   currentPropertyId?: string | null
   referral?: CtwaReferral | null
   firstUserMessage?: string | null
+  latestUserMessage?: string | null
 }
 
 export type PropertyResolutionMethod =
   | 'existing_conversation'
+  | 'explicit_switch'
   | 'ctwa_ad_mapping'
   | 'ctwa_headline_match'
   | 'first_message_match'
@@ -43,6 +45,7 @@ export function normalizeTextForMatching(text: string): string {
  *
  * Cascade Order:
  * 1. PRIORIDADE 1: Current conversation.property_id is already set and valid
+ *    (unless the user's latest message explicitly mentions another registered property).
  * 2. PRIORIDADE 2: Deterministic Meta Ad mapping (property_ad_mappings table via referral.source_id)
  * 3. PRIORIDADE 3: CTWA referral headline or body contains property name
  * 4. PRIORIDADE 4: Initial lead message explicitly mentions property name
@@ -51,13 +54,55 @@ export function normalizeTextForMatching(text: string): string {
 export async function resolvePropertyForConversation(
   input: PropertyResolutionInput,
 ): Promise<PropertyResolutionResult> {
-  const { db, accountId, currentPropertyId, referral, firstUserMessage } = input
+  const { db, accountId, currentPropertyId, referral, firstUserMessage, latestUserMessage } = input
 
   // ============================================================
   // PRIORIDADE 1: Conversa já possui property_id válido
+  // (Verifica se houve menção explícita a OUTRO empreendimento no turno atual)
   // ============================================================
   if (currentPropertyId) {
     try {
+      const activeMsg = latestUserMessage || firstUserMessage || ''
+      let allProps: Array<{ id: string; name: string }> | null = null
+
+      try {
+        const { data } = await db
+          .from('properties')
+          .select('id, name')
+          .eq('account_id', accountId)
+        allProps = data as Array<{ id: string; name: string }> | null
+      } catch {
+        // Continue to single lookup
+      }
+
+      if (allProps && allProps.length > 0) {
+        if (activeMsg.trim()) {
+          const normMsg = normalizeTextForMatching(activeMsg)
+          for (const p of allProps) {
+            if (p.id === currentPropertyId) continue
+            const normName = normalizeTextForMatching(p.name)
+            if (normName.length >= 3 && normMsg.includes(normName)) {
+              return {
+                propertyId: p.id,
+                propertyName: p.name,
+                resolutionMethod: 'explicit_switch',
+                confidence: 0.95,
+              }
+            }
+          }
+        }
+
+        const matchedCurrent = allProps.find((p) => p.id === currentPropertyId)
+        if (matchedCurrent) {
+          return {
+            propertyId: matchedCurrent.id,
+            propertyName: matchedCurrent.name,
+            resolutionMethod: 'existing_conversation',
+            confidence: 1.0,
+          }
+        }
+      }
+
       const { data: prop } = await db
         .from('properties')
         .select('id, name')

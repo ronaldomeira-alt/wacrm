@@ -978,6 +978,7 @@ async function processMessage(
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
+      inboundMessageId: insertedMessage.id,
     })
   }
 

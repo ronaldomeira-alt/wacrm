@@ -381,10 +381,15 @@ export async function executeConversationalTurn(
         chunks: [],
       });
 
-  // 5. Build Modular System Prompt with structured decision requirement
+  // 5. Determine Greeting State (Initial Contact vs Ongoing Conversation)
+  const previousAssistantMessages = messages.filter((m) => m.role === 'assistant');
+  const isInitialContact = (replyCount === 0 && previousAssistantMessages.length === 0);
+
+  // 6. Build Modular System Prompt with structured decision requirement
   const systemPrompt = buildConversationalSystemPrompt({
     config,
     mode: mode || 'auto_reply',
+    isInitialContact,
     property: propertyInfo,
     propertyKnowledge: propertyId ? knowledgeResult.propertyChunks : [],
     propertyMedia: availableMedia,
@@ -395,7 +400,7 @@ export async function executeConversationalTurn(
     structuredOutputRequired: true,
   });
 
-  // 6. Invoke Provider
+  // 7. Invoke Provider
   const timeoutMs = aiRequestTimeoutMs();
   const providerArgs = {
     apiKey: config.apiKey,
@@ -410,10 +415,20 @@ export async function executeConversationalTurn(
       ? await generateOpenAi(providerArgs)
       : await generateAnthropic(providerArgs);
 
-  // 7. Parse Decision
+  // 8. Parse Decision
   const decision = parseStructuredDecision(rawResult.text);
 
-  // 8. Validate and Resolve any media items requested by the model
+  // Defensive Post-Processing: Strip accidental greeting formula on ongoing conversations
+  if (!isInitialContact && decision.response_text) {
+    const stripped = decision.response_text
+      .replace(/^(?:boa\s*(?:tarde|noite|madrugada)|bom\s*dia|ol[aá]|oi)[!.,\s-]*/i, '')
+      .trim();
+    if (stripped.length > 0) {
+      decision.response_text = stripped.charAt(0).toUpperCase() + stripped.slice(1);
+    }
+  }
+
+  // 9. Validate and Resolve any media items requested by the model
   const validatedMediaToSend = await validateAndResolveMediaToSend(
     db,
     accountId,

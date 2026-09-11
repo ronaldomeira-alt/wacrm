@@ -62,17 +62,15 @@ vi.mock('./admin-client', () => ({
         }
       }
       if (table === 'messages') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                gte: () => ({
-                  limit: () => Promise.resolve({ data: h.state.recentHumanMsgs, error: null }),
-                }),
-              }),
-            }),
-          }),
+        const msgChain = {
+          select: () => msgChain,
+          eq: () => msgChain,
+          gt: () => msgChain,
+          gte: () => msgChain,
+          order: () => msgChain,
+          limit: () => Promise.resolve({ data: h.state.recentHumanMsgs, error: null }),
         }
+        return msgChain
       }
       // conversations table
       return {
@@ -93,6 +91,9 @@ vi.mock('./admin-client', () => ({
     },
     rpc: (name: string, args: unknown) => {
       h.state.rpcCalls.push({ name, args })
+      if (name === 'acquire_ai_conversation_lock' || name === 'release_ai_conversation_lock') {
+        return Promise.resolve({ data: true, error: null })
+      }
       return Promise.resolve({ data: h.state.claim, error: null })
     },
   }),
@@ -105,6 +106,7 @@ const ARGS = {
   conversationId: 'conv-1',
   contactId: 'contact-1',
   configOwnerUserId: 'user-1',
+  debounceMs: 0,
 }
 
 function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
@@ -164,12 +166,20 @@ describe('Stage 6 — Integration with Real Flow, Handoff & Concurrency Safety',
     await dispatchInboundToAiReply(ARGS)
 
     expect(h.executeConversationalTurn).toHaveBeenCalled()
-    expect(h.state.rpcCalls).toEqual([
-      {
-        name: 'claim_ai_reply_slot',
-        args: { conversation_id: 'conv-1', max_replies: 8 },
-      },
-    ])
+    expect(h.state.rpcCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'acquire_ai_conversation_lock',
+        }),
+        expect.objectContaining({
+          name: 'claim_ai_reply_slot',
+          args: { conversation_id: 'conv-1', max_replies: 8 },
+        }),
+        expect.objectContaining({
+          name: 'release_ai_conversation_lock',
+        }),
+      ]),
+    )
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId: 'acct-1',

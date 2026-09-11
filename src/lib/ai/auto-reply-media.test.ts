@@ -124,6 +124,8 @@ describe('AI Auto-Reply with Property Media Sending', () => {
             select: vi.fn().mockReturnThis(),
             eq: vi.fn().mockReturnThis(),
             gte: vi.fn().mockReturnThis(),
+            gt: vi.fn().mockReturnThis(),
+            order: vi.fn().mockReturnThis(),
             limit: vi.fn().mockResolvedValue({ data: [] }),
           }
         }
