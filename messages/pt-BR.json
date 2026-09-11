@@ -591,7 +591,9 @@
       "tookOver": "Você assumiu esta conversa.",
       "resumed": "IA retomada.",
       "updateError": "Não foi possível atualizar o assistente de IA.",
-      "networkError": "Não foi possível conectar ao servidor."
+      "networkError": "Não foi possível conectar ao servidor.",
+      "activeTooltip": "IA Clara ativada • Clique para pausar",
+      "pausedTooltip": "IA Clara desativada • Clique para ativar"
     }
   },
   "Contacts": {

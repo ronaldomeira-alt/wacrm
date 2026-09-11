@@ -591,7 +591,9 @@
       "tookOver": "You’ve taken over this chat.",
       "resumed": "AI resumed.",
       "updateError": "Couldn’t update the AI assistant.",
-      "networkError": "Couldn’t reach the server."
+      "networkError": "Couldn’t reach the server.",
+      "activeTooltip": "Clara AI active • Click to pause",
+      "pausedTooltip": "Clara AI paused • Click to resume"
     }
   },
   "Contacts": {

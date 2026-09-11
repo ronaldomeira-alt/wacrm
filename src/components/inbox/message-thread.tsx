@@ -1595,7 +1595,21 @@ export function MessageThread({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          {/* AI auto-reply status circle indicator / toggle */}
+          <AiThreadBanner
+            conversationId={conversation.id}
+            disabled={conversation.ai_autoreply_disabled ?? false}
+            handoffSummary={conversation.ai_handoff_summary}
+            assignedAgentId={assignedAgentId}
+            currentUserId={user?.id}
+            onChange={(patch) => {
+              if ('assigned_agent_id' in patch) {
+                onAssignChange(conversation.id, patch.assigned_agent_id ?? null);
+              }
+            }}
+          />
+
           {/* Contact-panel toggle — desktop only. The contact sidebar
               eats a chunk of horizontal width that crowds the thread on
               smaller laptops; this lets agents reclaim it when they just
@@ -1972,21 +1986,6 @@ export function MessageThread({
         </div>
       </div>
 
-      {/* AI auto-reply banner — take over an active bot, or resume it
-          after a handoff. Renders nothing unless the account has
-          auto-reply configured. */}
-      <AiThreadBanner
-        conversationId={conversation.id}
-        disabled={conversation.ai_autoreply_disabled ?? false}
-        handoffSummary={conversation.ai_handoff_summary}
-        assignedAgentId={assignedAgentId}
-        currentUserId={user?.id}
-        onChange={(patch) => {
-          if ('assigned_agent_id' in patch) {
-            onAssignChange(conversation.id, patch.assigned_agent_id ?? null);
-          }
-        }}
-      />
 
       {/* Composer */}
       <MessageComposer
