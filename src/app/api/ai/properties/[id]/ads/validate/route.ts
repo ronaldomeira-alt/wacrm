@@ -72,11 +72,11 @@ export async function POST(request: Request, { params }: Params) {
     // 3. Attempt Meta Graph API verification if access_token is configured
     let metaConfirmed = false
     let metaDetails: {
-      id?: string
-      name?: string
-      status?: string
-      campaign_name?: string
-      adset_name?: string
+      id?: string | null
+      name?: string | null
+      status?: string | null
+      campaign_name?: string | null
+      adset_name?: string | null
     } | null = null
 
     try {
@@ -88,23 +88,44 @@ export async function POST(request: Request, { params }: Params) {
 
       if (wcfg?.access_token) {
         const token = decrypt(wcfg.access_token)
-        const graphRes = await fetch(
+        
+        // 1. Try querying as an Ad first (with campaign and adset nested)
+        let graphRes = await fetch(
           `https://graph.facebook.com/v21.0/${adSourceId}?fields=id,name,status,campaign{id,name},adset{id,name}&access_token=${encodeURIComponent(
             token,
           )}`,
           { method: 'GET', headers: { 'Content-Type': 'application/json' } },
         )
 
-        if (graphRes.ok) {
-          const graphData = await graphRes.json()
-          if (graphData && graphData.id) {
+        let graphData = graphRes.ok ? await graphRes.json().catch(() => null) : null
+
+        if (graphData && graphData.id && !graphData.error) {
+          metaConfirmed = true
+          metaDetails = {
+            id: graphData.id,
+            name: graphData.name || null,
+            status: graphData.status || null,
+            campaign_name: graphData.campaign?.name || null,
+            adset_name: graphData.adset?.name || null,
+          }
+        } else {
+          // 2. If it's a Campaign or AdSet ID, query standard object fields
+          graphRes = await fetch(
+            `https://graph.facebook.com/v21.0/${adSourceId}?fields=id,name,status,objective&access_token=${encodeURIComponent(
+              token,
+            )}`,
+            { method: 'GET', headers: { 'Content-Type': 'application/json' } },
+          )
+          graphData = graphRes.ok ? await graphRes.json().catch(() => null) : null
+
+          if (graphData && graphData.id && !graphData.error) {
             metaConfirmed = true
             metaDetails = {
               id: graphData.id,
               name: graphData.name || null,
               status: graphData.status || null,
-              campaign_name: graphData.campaign?.name || null,
-              adset_name: graphData.adset?.name || null,
+              campaign_name: graphData.name || null,
+              adset_name: null,
             }
           }
         }
