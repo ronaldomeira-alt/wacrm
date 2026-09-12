@@ -3,18 +3,13 @@ import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { generateFollowupSuggestions, processDueFollowupSends } from '@/lib/ai/followup-generate'
 import { deleteExpiredIgnoredSuggestions } from '@/lib/ai/suggestions-cleanup'
+import { runContextualReactivationForAccount } from '@/lib/ai/reactivation-engine'
 
 /**
  * Scans every account with an active AI config for stale conversations
- * and writes pending `followup` suggestions to the Central de IA, then
- * dispatches any due Follow-up Inteligente `scheduled_sends` (plans
- * approved from those suggestions — see processDueFollowupSends).
- * Meant to be hit on a schedule (external pinger — this project has no
- * built-in scheduler; see docs/docker.md), same as
- * `/api/automations/cron` and `/api/flows/cron`. Re-uses
- * `AUTOMATION_CRON_SECRET` so operators only have one secret to manage
- * (same reasoning as the flows cron) — the scheduled-send dispatch
- * piggybacks on this same tick rather than needing its own cron entry.
+ * and writes pending `followup` suggestions to the Central de IA, dispatches
+ * due Follow-up Inteligente `scheduled_sends`, and evaluates contextual
+ * reactivations for conversations interrupted by customer silence (~3h).
  */
 export async function GET(request: Request) {
   const expected = process.env.AUTOMATION_CRON_SECRET
@@ -49,6 +44,8 @@ export async function GET(request: Request) {
 
   let created = 0
   let scored = 0
+  let reactivationsSent = 0
+
   for (const row of activeConfigs) {
     try {
       const result = await generateFollowupSuggestions(admin, row.account_id as string)
@@ -56,6 +53,13 @@ export async function GET(request: Request) {
       scored += result.scored
     } catch (err) {
       console.error('[followups/cron] account', row.account_id, 'failed:', err)
+    }
+
+    try {
+      const reactResult = await runContextualReactivationForAccount(admin, row.account_id as string)
+      reactivationsSent += reactResult.sent
+    } catch (err) {
+      console.error('[followups/cron] account', row.account_id, 'reactivation failed:', err)
     }
   }
 
@@ -69,5 +73,6 @@ export async function GET(request: Request) {
     scheduled_sends_processed: sendsResult.processed,
     scheduled_sends_sent: sendsResult.sent,
     scheduled_sends_failed: sendsResult.failed,
+    reactivations_sent: reactivationsSent,
   })
 }

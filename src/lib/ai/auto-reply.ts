@@ -68,7 +68,7 @@ export async function dispatchInboundToAiReply(
     // 2. FAST CONVERSATION STATE GATES
     const { data: initialConv, error: convErr } = await db
       .from('conversations')
-      .select('id, assigned_agent_id, ai_autoreply_disabled, ai_reply_count, property_id, ai_transfer_status, ctwa_referral')
+      .select('id, assigned_agent_id, ai_autoreply_disabled, ai_reply_count, property_id, ai_transfer_status, ctwa_referral, ai_reactivation_status')
       .eq('id', conversationId)
       .maybeSingle()
 
@@ -83,9 +83,13 @@ export async function dispatchInboundToAiReply(
     if ((initialConv.ai_reply_count ?? 0) >= maxReplies) return
 
     const inboundArrivedAt = new Date().toISOString()
+    const convUpdatePayload: Record<string, any> = { ai_last_inbound_at: inboundArrivedAt }
+    if ((initialConv as any).ai_reactivation_status === 'scheduled') {
+      convUpdatePayload.ai_reactivation_status = 'cancelled'
+    }
     void db
       .from('conversations')
-      .update({ ai_last_inbound_at: inboundArrivedAt })
+      .update(convUpdatePayload)
       .eq('id', conversationId)
 
     // 3. DEBOUNCE / TURN AGGREGATION WINDOW

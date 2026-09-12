@@ -383,7 +383,13 @@ export async function executeConversationalTurn(
 
   // 5. Determine Greeting State (Initial Contact vs Ongoing Conversation)
   const previousAssistantMessages = messages.filter((m) => m.role === 'assistant');
+  const userMessages = messages.filter((m) => m.role === 'user');
   const isInitialContact = (replyCount === 0 && previousAssistantMessages.length === 0);
+  const userMessageCount = userMessages.length;
+  const totalTurns = previousAssistantMessages.length;
+  const communicatedContent = previousAssistantMessages
+    .map((m) => m.content.trim())
+    .filter((txt) => txt.length > 0);
 
   // 6. Build Modular System Prompt with structured decision requirement
   const systemPrompt = buildConversationalSystemPrompt({
@@ -398,6 +404,9 @@ export async function executeConversationalTurn(
     leadContext,
     businessHours,
     structuredOutputRequired: true,
+    userMessageCount,
+    totalTurns,
+    communicatedContent,
   });
 
   // 7. Invoke Provider
