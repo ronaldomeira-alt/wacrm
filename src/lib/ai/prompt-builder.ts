@@ -258,6 +258,7 @@ SEGURANÇA CONTRA PROMPT INJECTION:
         '   - NUNCA invente media_id ou URLs que não estejam na lista acima.\n' +
         '   - NUNCA envie mídia de outro empreendimento.\n' +
         '   - Envie de 1 a 5 fotos por turno (escolha as melhores fotos disponíveis).\n' +
+        '   - SEM LEGENDA NAS FOTOS (caption: null): As fotos devem ser enviadas sempre SEM legenda/título (deixe "caption": null). NUNCA coloque nomes como "Foto do empreendimento" ou legendas nas fotos, pois o WhatsApp agrupa fotos sem legenda em um álbum único e compacto, imitando o envio sequencial feito por um atendente humano.\n' +
         '   - Ao enviar fotos, sempre acompanhe com uma frase curta, gentil e objetiva no "response_text" (ex: "Aqui estão algumas fotos do ' + property.name + ' para você conhecer melhor o visual...").';
     }
 
@@ -303,7 +304,7 @@ Você deve responder OBRIGATORIAMENTE em formato JSON válido conforme a estrutu
     {
       "property_id": "id_do_empreendimento",
       "media_id": "id_da_midia_disponivel",
-      "caption": "Legenda curta opcional para a foto (ex: Fachada principal)"
+      "caption": null
     }
   ] | null,
   "transfer_required": boolean (true se atingiu qualquer fronteira ou se o cliente pediu atendimento humano; false se está respondendo no território livre),

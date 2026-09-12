@@ -445,7 +445,7 @@ export async function executeConversationalTurn(
       decision.send_media = availableMedia.slice(0, 5).map((m) => ({
         property_id: propertyId,
         media_id: m.id,
-        caption: m.description || null,
+        caption: null,
       }))
     }
   }

@@ -156,7 +156,7 @@ describe('AI Auto-Reply with Property Media Sending', () => {
       contactId: 'contact-1',
       kind: 'image',
       link: 'https://storage.supabase.co/property-media/account-1/piscina.jpg',
-      caption: 'Piscina com borda infinita',
+      caption: undefined,
       aiGenerated: true,
     })
 
