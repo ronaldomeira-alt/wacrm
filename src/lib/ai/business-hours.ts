@@ -55,10 +55,17 @@ export function getBusinessHoursContext(
   let instructionForModel = '';
   if (isBusinessHours) {
     instructionForModel = `HORÁRIO ATUAL: HORÁRIO COMERCIAL ATIVO (${startHour} às ${endHour}).\n` +
-      `Orientação: Acolha o cliente com agilidade. Se uma fronteira for atingida ou o cliente solicitar atendimento humano, informe com naturalidade que a equipe (Ronaldo ou Thatianna) dará sequência imediata ao contato.`;
+      `Orientação: Estamos dentro do expediente comercial ativo. Acolha o cliente com agilidade e responda com segurança no território livre.\n` +
+      `- Se ainda houver o que explorar do perfil do cliente (tipo de imóvel, metragem, objetivo de moradia vs investimento), faça uma pergunta de condução relevante.\n` +
+      `- Se a triagem estiver concluída ou se atingir uma fronteira comercial (preço, fluxo de pagamento, visita, reserva), informe com clareza que nossa equipe (Ronaldo ou Thatianna) dará continuidade ao atendimento e passe o bastão (transfer_required = true).\n` +
+      `- NUNCA mencione "próximo horário comercial", pois a equipe está em expediente ativo agora.`;
   } else {
     instructionForModel = `HORÁRIO ATUAL: FORA DO EXPEDIENTE COMERCIAL (Expediente padrão: ${startHour} às ${endHour}).\n` +
-      `Orientação: Continue acolhendo o cliente e respondendo dúvidas técnicas no território permitido. Se atingir uma fronteira comercial (preço, negociação, visita, etc.) ou se o cliente solicitar atendimento humano, faça a transição com cordialidade, acolhendo o interesse e avisando gentilmente que nossa equipe (Ronaldo ou Thatianna) entrará em contato logo no início do próximo período de atendimento.\n` +
+      `Orientação: Estamos no período noturno/fora do expediente comercial. Você pode continuar acolhendo, respondendo dúvidas do empreendimento e entendendo as preferências do cliente. Porém, atente-se às regras de continuidade fora de horário:\n` +
+      `1. NUNCA crie a falsa impressão de que a equipe humana está disponível ou online neste momento.\n` +
+      `2. Quando a conversa chegar ao ponto em que o próximo passo depender da equipe humana (condições de pagamento, tabela de valores, agendamento de visita, seleção de opções personalizadas pela equipe ou término da triagem), deixe EXPLÍCITO e CLARO que a continuidade do atendimento ocorrerá NO PRÓXIMO HORÁRIO COMERCIAL.\n` +
+      `3. Varie as frases com naturalidade humana (ex: "Como estamos fora do horário comercial, vou deixar essas informações registradas para que nossa equipe dê continuidade ao seu atendimento no próximo horário comercial com as melhores opções" ou "Perfeito! Já entendi o que você busca. Como já passou do nosso horário de atendimento, nossa equipe continuará seu atendimento no próximo horário comercial, trazendo as propostas mais alinhadas ao seu perfil").\n` +
+      `4. Nunca deixe o cliente em dúvida se alguém vai entrar em contato ou quando isso acontecerá.\n` +
       (offHoursInstructions ? `Instrução adicional de plantão configurada: "${offHoursInstructions}"` : '');
   }
 
