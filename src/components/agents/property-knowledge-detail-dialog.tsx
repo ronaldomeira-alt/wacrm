@@ -1319,6 +1319,7 @@ export function PropertyKnowledgeDetailDialog({
                                   src={validationResult.creative_image_url}
                                   alt="Preview do Criativo Meta"
                                   className="h-14 w-14 rounded-md object-cover border border-border shrink-0"
+                                  referrerPolicy="no-referrer"
                                 />
                                 <div className="min-w-0 flex-1 space-y-0.5">
                                   <span className="text-[10px] font-semibold text-emerald-400 block uppercase tracking-wider">
@@ -1518,6 +1519,7 @@ export function PropertyKnowledgeDetailDialog({
                                     alt={ad.ad_name || 'Criativo do Anúncio Meta'}
                                     className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-103"
                                     loading="lazy"
+                                    referrerPolicy="no-referrer"
                                   />
                                   <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent opacity-70" />
                                   <div className="absolute top-2.5 left-2.5">
