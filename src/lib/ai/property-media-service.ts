@@ -45,12 +45,21 @@ export async function getAvailablePropertyMedia(
       position: number | null
     }> | null = null
 
+    // 1. First fetch property cover_image_path if available to ensure cover is NEVER treated as sendable media
+    const { data: propertyRow } = await db
+      .from('properties')
+      .select('cover_image_path')
+      .eq('id', propertyId)
+      .maybeSingle()
+
+    const coverPath = propertyRow?.cover_image_path || null
+
     const primaryQuery = await db
       .from('property_images')
       .select('id, storage_path, file_name, content_type, description, is_cover, position')
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
-      .order('is_cover', { ascending: false })
+      .eq('is_cover', false)
       .order('position', { ascending: true })
       .order('created_at', { ascending: true })
 
@@ -64,7 +73,7 @@ export async function getAvailablePropertyMedia(
           .select('id, storage_path, file_name, content_type, is_cover, position')
           .eq('account_id', accountId)
           .eq('property_id', propertyId)
-          .order('is_cover', { ascending: false })
+          .eq('is_cover', false)
           .order('position', { ascending: true })
           .order('created_at', { ascending: true })
 
@@ -85,7 +94,14 @@ export async function getAvailablePropertyMedia(
       return []
     }
 
-    return images.map((img) => {
+    // Filter out any image whose storage_path matches the property's cover image path or has is_cover === true
+    const filteredImages = images.filter((img) => {
+      if (img.is_cover === true) return false
+      if (coverPath && img.storage_path === coverPath) return false
+      return true
+    })
+
+    return filteredImages.map((img) => {
       const publicUrl = db.storage
         .from(PROPERTY_MEDIA_BUCKET)
         .getPublicUrl(img.storage_path).data.publicUrl
@@ -95,7 +111,7 @@ export async function getAvailablePropertyMedia(
         type: 'image' as const,
         description: img.description || null,
         file_name: img.file_name,
-        is_cover: img.is_cover ?? false,
+        is_cover: false,
         url: publicUrl,
       }
     })
@@ -107,7 +123,7 @@ export async function getAvailablePropertyMedia(
 
 /**
  * Validates requested media items from the LLM turn against the database and Storage:
- * 1. Checks that the media exists.
+ * 1. Checks that the media exists and is not a cover image.
  * 2. Checks that the media belongs to the specified account and active property.
  * 3. Enforces that the content_type is an allowed image.
  * 4. Caps to MAX_AI_MEDIA_PER_TURN items.
@@ -132,18 +148,28 @@ export async function validateAndResolveMediaToSend(
   if (mediaIds.length === 0) return []
 
   try {
+    // Also fetch property cover_image_path to guard against sending cover
+    const { data: propertyRow } = await db
+      .from('properties')
+      .select('cover_image_path')
+      .eq('id', propertyId)
+      .maybeSingle()
+
+    const coverPath = propertyRow?.cover_image_path || null
+
     let rows: Array<{
       id: string
       property_id: string
       storage_path: string
       file_name: string
       content_type: string
+      is_cover?: boolean | null
       description?: string | null
     }> | null = null
 
     const primaryQuery = await db
       .from('property_images')
-      .select('id, property_id, storage_path, file_name, content_type, description')
+      .select('id, property_id, storage_path, file_name, content_type, description, is_cover')
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
       .in('id', mediaIds)
@@ -155,7 +181,7 @@ export async function validateAndResolveMediaToSend(
         )
         const fallbackQuery = await db
           .from('property_images')
-          .select('id, property_id, storage_path, file_name, content_type')
+          .select('id, property_id, storage_path, file_name, content_type, is_cover')
           .eq('account_id', accountId)
           .eq('property_id', propertyId)
           .in('id', mediaIds)
@@ -179,6 +205,9 @@ export async function validateAndResolveMediaToSend(
 
     const rowMap = new Map<string, (typeof rows)[0]>()
     for (const r of rows) {
+      // Never allow is_cover === true or storage_path matching cover_image_path
+      if (r.is_cover === true) continue
+      if (coverPath && r.storage_path === coverPath) continue
       rowMap.set(r.id, r)
     }
 

@@ -249,6 +249,9 @@ export interface Property {
    *  concurrent auto-creations of the same empreendimento, even under
    *  different spacing/separators (migration 20260911150000). */
   normalized_name: string | null;
+  /** Internal visual identity cover photo for CRM representation (aba Geral).
+   *  Completely separated from Clara's sendable commercial media library. */
+  cover_image_path?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -257,8 +260,9 @@ export interface PropertyWithAiContext extends Property {
   ai_context?: PropertyAiContext | null;
 }
 
-/** One uploaded photo/plan for a property's AI knowledge (migration
- *  20260911201110) — the "Mídia" tab of the property knowledge modal. */
+/** One commercial photo/render authorized for Clara to send to customers (migration
+ *  20260911201110, 20260912120000) — the "Mídia" tab of the property knowledge modal.
+ *  Capped at MAX_PROPERTY_MEDIA (5 items). Independent from property cover image. */
 export interface PropertyImage {
   id: string;
   account_id: string;

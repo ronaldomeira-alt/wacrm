@@ -17,7 +17,7 @@ type Params = { params: Promise<{ id: string }> }
 
 /**
  * GET /api/ai/properties/[id]/images (viewer+)
- * Lists the property's photo/plan gallery, cover first then by position.
+ * Lists the property's commercial sendable media gallery (capped at 5, strictly excluding cover photo).
  */
 export async function GET(_request: Request, { params }: Params) {
   try {
@@ -29,8 +29,9 @@ export async function GET(_request: Request, { params }: Params) {
       .select('*')
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
-      .order('is_cover', { ascending: false })
+      .eq('is_cover', false)
       .order('position', { ascending: true })
+      .order('created_at', { ascending: true })
 
     if (error) {
       console.error('[property/images] Error fetching images:', error)
@@ -157,13 +158,22 @@ export async function POST(request: Request, { params }: Params) {
         )
       }
 
-      // Query count to set first image as cover and assign position
+      // Enforce MAX_PROPERTY_MEDIA = 5 for commercial sendable media (excluding cover)
       const { count } = await supabase
         .from('property_images')
         .select('id', { count: 'exact', head: true })
+        .eq('account_id', accountId)
         .eq('property_id', propertyId)
+        .eq('is_cover', false)
 
-      const isCover = !count || count === 0
+      if ((count ?? 0) >= 5) {
+        return NextResponse.json(
+          { error: 'Limite máximo de 5 mídias comerciais atingido para este empreendimento.' },
+          { status: 400 },
+        )
+      }
+
+      const isCover = false
       const position = count ?? 0
 
       // Attempt insert with all fields (schema v2 with description & updated_at)
@@ -245,9 +255,18 @@ export async function POST(request: Request, { params }: Params) {
     const { count } = await supabase
       .from('property_images')
       .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
       .eq('property_id', propertyId)
+      .eq('is_cover', false)
 
-    const isCover = !count || count === 0
+    if ((count ?? 0) >= 5) {
+      return NextResponse.json(
+        { error: 'Limite máximo de 5 mídias comerciais atingido para este empreendimento.' },
+        { status: 400 },
+      )
+    }
+
+    const isCover = false
     const position = count ?? 0
 
     let image: PropertyImage | null = null

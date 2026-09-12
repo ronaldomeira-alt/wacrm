@@ -8,7 +8,6 @@ type Params = { params: Promise<{ id: string; imageId: string }> }
  * PATCH /api/ai/properties/[id]/images/[imageId] (agent+)
  *
  * Supports:
- * - `{ is_cover: true }`: sets this image as property's cover and unsets any previous one.
  * - `{ description: string | null }`: updates the media description.
  * - `{ position: number }`: updates display order.
  */
@@ -26,21 +25,6 @@ export async function PATCH(request: Request, { params }: Params) {
       updated_at: new Date().toISOString(),
     }
 
-    if (body.is_cover === true) {
-      const { error: clearErr } = await supabase
-        .from('property_images')
-        .update({ is_cover: false })
-        .eq('account_id', accountId)
-        .eq('property_id', propertyId)
-        .eq('is_cover', true)
-
-      if (clearErr) {
-        console.error('[property/images] Error clearing previous cover:', clearErr)
-        return NextResponse.json({ error: 'Failed to update cover' }, { status: 500 })
-      }
-      updates.is_cover = true
-    }
-
     if ('description' in body) {
       updates.description = typeof body.description === 'string' ? body.description.trim() || null : null
     }
@@ -49,9 +33,9 @@ export async function PATCH(request: Request, { params }: Params) {
       updates.position = body.position
     }
 
-    if (Object.keys(updates).length <= 1 && !('description' in body) && body.is_cover !== true) {
+    if (Object.keys(updates).length <= 1 && !('description' in body) && typeof body.position !== 'number') {
       return NextResponse.json(
-        { error: 'Supported updates: { is_cover: true }, { description: string }, { position: number }' },
+        { error: 'Supported updates: { description: string }, { position: number }' },
         { status: 400 },
       )
     }
@@ -82,7 +66,6 @@ export async function PATCH(request: Request, { params }: Params) {
         image = retryRes.data
         updateErr = retryRes.error
       } else {
-        // Only description/updated_at were being updated, fetch existing row
         const fetchRes = await supabase
           .from('property_images')
           .select('*')
@@ -107,7 +90,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
 /**
  * DELETE /api/ai/properties/[id]/images/[imageId] (agent+)
- * Removes the metadata row and its Storage object.
+ * Removes the commercial media row and its Storage object.
  */
 export async function DELETE(_request: Request, { params }: Params) {
   try {
@@ -116,7 +99,7 @@ export async function DELETE(_request: Request, { params }: Params) {
 
     const { data: image, error: fetchErr } = await supabase
       .from('property_images')
-      .select('id, storage_path, is_cover')
+      .select('id, storage_path')
       .eq('id', imageId)
       .eq('account_id', accountId)
       .eq('property_id', propertyId)
@@ -140,23 +123,6 @@ export async function DELETE(_request: Request, { params }: Params) {
     // Best-effort: an orphaned Storage object is a nit, not worth failing
     // the request over (mirrors deleteAccountMedia's own fire-and-forget use).
     await supabase.storage.from(PROPERTY_MEDIA_BUCKET).remove([image.storage_path])
-
-    // The deleted image was the cover — promote the next one (by position)
-    // so the property always has a cover while it still has any image.
-    if (image.is_cover) {
-      const { data: next } = await supabase
-        .from('property_images')
-        .select('id')
-        .eq('account_id', accountId)
-        .eq('property_id', propertyId)
-        .order('position', { ascending: true })
-        .limit(1)
-        .maybeSingle()
-
-      if (next) {
-        await supabase.from('property_images').update({ is_cover: true }).eq('id', next.id)
-      }
-    }
 
     return NextResponse.json({ success: true })
   } catch (err) {

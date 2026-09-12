@@ -8,7 +8,6 @@ import {
   ImageIcon,
   Loader2,
   Plus,
-  Star,
   Trash2,
   X,
 } from 'lucide-react'
@@ -125,8 +124,8 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
       if (uploadedCount > 0) {
         toast.success(
           uploadedCount === 1
-            ? '1 foto adicionada e otimizada com sucesso!'
-            : `${uploadedCount} fotos adicionadas e otimizadas com sucesso!`,
+            ? '1 foto comercial adicionada com sucesso!'
+            : `${uploadedCount} fotos comerciais adicionadas com sucesso!`,
         )
       }
       await load()
@@ -140,29 +139,8 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
     }
   }
 
-  const handleSetCover = async (imageId: string) => {
-    setBusyId(imageId)
-    try {
-      const res = await fetch(`/api/ai/properties/${propertyId}/images/${imageId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_cover: true }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Falha ao definir capa')
-      }
-      toast.success('Foto definida como capa do empreendimento')
-      await load()
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Erro ao definir capa')
-    } finally {
-      setBusyId(null)
-    }
-  }
-
   const handleDelete = async (imageId: string, fileName: string) => {
-    const ok = window.confirm(`Remover "${fileName}" da galeria deste empreendimento?`)
+    const ok = window.confirm(`Remover "${fileName}" da galeria de mídias deste empreendimento?`)
     if (!ok) return
 
     setBusyId(imageId)
@@ -174,7 +152,7 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Falha ao remover imagem')
       }
-      toast.success('Mídia removida com sucesso')
+      toast.success('Mídia comercial removida')
       await load()
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Erro ao remover imagem')
@@ -212,7 +190,7 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
         prev.map((img) => (img.id === imageId ? { ...img, description: newDesc } : img)),
       )
       setEditingDescId(null)
-      toast.success('Descrição atualizada com sucesso')
+      toast.success('Descrição da foto salva')
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar descrição')
     } finally {
@@ -220,20 +198,24 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
     }
   }
 
+  const isAtMediaLimit = images.length >= 5
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold text-foreground">Mídias do Empreendimento</p>
+          <p className="text-xs font-semibold text-foreground">
+            Mídias Comerciais para Envio pela Clara (até 5)
+          </p>
           <p className="text-[11px] text-muted-foreground mt-0.5">
-            Cadastre fotos com descrições individuais. A IA Clara utilizará essas descrições para enviar fotos pontuais quando o cliente solicitar.
+            Cadastre fotos com descrições individuais. A Clara utilizará exclusivamente estas fotos para enviar aos clientes quando solicitado. A foto de capa não é incluída nesta biblioteca.
           </p>
         </div>
         <Button
           type="button"
           size="sm"
           className="h-8 text-xs gap-1.5 shrink-0"
-          disabled={disabled || uploading}
+          disabled={disabled || uploading || isAtMediaLimit}
           onClick={() => fileInputRef.current?.click()}
         >
           {uploading ? (
@@ -248,7 +230,7 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
           ) : (
             <>
               <Plus className="h-3.5 w-3.5" />
-              <span>Adicionar fotos</span>
+              <span>{isAtMediaLimit ? 'Limite atingido (5/5)' : 'Adicionar fotos'}</span>
             </>
           )}
         </Button>
@@ -272,19 +254,25 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
           type="button"
           onClick={() => !disabled && fileInputRef.current?.click()}
           disabled={disabled || uploading}
-          className="w-full rounded-lg border border-dashed border-border bg-background/50 p-8 text-center space-y-2 hover:bg-muted/40 transition-colors"
+          className="w-full rounded-lg border border-dashed border-border bg-background/50 p-8 text-center space-y-2 hover:bg-muted/40 transition-colors cursor-pointer"
         >
           <ImageIcon className="h-7 w-7 mx-auto text-muted-foreground" />
-          <p className="text-xs font-medium text-foreground">Nenhuma mídia cadastrada ainda</p>
+          <p className="text-xs font-medium text-foreground">Nenhuma mídia comercial cadastrada ainda</p>
           <p className="text-[11px] text-muted-foreground max-w-sm mx-auto">
-            Selecione uma ou mais fotos (JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, HEIF, AVIF até 16 MB). Todas serão otimizadas automaticamente para envio instantâneo pelo WhatsApp.
+            Adicione até 5 fotos comerciais (JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, HEIF, AVIF). A Clara poderá enviar estas fotos nas conversas com clientes.
           </p>
         </button>
       ) : (
         <div className="space-y-3">
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span className="font-mono">{images.length} mídia(s) cadastrada(s)</span>
-            <span>Selecione várias fotos para upload em lote</span>
+            <span className="font-mono font-medium text-foreground">
+              {images.length} / 5 fotos comerciais cadastradas
+            </span>
+            <span>
+              {isAtMediaLimit
+                ? 'Limite máximo de 5 mídias atingido'
+                : `Você pode adicionar mais ${5 - images.length} foto(s)`}
+            </span>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
@@ -307,34 +295,15 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
                       loading="lazy"
                     />
 
-                    {/* Cover badge */}
-                    {img.is_cover && (
-                      <span className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[9.5px] font-semibold text-primary-foreground shadow-xs">
-                        <Star className="h-2.5 w-2.5 fill-current" />
-                        Capa
-                      </span>
-                    )}
-
                     {/* Action Overlay */}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100" />
                     <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100">
-                      {!img.is_cover && (
-                        <button
-                          type="button"
-                          title="Definir como capa"
-                          disabled={disabled || busyId === img.id}
-                          onClick={() => handleSetCover(img.id)}
-                          className="h-6.5 w-6.5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
-                        >
-                          <Star className="h-3 w-3" />
-                        </button>
-                      )}
                       <button
                         type="button"
                         title="Remover mídia"
                         disabled={disabled || busyId === img.id}
                         onClick={() => handleDelete(img.id, img.file_name)}
-                        className="h-6.5 w-6.5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-destructive transition-colors"
+                        className="h-6.5 w-6.5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-destructive transition-colors cursor-pointer"
                       >
                         <Trash2 className="h-3 w-3" />
                       </button>
@@ -415,20 +384,22 @@ export function PropertyMediaGallery({ propertyId, disabled }: PropertyMediaGall
               )
             })}
 
-            {/* Upload more card tile */}
-            <button
-              type="button"
-              onClick={() => !disabled && fileInputRef.current?.click()}
-              disabled={disabled || uploading}
-              className="aspect-4/3 rounded-lg border border-dashed border-border flex flex-col items-center justify-center gap-1.5 text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
-            >
-              {uploading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Plus className="h-4 w-4" />
-              )}
-              <span className="text-[10px] font-medium">Adicionar fotos</span>
-            </button>
+            {/* Upload more card tile if limit not reached */}
+            {!isAtMediaLimit && (
+              <button
+                type="button"
+                onClick={() => !disabled && fileInputRef.current?.click()}
+                disabled={disabled || uploading}
+                className="aspect-4/3 rounded-lg border border-dashed border-border flex flex-col items-center justify-center gap-1.5 text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors cursor-pointer"
+              >
+                {uploading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                <span className="text-[10px] font-medium">Adicionar foto</span>
+              </button>
+            )}
           </div>
         </div>
       )}

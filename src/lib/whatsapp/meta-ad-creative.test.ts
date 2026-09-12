@@ -211,7 +211,7 @@ describe('meta-ad-creative service', () => {
 
     try {
       const result = await cacheAdCreativeImage({
-        supabase: mockSupabase as any,
+        supabase: mockSupabase as unknown as Parameters<typeof cacheAdCreativeImage>[0]['supabase'],
         accountId: 'acc-123',
         adSourceId: '120251178888720493',
         remoteUrl: 'https://fbcdn.net/creative.jpg',

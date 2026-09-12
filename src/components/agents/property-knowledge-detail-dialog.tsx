@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   Building2,
@@ -22,13 +22,12 @@ import {
   Clock,
   Calendar,
   User,
-  Star,
-  Check,
   Copy,
   MoreHorizontal,
   ArrowRight,
   ExternalLink,
   Bot,
+  RefreshCw,
 } from 'lucide-react'
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor'
 import { ExpandableKnowledgeSection } from './expandable-knowledge-section'
@@ -68,15 +67,22 @@ interface AdMapping {
   id: string
   ad_source_id: string
   ad_name: string | null
+  campaign_name?: string | null
+  adset_name?: string | null
+  creative_id?: string | null
+  creative_type?: string | null
   created_at: string
   verified?: boolean
   image_url?: string | null
+  thumbnail_url?: string | null
   headline?: string | null
   body?: string | null
   media_type?: string | null
   source_url?: string | null
   has_lead_telemetry?: boolean
   platform?: string
+  image_origin_label?: string | null
+  creative_synced_at?: string | null
 }
 
 interface ValidationResult {
@@ -88,6 +94,12 @@ interface ValidationResult {
   campaign_name?: string | null
   adset_name?: string | null
   ad_status?: string | null
+  creative_id?: string | null
+  creative_image_url?: string | null
+  creative_thumbnail_url?: string | null
+  creative_type?: string | null
+  headline?: string | null
+  body?: string | null
   referral_headline?: string | null
   referral_body?: string | null
   referral_image_url?: string | null
@@ -128,11 +140,14 @@ export function PropertyKnowledgeDetailDialog({
   const [deleting, setDeleting] = useState(false)
   const [promoting, setPromoting] = useState(false)
 
-  // Media list for Cover Photo & Stats
+  // Cover photo (Aba Geral - visual identity only)
+  const [coverImagePath, setCoverImagePath] = useState<string | null>(null)
+  const [uploadingCover, setUploadingCover] = useState(false)
+  const [deletingCover, setDeletingCover] = useState(false)
+  const coverFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Media list for Clara's commercial media (Aba Mídia)
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([])
-  const [loadingImages, setLoadingImages] = useState(false)
-  const [coverModalOpen, setCoverModalOpen] = useState(false)
-  const [settingCoverId, setSettingCoverId] = useState<string | null>(null)
 
   // CTWA Ad Mappings
   const [adMappings, setAdMappings] = useState<AdMapping[]>([])
@@ -144,11 +159,23 @@ export function PropertyKnowledgeDetailDialog({
   const [validatingAd, setValidatingAd] = useState(false)
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null)
   const [addingAd, setAddingAd] = useState(false)
+  const [syncingAdId, setSyncingAdId] = useState<string | null>(null)
 
   const supabase = createClient()
 
+  const loadCover = useCallback(async (propId: string) => {
+    try {
+      const res = await fetch(`/api/ai/properties/${propId}/cover`)
+      if (res.ok) {
+        const data = await res.json()
+        setCoverImagePath(data.cover_image_path || null)
+      }
+    } catch (err) {
+      console.error('Failed to load property cover:', err)
+    }
+  }, [])
+
   const loadImages = useCallback(async (propId: string) => {
-    setLoadingImages(true)
     try {
       const res = await fetch(`/api/ai/properties/${propId}/images`)
       if (res.ok) {
@@ -157,8 +184,6 @@ export function PropertyKnowledgeDetailDialog({
       }
     } catch (err) {
       console.error('Failed to load property images:', err)
-    } finally {
-      setLoadingImages(false)
     }
   }, [])
 
@@ -190,6 +215,8 @@ export function PropertyKnowledgeDetailDialog({
           ? property.ai_context.response_style_instructions
           : [],
       )
+      setCoverImagePath(property.cover_image_path || null)
+      loadCover(property.id)
       loadImages(property.id)
       loadAdMappings(property.id)
       setShowAddAd(false)
@@ -197,25 +224,75 @@ export function PropertyKnowledgeDetailDialog({
       setNewAdName('')
       setValidationResult(null)
     }
-  }, [property, loadImages, loadAdMappings])
+  }, [property, loadCover, loadImages, loadAdMappings])
 
-  // When switching to 'midia' tab and back, reload images to keep cover & counts in sync
+  // When switching to 'midia' tab and back, reload images to keep counts in sync
   useEffect(() => {
     if (property?.id && activeTab === 'geral') {
       loadImages(property.id)
     }
   }, [activeTab, property?.id, loadImages])
 
-  // Cover Image computation
-  const coverImage = useMemo(() => {
-    return propertyImages.find((img) => img.is_cover) || propertyImages[0] || null
-  }, [propertyImages])
-
   const publicImageUrl = useCallback(
     (storagePath: string) =>
       supabase.storage.from(PROPERTY_MEDIA_BUCKET).getPublicUrl(storagePath).data.publicUrl,
     [supabase],
   )
+
+  const handleUploadCover = async (files: FileList | null) => {
+    if (!property || !files || files.length === 0) return
+    const file = files[0]
+    setUploadingCover(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await fetch(`/api/ai/properties/${property.id}/cover`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao atualizar foto de capa')
+      }
+
+      setCoverImagePath(data.cover_image_path || null)
+      toast.success('Foto de capa atualizada com sucesso!')
+      onSaved()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao enviar foto de capa')
+    } finally {
+      setUploadingCover(false)
+      if (coverFileInputRef.current) coverFileInputRef.current.value = ''
+    }
+  }
+
+  const handleDeleteCover = async () => {
+    if (!property || !coverImagePath) return
+    const ok = window.confirm('Deseja realmente remover a foto de capa deste empreendimento?')
+    if (!ok) return
+
+    setDeletingCover(true)
+    try {
+      const res = await fetch(`/api/ai/properties/${property.id}/cover`, {
+        method: 'DELETE',
+      })
+
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao remover foto de capa')
+      }
+
+      setCoverImagePath(null)
+      toast.success('Foto de capa removida!')
+      onSaved()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao remover foto de capa')
+    } finally {
+      setDeletingCover(false)
+    }
+  }
 
   // Dynamic Metrics Calculation
   const knowledgeCount = useMemo(() => {
@@ -293,33 +370,7 @@ export function PropertyKnowledgeDetailDialog({
     }
   }, [property])
 
-  const handleSelectCover = async (image: PropertyImage) => {
-    if (!property) return
-    setSettingCoverId(image.id)
-    try {
-      const res = await fetch(`/api/ai/properties/${property.id}/images/${image.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_cover: true }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Falha ao atualizar foto de capa')
-      }
-      toast.success('Foto de capa atualizada!')
-      setPropertyImages((prev) =>
-        prev.map((img) => ({
-          ...img,
-          is_cover: img.id === image.id,
-        })),
-      )
-      setCoverModalOpen(false)
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Erro ao definir capa')
-    } finally {
-      setSettingCoverId(null)
-    }
-  }
+
 
   if (!property) return null
 
@@ -526,8 +577,33 @@ export function PropertyKnowledgeDetailDialog({
       toast.success('Vínculo do anúncio removido')
       loadAdMappings(property.id)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao desvincular'
+      const msg = err instanceof Error ? err.message : 'Erro ao desvincular anúncio'
       toast.error(msg)
+    }
+  }
+
+  const handleSyncAdCreative = async (mappingId: string) => {
+    if (!property) return
+    setSyncingAdId(mappingId)
+    try {
+      const res = await fetch(`/api/ai/properties/${property.id}/ads`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mapping_id: mappingId }),
+      })
+
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao sincronizar criativo na Meta')
+      }
+
+      toast.success('Criativo sincronizado com sucesso da Meta!')
+      loadAdMappings(property.id)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao sincronizar'
+      toast.error(msg)
+    } finally {
+      setSyncingAdId(null)
     }
   }
 
@@ -646,11 +722,11 @@ export function PropertyKnowledgeDetailDialog({
               <div className="space-y-6 max-w-5xl mx-auto">
                 {/* 1. HERO COVER BANNER */}
                 <div className="relative w-full h-44 sm:h-52 md:h-56 rounded-xl overflow-hidden border border-border bg-card shadow-xs group">
-                  {coverImage ? (
+                  {coverImagePath ? (
                     <>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={publicImageUrl(coverImage.storage_path)}
+                        src={publicImageUrl(coverImagePath)}
                         alt={name || 'Capa do empreendimento'}
                         className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-102"
                       />
@@ -661,12 +737,21 @@ export function PropertyKnowledgeDetailDialog({
                       <div className="h-10 w-10 rounded-full bg-muted/40 flex items-center justify-center mb-2">
                         <Camera className="h-5 w-5 text-muted-foreground" />
                       </div>
-                      <p className="text-xs font-semibold text-foreground">Nenhuma foto de capa</p>
+                      <p className="text-xs font-semibold text-foreground">Nenhuma foto de capa definida</p>
                       <p className="text-[11px] text-muted-foreground mt-0.5 max-w-xs">
-                        Adicione fotos na aba Mídia para exibir a capa deste empreendimento.
+                        Adicione uma imagem de capa para a identidade visual deste empreendimento no CRM.
                       </p>
                     </div>
                   )}
+
+                  {/* Hidden file input for cover photo */}
+                  <input
+                    ref={coverFileInputRef}
+                    type="file"
+                    accept="image/*,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif,.avif"
+                    className="hidden"
+                    onChange={(e) => handleUploadCover(e.target.files)}
+                  />
 
                   {/* Top Left / Bottom Info on Cover */}
                   <div className="absolute bottom-3 sm:bottom-4 left-4 sm:left-5 right-4 flex items-end justify-between gap-3">
@@ -679,31 +764,47 @@ export function PropertyKnowledgeDetailDialog({
                           <Building2 className="h-3 w-3 text-primary" />
                           {STAGE_LABELS[stage]}
                         </span>
-                        {coverImage?.description && (
-                          <span className="text-[11px] text-white/80 truncate max-w-sm hidden sm:inline">
-                            • {coverImage.description}
-                          </span>
-                        )}
+                        <span className="text-[11px] text-white/80 truncate max-w-sm hidden sm:inline">
+                          • Identidade visual do CRM (não enviada ao cliente)
+                        </span>
                       </div>
                     </div>
 
-                    {/* Change cover button */}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        if (propertyImages.length === 0) {
-                          setActiveTab('midia')
-                        } else {
-                          setCoverModalOpen(true)
-                        }
-                      }}
-                      className="h-8 text-xs gap-1.5 shrink-0 bg-black/60 hover:bg-black/80 text-white border-white/20 backdrop-blur-xs shadow-sm transition-all"
-                    >
-                      <Camera className="h-3.5 w-3.5" />
-                      <span>{propertyImages.length === 0 ? 'Adicionar fotos' : 'Alterar foto de capa'}</span>
-                    </Button>
+                    {/* Cover action buttons */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {coverImagePath && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={uploadingCover || deletingCover}
+                          onClick={handleDeleteCover}
+                          className="h-8 text-xs gap-1.5 bg-black/60 hover:bg-destructive text-white border-white/20 backdrop-blur-xs shadow-sm transition-all"
+                        >
+                          {deletingCover ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                          <span className="hidden sm:inline">Remover capa</span>
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={uploadingCover || deletingCover}
+                        onClick={() => coverFileInputRef.current?.click()}
+                        className="h-8 text-xs gap-1.5 bg-black/60 hover:bg-black/80 text-white border-white/20 backdrop-blur-xs shadow-sm transition-all"
+                      >
+                        {uploadingCover ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Camera className="h-3.5 w-3.5" />
+                        )}
+                        <span>{coverImagePath ? 'Alterar foto de capa' : 'Adicionar foto de capa'}</span>
+                      </Button>
+                    </div>
                   </div>
                 </div>
 
@@ -834,13 +935,13 @@ export function PropertyKnowledgeDetailDialog({
                       </div>
                       <div className="mt-3">
                         <span className="text-2xl font-bold font-mono tracking-tight text-foreground">
-                          {mediaCount}
+                          {mediaCount} <span className="text-sm font-normal text-muted-foreground">/ 5</span>
                         </span>
                         <p className="text-xs font-medium text-foreground mt-0.5">
-                          Mídias
+                          Mídias para envio
                         </p>
                         <p className="text-[10.5px] text-muted-foreground">
-                          {mediaCount === 1 ? '1 foto cadastrada' : `${mediaCount} fotos cadastradas`}
+                          {mediaCount === 1 ? '1 foto comercial' : `${mediaCount} de 5 fotos cadastradas`}
                         </p>
                       </div>
                     </button>
@@ -1210,7 +1311,29 @@ export function PropertyKnowledgeDetailDialog({
                         </div>
 
                         {validationResult.valid ? (
-                          <div className="rounded-lg bg-background/80 border border-emerald-500/20 p-3 space-y-2 text-[11px] leading-relaxed">
+                          <div className="rounded-lg bg-background/80 border border-emerald-500/20 p-3 space-y-2.5 text-[11px] leading-relaxed">
+                            {validationResult.creative_image_url && (
+                              <div className="flex items-center gap-3 p-2 rounded-lg bg-background border border-emerald-500/30">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={validationResult.creative_image_url}
+                                  alt="Preview do Criativo Meta"
+                                  className="h-14 w-14 rounded-md object-cover border border-border shrink-0"
+                                />
+                                <div className="min-w-0 flex-1 space-y-0.5">
+                                  <span className="text-[10px] font-semibold text-emerald-400 block uppercase tracking-wider">
+                                    Criativo identificado na Meta
+                                  </span>
+                                  <span className="text-[11px] font-medium text-foreground truncate block">
+                                    {validationResult.ad_name || 'Criativo do Anúncio'}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground truncate block">
+                                    {validationResult.campaign_name || 'Campanha Meta Ads'}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
                               <div>
                                 <span className="text-muted-foreground font-medium">ID do Anúncio:</span>{' '}
@@ -1385,29 +1508,35 @@ export function PropertyKnowledgeDetailDialog({
                           className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card/80 hover:bg-card hover:border-border transition-all duration-200 shadow-xs"
                         >
                           <div className="flex flex-col md:flex-row items-stretch">
-                            {/* Left Column: Real Creative Image or Elegant Placeholder */}
+                            {/* Left Column: Real Creative Image or Honest Placeholder */}
                             <div className="relative w-full md:w-[280px] lg:w-[320px] shrink-0 bg-muted/40 aspect-16/10 md:aspect-auto overflow-hidden border-b md:border-b-0 md:border-r border-border/60">
                               {ad.image_url ? (
                                 <>
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
                                   <img
                                     src={ad.image_url}
-                                    alt={ad.ad_name || 'Criativo do Anúncio'}
+                                    alt={ad.ad_name || 'Criativo do Anúncio Meta'}
                                     className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-103"
                                     loading="lazy"
                                   />
-                                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
+                                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent opacity-70" />
+                                  <div className="absolute top-2.5 left-2.5">
+                                    <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium bg-black/70 text-white backdrop-blur-md border border-white/15 shadow-xs">
+                                      <ImageIcon className="h-2.5 w-2.5 text-primary" />
+                                      {ad.image_origin_label || 'Criativo Meta'}
+                                    </span>
+                                  </div>
                                 </>
                               ) : (
                                 <div className="w-full h-full min-h-[160px] flex flex-col items-center justify-center p-6 text-center space-y-2 bg-gradient-to-b from-muted/30 to-muted/60">
                                   <div className="h-10 w-10 rounded-xl bg-background/80 border border-border flex items-center justify-center text-muted-foreground shadow-xs">
                                     <ImageIcon className="h-5 w-5" />
                                   </div>
-                                  <span className="text-[11px] font-medium text-foreground/80">
-                                    {ad.ad_name || 'Anúncio Meta'}
+                                  <span className="text-[11px] font-semibold text-foreground/80">
+                                    Criativo indisponível
                                   </span>
-                                  <span className="text-[10px] text-muted-foreground">
-                                    Criativo exibido no WhatsApp
+                                  <span className="text-[10px] text-muted-foreground max-w-[200px] leading-tight">
+                                    Nenhum criativo visual retornado pela Meta para este anúncio.
                                   </span>
                                 </div>
                               )}
@@ -1441,7 +1570,15 @@ export function PropertyKnowledgeDetailDialog({
                                   >
                                     <MoreHorizontal className="h-4 w-4" />
                                   </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end" className="w-48">
+                                  <DropdownMenuContent align="end" className="w-52">
+                                    <DropdownMenuItem
+                                      onClick={() => handleSyncAdCreative(ad.id)}
+                                      disabled={syncingAdId === ad.id}
+                                      className="text-xs cursor-pointer gap-2"
+                                    >
+                                      <RefreshCw className={`h-3.5 w-3.5 ${syncingAdId === ad.id ? 'animate-spin text-primary' : ''}`} />
+                                      Sincronizar criativo da Meta
+                                    </DropdownMenuItem>
                                     <DropdownMenuItem
                                       onClick={() => {
                                         navigator.clipboard.writeText(ad.ad_source_id)
@@ -1506,7 +1643,7 @@ export function PropertyKnowledgeDetailDialog({
                                     Campanha
                                   </span>
                                   <span className="text-xs font-medium text-foreground truncate block">
-                                    {ad.ad_name || `${property.name} - Campanha`}
+                                    {ad.campaign_name || ad.ad_name || `${property.name} - Campanha`}
                                   </span>
                                 </div>
 
@@ -1515,7 +1652,7 @@ export function PropertyKnowledgeDetailDialog({
                                     Conjunto de anúncios
                                   </span>
                                   <span className="text-xs font-medium text-foreground truncate block">
-                                    {ad.headline ? ad.headline : 'Conversões WhatsApp'}
+                                    {ad.adset_name || (ad.headline ? ad.headline : 'Conversões WhatsApp')}
                                   </span>
                                 </div>
 
@@ -1524,7 +1661,11 @@ export function PropertyKnowledgeDetailDialog({
                                     Formato
                                   </span>
                                   <span className="text-xs font-medium text-foreground block">
-                                    {ad.media_type === 'video' ? 'Vídeo' : 'Imagem'}
+                                    {ad.media_type === 'video' || ad.creative_type === 'video'
+                                      ? 'Vídeo'
+                                      : ad.creative_type === 'carousel'
+                                        ? 'Carrossel'
+                                        : 'Imagem'}
                                   </span>
                                 </div>
                               </div>
@@ -1675,121 +1816,6 @@ export function PropertyKnowledgeDetailDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
-
-      {/* MODAL PARA SELEÇÃO DE FOTO DE CAPA ENTRE AS MÍDIAS EXISTENTES */}
-      <Dialog open={coverModalOpen} onOpenChange={setCoverModalOpen}>
-        <DialogContent className="w-full sm:max-w-2xl max-h-[85vh] flex flex-col p-0">
-          <DialogHeader className="p-4 sm:p-5 border-b border-border">
-            <DialogTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Camera className="h-4 w-4 text-primary" />
-              Selecionar Foto de Capa
-            </DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Escolha uma das fotos cadastradas no empreendimento para ser a capa principal.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="p-4 sm:p-5 overflow-y-auto flex-1">
-            {loadingImages ? (
-              <div className="flex items-center justify-center p-8 text-xs text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                Carregando mídias...
-              </div>
-            ) : propertyImages.length === 0 ? (
-              <div className="text-center p-8 space-y-2">
-                <ImageIcon className="h-8 w-8 mx-auto text-muted-foreground" />
-                <p className="text-xs font-medium text-foreground">Nenhuma mídia cadastrada</p>
-                <p className="text-[11px] text-muted-foreground">
-                  Adicione fotos na aba Mídia para selecioná-las como capa.
-                </p>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setCoverModalOpen(false)
-                    setActiveTab('midia')
-                  }}
-                  className="h-8 text-xs mt-2"
-                >
-                  Ir para aba Mídia
-                </Button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {propertyImages.map((img) => {
-                  const isCover = img.is_cover || coverImage?.id === img.id
-                  const isBusy = settingCoverId === img.id
-
-                  return (
-                    <button
-                      key={img.id}
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => handleSelectCover(img)}
-                      className={cn(
-                        'group relative aspect-4/3 rounded-lg overflow-hidden border text-left transition-all cursor-pointer',
-                        isCover
-                          ? 'border-primary ring-2 ring-primary/30 shadow-sm'
-                          : 'border-border hover:border-foreground/40 hover:shadow-xs',
-                      )}
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={publicImageUrl(img.storage_path)}
-                        alt={img.description || img.file_name}
-                        className="w-full h-full object-cover transition-transform group-hover:scale-103"
-                        loading="lazy"
-                      />
-
-                      {/* Cover Badge */}
-                      {isCover && (
-                        <span className="absolute top-2 left-2 flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground shadow-xs">
-                          <Star className="h-2.5 w-2.5 fill-current" />
-                          Capa Atual
-                        </span>
-                      )}
-
-                      {/* Hover Overlay */}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        {isBusy ? (
-                          <Loader2 className="h-5 w-5 text-white animate-spin" />
-                        ) : isCover ? (
-                          <span className="text-xs font-semibold text-white flex items-center gap-1">
-                            <Check className="h-3.5 w-3.5" /> Selecionada
-                          </span>
-                        ) : (
-                          <span className="text-xs font-medium text-white bg-black/60 px-2.5 py-1 rounded-full backdrop-blur-xs">
-                            Definir como Capa
-                          </span>
-                        )}
-                      </div>
-
-                      {img.description && (
-                        <p className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-2 text-[10px] text-white truncate">
-                          {img.description}
-                        </p>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          <DialogFooter className="p-3 border-t bg-muted/20 flex justify-between sm:justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setCoverModalOpen(false)}
-              className="h-8 text-xs"
-            >
-              Fechar
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </Dialog>
   )
 }
