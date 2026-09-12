@@ -86,14 +86,14 @@ const mockDb = {
       };
     }
     if (table === 'property_images') {
-      const queryObj: any = {
+      const queryObj: Record<string, unknown> = {
         data: [],
         error: null,
       };
       queryObj.eq = vi.fn().mockReturnValue(queryObj);
       queryObj.in = vi.fn().mockResolvedValue({ data: [], error: null });
       queryObj.order = vi.fn().mockReturnValue(queryObj);
-      queryObj.then = (resolve: any) => Promise.resolve({ data: [], error: null }).then(resolve);
+      queryObj.then = (resolve: (val: unknown) => void) => Promise.resolve({ data: [], error: null }).then(resolve);
       return {
         select: vi.fn().mockReturnValue(queryObj),
       };

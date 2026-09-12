@@ -1,11 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  isExplicitMediaRequest,
-  didAssistantOfferMedia,
-  isAffirmativeConfirmation,
   isMediaSendAuthorized,
   executeConversationalTurn,
-  type ConversationalTurnArgs,
 } from './conversation-engine';
 import { dispatchInboundToAiReply } from './auto-reply';
 import * as configMod from './config';
@@ -90,7 +86,7 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
         }
         if (table === 'property_images') {
           const makeBuilder = () => {
-            const builder: any = {
+            const builder: Record<string, unknown> = {
               select: vi.fn().mockReturnThis(),
               eq: vi.fn().mockReturnThis(),
               in: vi.fn().mockImplementation((_col: string, ids: string[]) => {
@@ -110,7 +106,7 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
                 });
               }),
               order: vi.fn().mockImplementation(() => builder),
-              then: (resolve: (val: any) => void) => {
+              then: (resolve: (val: unknown) => void) => {
                 resolve({
                   data: mediaItems.map((m, idx) => ({
                     id: m.id,

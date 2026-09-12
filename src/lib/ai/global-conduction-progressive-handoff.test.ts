@@ -81,14 +81,14 @@ const mockDb = {
           position: 1,
         },
       ];
-      const queryObj: any = {
+      const queryObj: Record<string, unknown> = {
         data: mockImages,
         error: null,
       };
       queryObj.eq = vi.fn().mockReturnValue(queryObj);
       queryObj.in = vi.fn().mockResolvedValue({ data: mockImages, error: null });
       queryObj.order = vi.fn().mockReturnValue(queryObj);
-      queryObj.then = (resolve: any) => Promise.resolve({ data: mockImages, error: null }).then(resolve);
+      queryObj.then = (resolve: (val: unknown) => void) => Promise.resolve({ data: mockImages, error: null }).then(resolve);
       return {
         select: vi.fn().mockReturnValue(queryObj),
       };

@@ -43,7 +43,6 @@ export function buildConversationalSystemPrompt(args: PromptBuilderArgs): string
     businessHours,
     structuredOutputRequired = false,
     userMessageCount,
-    totalTurns,
     communicatedContent = [],
   } = args;
 

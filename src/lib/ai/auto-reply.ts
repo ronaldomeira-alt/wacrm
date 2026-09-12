@@ -83,8 +83,8 @@ export async function dispatchInboundToAiReply(
     if ((initialConv.ai_reply_count ?? 0) >= maxReplies) return
 
     const inboundArrivedAt = new Date().toISOString()
-    const convUpdatePayload: Record<string, any> = { ai_last_inbound_at: inboundArrivedAt }
-    if ((initialConv as any).ai_reactivation_status === 'scheduled') {
+    const convUpdatePayload: Record<string, unknown> = { ai_last_inbound_at: inboundArrivedAt }
+    if ((initialConv as Record<string, unknown>).ai_reactivation_status === 'scheduled') {
       convUpdatePayload.ai_reactivation_status = 'cancelled'
     }
     void db

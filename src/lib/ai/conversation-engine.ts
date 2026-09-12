@@ -353,9 +353,9 @@ export function isMediaSendAuthorized(args: {
   }
 
   // 3. Absolute First Turn Gate:
-  // If isInitialContact is true:
+  // If isInitialContact is true or userMessageCount <= 1:
   // Media is ONLY allowed if the user explicitly requested photos/media.
-  if (isInitialContact) {
+  if (isInitialContact || userMessageCount <= 1) {
     if (explicitCheck.requested) {
       return {
         authorized: true,

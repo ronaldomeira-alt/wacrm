@@ -14,7 +14,6 @@ import type {
   ReactivationCandidate,
   ReactivationDecision,
   ReactivationEvaluationResult,
-  ReactivationOutcome,
   ReactivationRunResult,
 } from './reactivation-types'
 import type { AiConfig, AiUsage } from './types'
@@ -165,9 +164,26 @@ export async function findReactivationCandidates(
     return []
   }
 
+interface CandidateQueryRow {
+  id: string
+  account_id: string
+  contact_id: string
+  property_id: string | null
+  last_message_at: string
+  ai_reactivation_status: 'scheduled' | 'sent' | 'cancelled' | 'skipped' | 'failed' | null
+  ai_reactivation_scheduled_for: string | null
+  ai_reactivation_sent_at: string | null
+  ai_reactivation_last_message_at: string | null
+  ai_reactivation_count: number | null
+  ai_transfer_status: string | null
+  contact: { id: string; name: string | null; phone: string | null } | null
+  property?: { id: string; name: string; stage?: string | null } | null
+}
+
   const results: ReactivationCandidate[] = []
 
-  for (const row of data as any[]) {
+  for (const rawRow of data) {
+    const row = rawRow as unknown as CandidateQueryRow
     if (row.ai_transfer_status === 'pending_human' || row.ai_transfer_status === 'transferred') {
       continue
     }
@@ -263,7 +279,25 @@ export async function evaluateAndExecuteReactivation(
     return { outcome: 'failed', conversationId, error: 'Conversation not found' }
   }
 
-  const conv = convData as any
+interface ConversationLookupRow {
+  id: string
+  account_id: string
+  contact_id: string
+  property_id: string | null
+  assigned_agent_id: string | null
+  ai_autoreply_disabled: boolean
+  ai_transfer_status: string | null
+  ai_reactivation_status: string | null
+  ai_reactivation_sent_at: string | null
+  ai_reactivation_last_message_at: string | null
+  ai_reactivation_count: number
+  last_message_at: string
+  status: string
+  contact?: { id: string; name: string | null; phone: string | null } | null
+  property?: { id: string; name: string; stage?: string | null } | null
+}
+
+  const conv = convData as unknown as ConversationLookupRow
 
   // 2. CHECK HUMAN TAKEOVER / HANDOFF (Cenário I)
   if (
@@ -417,9 +451,10 @@ export async function evaluateAndExecuteReactivation(
 
     rawLlmOutput = response.text.trim()
     usage = response.usage
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
     console.error('[reactivation] LLM call failed:', err)
-    return { outcome: 'failed', conversationId, error: err.message }
+    return { outcome: 'failed', conversationId, error: errorMsg }
   }
 
   // Parse structured JSON output
@@ -430,7 +465,7 @@ export async function evaluateAndExecuteReactivation(
       .replace(/```/g, '')
       .trim()
     decision = JSON.parse(cleaned)
-  } catch (parseErr) {
+  } catch {
     console.warn('[reactivation] Failed to parse JSON output, using raw text fallback:', rawLlmOutput)
     decision = {
       should_reactivate: rawLlmOutput.length > 10,
@@ -507,13 +542,14 @@ export async function evaluateAndExecuteReactivation(
       messageText: decision.message_text,
       decision,
     }
-  } catch (sendErr: any) {
+  } catch (sendErr: unknown) {
+    const errorMsg = sendErr instanceof Error ? sendErr.message : String(sendErr)
     console.error('[reactivation] error sending message via engineSendText:', sendErr)
     await db
       .from('conversations')
       .update({ ai_reactivation_status: 'failed' })
       .eq('id', conversationId)
-    return { outcome: 'failed', conversationId, error: sendErr.message }
+    return { outcome: 'failed', conversationId, error: errorMsg }
   } finally {
     try {
       await db.rpc('release_ai_conversation_lock', {

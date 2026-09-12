@@ -120,9 +120,9 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
   // ============================================================
   describe('Conversational Reactivation Scenarios (A through L)', () => {
     function buildMockDb(opts: {
-      conversation: any
+      conversation: Record<string, unknown>
       messages: Array<{ id: string; sender_type: 'customer' | 'bot' | 'agent'; content_text: string; created_at: string }>
-      onUpdate?: (payload: any) => void
+      onUpdate?: (payload: Record<string, unknown>) => void
     }) {
       return {
         from: vi.fn().mockImplementation((table: string) => {
@@ -208,7 +208,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
         usage: { promptTokens: 100, completionTokens: 40, totalTokens: 140 },
       })
 
-      let updatedPayload: any = null
+      let updatedPayload: Record<string, unknown> | null = null
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-1',
@@ -384,7 +384,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
     // CENÁRIO H: Cliente responde antes das 3 horas -> A reativação automática deve ser cancelada
     it('CENÁRIO H: Customer replies before reactivation dispatch cancels pending scheduled reactivation', async () => {
-      let updatedPayload: any = null
+      let updatedPayload: Record<string, unknown> | null = null
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-h',
@@ -419,7 +419,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
     // CENÁRIO I: Um humano assume a conversa antes da reativação -> Não disparar mensagem automática
     it('CENÁRIO I: Human agent takeover cancels and suppresses AI reactivation', async () => {
-      let updatedPayload: any = null
+      let updatedPayload: Record<string, unknown> | null = null
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-i',
@@ -570,7 +570,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
     // CENÁRIO EXTRA: Cliente deu opt-out explícito ("não tenho interesse") -> Cancelado sem mensagem
     it('Explicit opt-out from customer cancels reactivation without sending message', async () => {
-      let updatedPayload: any = null
+      let updatedPayload: Record<string, unknown> | null = null
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-opt-out',
@@ -703,7 +703,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
           if (table === 'conversations') {
             return {
               select: vi.fn().mockReturnValue({
-                eq: vi.fn().mockImplementation((col: string, val: string) => {
+                eq: vi.fn().mockImplementation((col: string) => {
                   if (col === 'account_id') {
                     return {
                       neq: vi.fn().mockReturnValue({

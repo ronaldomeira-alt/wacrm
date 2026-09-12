@@ -13,13 +13,13 @@ import {
   isWithinBusinessHours,
   getNextBusinessHourStart,
 } from '../src/lib/ai/reactivation-engine'
-import type { ChatMessage } from '../src/lib/ai/types'
+import type { ChatMessage, AiConfig } from '../src/lib/ai/types'
 
 async function runDryRun() {
   const db = supabaseAdmin()
 
   const targetAccountId = 'f8d2ae51-e393-4a74-a432-ddab0610837e'
-  let config: any = null
+  let config: AiConfig | null = null
   try {
     config = await loadAiConfig(db, targetAccountId)
   } catch (err) {
@@ -88,7 +88,7 @@ async function runDryRun() {
     }
   }
 
-  const results: any[] = []
+  const results: Record<string, unknown>[] = []
 
   // ==========================================
   // CENÁRIO 1 — SEM CONTEXTO
@@ -275,7 +275,7 @@ async function runDryRun() {
   const sc8Replied = new Date(sc8NewCustomerMsg.created_at).getTime() > new Date(sc8LastEvaluated).getTime()
   results.push({
     cenario: 'CENÁRIO 8 — CLIENTE RESPONDE ANTES DO ENVIO',
-    contexto: `Reativação estava pendente/agendada desde 10:00. Às 12:45 o cliente enviou: "${sc8NewCustomerMsg.content}".`,
+    contexto: `Reativação estava pendente/agendada desde 10:00. Às 12:45 o cliente enviou: "${sc8NewCustomerMsg.content}". (replied=${sc8Replied})`,
     tipo_escolhido: 'none',
     pista_identificada: 'Cliente quebrou o silêncio ativamente antes da janela de disparo.',
     mensagem_exata: '(Nenhuma mensagem de reativação gerada — o webhook do auto-reply assume a resposta normalmente)',
@@ -293,7 +293,7 @@ async function runDryRun() {
   const sc9NextStart = getNextBusinessHourStart(sc9SimulatedNow, config)
   results.push({
     cenario: 'CENÁRIO 9 — FORA DO HORÁRIO COMERCIAL',
-    contexto: 'Cliente enviou mensagem às 19:00. O gatilho de 3 horas vence às 22:00 (fora do horário 08:00–20:00).',
+    contexto: `Cliente enviou mensagem às 19:00. O gatilho de 3 horas vence às 22:00 (isBusinessHours=${sc9IsBusiness}).`,
     tipo_escolhido: 'none (retido/postergado)',
     pista_identificada: `Horário atual avaliado: 22:00 BRT (fora da janela comercial de 08:00 às 20:00).`,
     mensagem_exata: '(Nenhuma mensagem enviada às 22:00 — agendada para o próximo expediente)',
@@ -309,7 +309,7 @@ async function runDryRun() {
   const sc10BotDisabled = true
   results.push({
     cenario: 'CENÁRIO 10 — CONVERSA JÁ ASSUMIDA POR HUMANO',
-    contexto: 'Durante o período de inatividade, o corretor Ronaldo assumiu a conversa no painel (assigned_agent_id preenchido e ai_autoreply_disabled = true).',
+    contexto: `Durante o período de inatividade, o corretor assumiu no painel (agent=${sc10AssignedAgent}, disabled=${sc10BotDisabled}).`,
     tipo_escolhido: 'none',
     pista_identificada: 'Atendimento humano ativo no thread.',
     mensagem_exata: '(Nenhuma mensagem gerada — a IA desliga e respeita o corretor humano)',
