@@ -1510,25 +1510,35 @@ export function PropertyKnowledgeDetailDialog({
                         >
                           <div className="flex flex-col md:flex-row items-stretch">
                             {/* Left Column: Real Creative Image or Honest Placeholder */}
-                            <div className="relative w-full md:w-[280px] lg:w-[320px] shrink-0 bg-muted/40 aspect-16/10 md:aspect-auto overflow-hidden border-b md:border-b-0 md:border-r border-border/60">
+                            <div className="relative w-full md:w-[260px] lg:w-[280px] shrink-0 bg-muted/40 aspect-16/10 md:aspect-auto md:max-h-[300px] overflow-hidden border-b md:border-b-0 md:border-r border-border/60">
                               {ad.image_url ? (
-                                <>
+                                <div className="relative w-full h-full min-h-[220px] group/img">
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
                                   <img
                                     src={ad.image_url}
                                     alt={ad.ad_name || 'Criativo do Anúncio Meta'}
-                                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-103"
+                                    className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-103"
                                     loading="lazy"
                                     referrerPolicy="no-referrer"
                                   />
-                                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent opacity-70" />
+                                  <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent opacity-70 group-hover/img:opacity-85 transition-opacity" />
                                   <div className="absolute top-2.5 left-2.5">
-                                    <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium bg-black/70 text-white backdrop-blur-md border border-white/15 shadow-xs">
+                                    <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium bg-black/75 text-white backdrop-blur-md border border-white/15 shadow-xs">
                                       <ImageIcon className="h-2.5 w-2.5 text-primary" />
                                       {ad.image_origin_label || 'Criativo Meta'}
                                     </span>
                                   </div>
-                                </>
+                                  <a
+                                    href={ad.image_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity bg-black/45 text-white text-[11px] font-medium gap-1.5 backdrop-blur-[2px]"
+                                    title="Abrir imagem em tamanho real"
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                    <span>Ver criativo completo</span>
+                                  </a>
+                                </div>
                               ) : (
                                 <div className="w-full h-full min-h-[160px] flex flex-col items-center justify-center p-6 text-center space-y-2 bg-gradient-to-b from-muted/30 to-muted/60">
                                   <div className="h-10 w-10 rounded-xl bg-background/80 border border-border flex items-center justify-center text-muted-foreground shadow-xs">
@@ -1545,173 +1555,176 @@ export function PropertyKnowledgeDetailDialog({
                             </div>
 
                             {/* Right Column: Metadata & Intelligent Clara Context */}
-                            <div className="flex-1 p-4 sm:p-5 flex flex-col justify-between space-y-4">
-                              {/* Card Header: Title, Platform, Verified Badge, Actions */}
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="space-y-1 min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2.5">
-                                    <h4 className="text-base font-semibold text-foreground tracking-tight truncate">
-                                      {ad.ad_name || `Anúncio ${property.name}`}
-                                    </h4>
-                                    <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                                      <CheckCircle2 className="h-3 w-3" />
-                                      Vínculo verificado
-                                    </span>
-                                  </div>
-                                  <p className="text-xs text-muted-foreground">
-                                    {ad.platform || 'Meta Ads · Click to WhatsApp'}
-                                  </p>
-                                </div>
-
-                                {/* Actions Menu */}
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger
-                                    type="button"
-                                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/80 cursor-pointer shrink-0 transition-colors focus-visible:outline-none"
-                                    aria-label="Opções do anúncio"
-                                  >
-                                    <MoreHorizontal className="h-4 w-4" />
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end" className="w-52">
-                                    <DropdownMenuItem
-                                      onClick={() => handleSyncAdCreative(ad.id)}
-                                      disabled={syncingAdId === ad.id}
-                                      className="text-xs cursor-pointer gap-2"
-                                    >
-                                      <RefreshCw className={`h-3.5 w-3.5 ${syncingAdId === ad.id ? 'animate-spin text-primary' : ''}`} />
-                                      Sincronizar criativo da Meta
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem
-                                      onClick={() => {
-                                        navigator.clipboard.writeText(ad.ad_source_id)
-                                        toast.success('ID copiado para a área de transferência!')
-                                      }}
-                                      className="text-xs cursor-pointer gap-2"
-                                    >
-                                      <Copy className="h-3.5 w-3.5" />
-                                      Copiar ID do Anúncio
-                                    </DropdownMenuItem>
-                                    {ad.source_url && (
-                                      <DropdownMenuItem
-                                        onClick={() => window.open(ad.source_url!, '_blank')}
-                                        className="text-xs cursor-pointer gap-2"
-                                      >
-                                        <ExternalLink className="h-3.5 w-3.5" />
-                                        Abrir Link do Anúncio
-                                      </DropdownMenuItem>
-                                    )}
-                                    <DropdownMenuItem
-                                      onClick={() => {
-                                        const confirmDelete = window.confirm(
-                                          `Desvincular o anúncio "${ad.ad_name || ad.ad_source_id}" deste empreendimento?`,
-                                        )
-                                        if (confirmDelete) {
-                                          handleDeleteAdMapping(ad.id)
-                                        }
-                                      }}
-                                      className="text-xs text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer gap-2"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                      Desvincular anúncio
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              </div>
-
-                              {/* Grid of Identifiers: ID, Campanha, Conjunto, Formato */}
-                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1 border-t border-border/50">
-                                <div>
-                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
-                                    ID do anúncio
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      navigator.clipboard.writeText(ad.ad_source_id)
-                                      toast.success('ID copiado!')
-                                    }}
-                                    className="group/id inline-flex items-center gap-1 font-mono text-xs font-semibold text-foreground hover:text-primary transition-colors text-left"
-                                    title="Clique para copiar"
-                                  >
-                                    <span className="truncate max-w-[110px] sm:max-w-[130px]">
-                                      {ad.ad_source_id}
-                                    </span>
-                                    <Copy className="h-3 w-3 text-muted-foreground group-hover/id:text-primary shrink-0 opacity-70 group-hover/id:opacity-100" />
-                                  </button>
-                                </div>
-
-                                <div>
-                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
-                                    Campanha
-                                  </span>
-                                  <span className="text-xs font-medium text-foreground truncate block">
-                                    {ad.campaign_name || ad.ad_name || `${property.name} - Campanha`}
-                                  </span>
-                                </div>
-
-                                <div>
-                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
-                                    Conjunto de anúncios
-                                  </span>
-                                  <span className="text-xs font-medium text-foreground truncate block">
-                                    {ad.adset_name || (ad.headline ? ad.headline : 'Conversões WhatsApp')}
-                                  </span>
-                                </div>
-
-                                <div>
-                                  <span className="text-[11px] text-muted-foreground block mb-0.5">
-                                    Formato
-                                  </span>
-                                  <span className="text-xs font-medium text-foreground block">
-                                    {ad.media_type === 'video' || ad.creative_type === 'video'
-                                      ? 'Vídeo'
-                                      : ad.creative_type === 'carousel'
-                                        ? 'Carrossel'
-                                        : 'Imagem'}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Two Context Intelligence Cards */}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                {/* Card A: Empreendimento Vinculado */}
-                                <div className="rounded-xl border border-border/70 bg-muted/20 p-3 flex items-center gap-3">
-                                  <div className="h-8.5 w-8.5 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
-                                    <Building2 className="h-4 w-4" />
-                                  </div>
-                                  <div className="min-w-0">
-                                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold block">
-                                      Empreendimento vinculado
-                                    </span>
-                                    <span className="text-xs font-semibold text-foreground truncate block">
-                                      {property.name}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {/* Card B: Contexto da Clara */}
-                                <div className="rounded-xl border border-border/70 bg-muted/20 p-3 flex items-center gap-3">
-                                  <div className="h-8.5 w-8.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
-                                    <Bot className="h-4 w-4" />
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-                                        Contexto da Clara
-                                      </span>
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
-                                        ● Ativo
+                            <div className="flex-1 p-4 sm:p-5 flex flex-col justify-between">
+                              {/* Top Block: Header, Metadata Grid, and Context Cards grouped tightly at the top */}
+                              <div className="space-y-3.5">
+                                {/* Card Header: Title, Platform, Verified Badge, Actions */}
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="space-y-1 min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2.5">
+                                      <h4 className="text-base font-semibold text-foreground tracking-tight truncate">
+                                        {ad.ad_name || `Anúncio ${property.name}`}
+                                      </h4>
+                                      <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                        <CheckCircle2 className="h-3 w-3" />
+                                        Vínculo verificado
                                       </span>
                                     </div>
-                                    <span className="text-[11px] text-muted-foreground truncate block">
-                                      Leads deste anúncio entram com o contexto do {property.name}.
+                                    <p className="text-xs text-muted-foreground">
+                                      {ad.platform || 'Meta Ads · Click to WhatsApp'}
+                                    </p>
+                                  </div>
+
+                                  {/* Actions Menu */}
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger
+                                      type="button"
+                                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/80 cursor-pointer shrink-0 transition-colors focus-visible:outline-none"
+                                      aria-label="Opções do anúncio"
+                                    >
+                                      <MoreHorizontal className="h-4 w-4" />
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end" className="w-52">
+                                      <DropdownMenuItem
+                                        onClick={() => handleSyncAdCreative(ad.id)}
+                                        disabled={syncingAdId === ad.id}
+                                        className="text-xs cursor-pointer gap-2"
+                                      >
+                                        <RefreshCw className={`h-3.5 w-3.5 ${syncingAdId === ad.id ? 'animate-spin text-primary' : ''}`} />
+                                        Sincronizar criativo da Meta
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(ad.ad_source_id)
+                                          toast.success('ID copiado para a área de transferência!')
+                                        }}
+                                        className="text-xs cursor-pointer gap-2"
+                                      >
+                                        <Copy className="h-3.5 w-3.5" />
+                                        Copiar ID do Anúncio
+                                      </DropdownMenuItem>
+                                      {ad.source_url && (
+                                        <DropdownMenuItem
+                                          onClick={() => window.open(ad.source_url!, '_blank')}
+                                          className="text-xs cursor-pointer gap-2"
+                                        >
+                                          <ExternalLink className="h-3.5 w-3.5" />
+                                          Abrir Link do Anúncio
+                                        </DropdownMenuItem>
+                                      )}
+                                      <DropdownMenuItem
+                                        onClick={() => {
+                                          const confirmDelete = window.confirm(
+                                            `Desvincular o anúncio "${ad.ad_name || ad.ad_source_id}" deste empreendimento?`,
+                                          )
+                                          if (confirmDelete) {
+                                            handleDeleteAdMapping(ad.id)
+                                          }
+                                        }}
+                                        className="text-xs text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer gap-2"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                        Desvincular anúncio
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                </div>
+
+                                {/* Grid of Identifiers: ID, Campanha, Conjunto, Formato */}
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-2.5 border-t border-border/50">
+                                  <div>
+                                    <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                      ID do anúncio
                                     </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(ad.ad_source_id)
+                                        toast.success('ID copiado!')
+                                      }}
+                                      className="group/id inline-flex items-center gap-1 font-mono text-xs font-semibold text-foreground hover:text-primary transition-colors text-left"
+                                      title="Clique para copiar"
+                                    >
+                                      <span className="truncate max-w-[110px] sm:max-w-[130px]">
+                                        {ad.ad_source_id}
+                                      </span>
+                                      <Copy className="h-3 w-3 text-muted-foreground group-hover/id:text-primary shrink-0 opacity-70 group-hover/id:opacity-100" />
+                                    </button>
+                                  </div>
+
+                                  <div>
+                                    <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                      Campanha
+                                    </span>
+                                    <span className="text-xs font-medium text-foreground truncate block">
+                                      {ad.campaign_name || ad.ad_name || `${property.name} - Campanha`}
+                                    </span>
+                                  </div>
+
+                                  <div>
+                                    <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                      Conjunto de anúncios
+                                    </span>
+                                    <span className="text-xs font-medium text-foreground truncate block">
+                                      {ad.adset_name || (ad.headline ? ad.headline : 'Conversões WhatsApp')}
+                                    </span>
+                                  </div>
+
+                                  <div>
+                                    <span className="text-[11px] text-muted-foreground block mb-0.5">
+                                      Formato
+                                    </span>
+                                    <span className="text-xs font-medium text-foreground block">
+                                      {ad.media_type === 'video' || ad.creative_type === 'video'
+                                        ? 'Vídeo'
+                                        : ad.creative_type === 'carousel'
+                                          ? 'Carrossel'
+                                          : 'Imagem'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Two Context Intelligence Cards */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-0.5">
+                                  {/* Card A: Empreendimento Vinculado */}
+                                  <div className="rounded-xl border border-border/70 bg-muted/20 p-2.5 sm:p-3 flex items-center gap-3">
+                                    <div className="h-8.5 w-8.5 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+                                      <Building2 className="h-4 w-4" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold block">
+                                        Empreendimento vinculado
+                                      </span>
+                                      <span className="text-xs font-semibold text-foreground truncate block">
+                                        {property.name}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Card B: Contexto da Clara */}
+                                  <div className="rounded-xl border border-border/70 bg-muted/20 p-2.5 sm:p-3 flex items-center gap-3">
+                                    <div className="h-8.5 w-8.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
+                                      <Bot className="h-4 w-4" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                                          Contexto da Clara
+                                        </span>
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
+                                          ● Ativo
+                                        </span>
+                                      </div>
+                                      <span className="text-[11px] text-muted-foreground truncate block">
+                                        Leads deste anúncio entram com o contexto do {property.name}.
+                                      </span>
+                                    </div>
                                   </div>
                                 </div>
                               </div>
 
                               {/* Card Footer: Flow Summary & Timestamp */}
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-border/50 text-[11px]">
+                              <div className="mt-4 pt-3 border-t border-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]">
                                 <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
                                   <ArrowRight className="h-3.5 w-3.5 shrink-0" />
                                   <span>
