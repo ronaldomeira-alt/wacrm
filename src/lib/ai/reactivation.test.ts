@@ -28,6 +28,13 @@ import {
 } from './reactivation-prompt'
 import type { AiConfig } from './types'
 
+interface ReactivationUpdatePayload {
+  ai_reactivation_status?: string
+  ai_reactivation_count?: number
+  ai_reactivation_last_message_at?: string
+  [key: string]: unknown
+}
+
 const BASE_CONFIG: AiConfig = {
   provider: 'openai',
   model: 'gpt-4o-mini',
@@ -208,7 +215,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
         usage: { promptTokens: 100, completionTokens: 40, totalTokens: 140 },
       })
 
-      let updatedPayload: Record<string, unknown> | null = null
+      const tracker = { updatedPayload: null as ReactivationUpdatePayload | null }
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-1',
@@ -229,7 +236,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
           { id: 'm2', sender_type: 'bot', content_text: 'Boa tarde, Carlos! Como posso te ajudar?', created_at: '2026-09-12T10:56:00.000Z' },
         ],
         onUpdate: (payload) => {
-          updatedPayload = payload
+          tracker.updatedPayload = payload as ReactivationUpdatePayload
         },
       })
 
@@ -246,8 +253,8 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
           aiGenerated: true,
         }),
       )
-      expect(updatedPayload.ai_reactivation_status).toBe('sent')
-      expect(updatedPayload.ai_reactivation_count).toBe(1)
+      expect(tracker.updatedPayload?.ai_reactivation_status).toBe('sent')
+      expect(tracker.updatedPayload?.ai_reactivation_count).toBe(1)
     })
 
     // CENÁRIO B: Cliente pergunta quantos quartos -> Clara responde que tem 1 quarto -> silêncio
@@ -384,7 +391,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
     // CENÁRIO H: Cliente responde antes das 3 horas -> A reativação automática deve ser cancelada
     it('CENÁRIO H: Customer replies before reactivation dispatch cancels pending scheduled reactivation', async () => {
-      let updatedPayload: Record<string, unknown> | null = null
+      const tracker = { updatedPayload: null as ReactivationUpdatePayload | null }
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-h',
@@ -404,7 +411,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
           { id: 'm2', sender_type: 'customer', content_text: 'Voltei! Esqueci de perguntar o valor do condomínio.', created_at: '2026-09-12T14:00:00.000Z' },
         ],
         onUpdate: (payload) => {
-          updatedPayload = payload
+          tracker.updatedPayload = payload as ReactivationUpdatePayload
         },
       })
 
@@ -414,12 +421,12 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
       expect(res.outcome).toBe('cancelled_customer_replied')
       expect(mocks.engineSendText).not.toHaveBeenCalled()
-      expect(updatedPayload?.ai_reactivation_status).toBe('cancelled')
+      expect(tracker.updatedPayload?.ai_reactivation_status).toBe('cancelled')
     })
 
     // CENÁRIO I: Um humano assume a conversa antes da reativação -> Não disparar mensagem automática
     it('CENÁRIO I: Human agent takeover cancels and suppresses AI reactivation', async () => {
-      let updatedPayload: Record<string, unknown> | null = null
+      const tracker = { updatedPayload: null as ReactivationUpdatePayload | null }
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-i',
@@ -438,7 +445,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
           { id: 'm2', sender_type: 'agent', content_text: 'Olá, sou o Ronaldo, vou continuar seu atendimento.', created_at: '2026-09-12T10:00:00.000Z' },
         ],
         onUpdate: (payload) => {
-          updatedPayload = payload
+          tracker.updatedPayload = payload as ReactivationUpdatePayload
         },
       })
 
@@ -448,7 +455,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
       expect(res.outcome).toBe('cancelled_human_assigned')
       expect(mocks.engineSendText).not.toHaveBeenCalled()
-      expect(updatedPayload?.ai_reactivation_status).toBe('cancelled')
+      expect(tracker.updatedPayload?.ai_reactivation_status).toBe('cancelled')
     })
 
     // CENÁRIO J: Não existe qualquer pista contextual -> Reativação global sem inventar contexto
@@ -570,7 +577,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
     // CENÁRIO EXTRA: Cliente deu opt-out explícito ("não tenho interesse") -> Cancelado sem mensagem
     it('Explicit opt-out from customer cancels reactivation without sending message', async () => {
-      let updatedPayload: Record<string, unknown> | null = null
+      const tracker = { updatedPayload: null as ReactivationUpdatePayload | null }
       const mockDb = buildMockDb({
         conversation: {
           id: 'conv-opt-out',
@@ -588,7 +595,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
           { id: 'm1', sender_type: 'customer', content_text: 'Obrigado, já comprei outro apartamento e não tenho mais interesse.', created_at: '2026-09-12T11:00:00.000Z' },
         ],
         onUpdate: (payload) => {
-          updatedPayload = payload
+          tracker.updatedPayload = payload as ReactivationUpdatePayload
         },
       })
 
@@ -598,7 +605,7 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
 
       expect(res.outcome).toBe('cancelled_explicit_opt_out')
       expect(mocks.engineSendText).not.toHaveBeenCalled()
-      expect(updatedPayload?.ai_reactivation_status).toBe('cancelled')
+      expect(tracker.updatedPayload?.ai_reactivation_status).toBe('cancelled')
     })
   })
 
