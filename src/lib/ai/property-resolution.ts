@@ -9,6 +9,7 @@ export interface PropertyResolutionInput {
   referral?: CtwaReferral | null
   firstUserMessage?: string | null
   latestUserMessage?: string | null
+  userMessages?: string[] | null
 }
 
 export type PropertyResolutionMethod =
@@ -184,17 +185,33 @@ export async function resolvePropertyForConversation(
         }
       }
 
-      // 4. PRIORIDADE 4: Primeira mensagem enviada pelo lead
-      if (firstUserMessage) {
-        const normMsg = normalizeTextForMatching(firstUserMessage)
+      // 4. PRIORIDADE 4: Mensagens enviadas pelo lead (da mais recente à primeira)
+      const candidateMessages: Array<{ text: string; isFirst: boolean }> = []
+      if (latestUserMessage && latestUserMessage.trim()) {
+        candidateMessages.push({ text: latestUserMessage, isFirst: latestUserMessage === firstUserMessage })
+      }
+      if (Array.isArray(input.userMessages)) {
+        for (let i = input.userMessages.length - 1; i >= 0; i--) {
+          const msg = input.userMessages[i]
+          if (msg && msg.trim() && !candidateMessages.some((c) => c.text === msg)) {
+            candidateMessages.push({ text: msg, isFirst: msg === firstUserMessage })
+          }
+        }
+      }
+      if (firstUserMessage && firstUserMessage.trim() && !candidateMessages.some((c) => c.text === firstUserMessage)) {
+        candidateMessages.push({ text: firstUserMessage, isFirst: true })
+      }
+
+      for (const candidate of candidateMessages) {
+        const normMsg = normalizeTextForMatching(candidate.text)
         for (const prop of properties) {
           const normPropName = normalizeTextForMatching(prop.name)
           if (normPropName.length >= 3 && normMsg.includes(normPropName)) {
             return {
               propertyId: prop.id,
               propertyName: prop.name,
-              resolutionMethod: 'first_message_match',
-              confidence: 0.85,
+              resolutionMethod: candidate.isFirst ? 'first_message_match' : 'first_message_match',
+              confidence: candidate.isFirst ? 0.85 : 0.90,
             }
           }
         }

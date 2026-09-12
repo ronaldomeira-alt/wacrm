@@ -183,6 +183,7 @@ export async function dispatchInboundToAiReply(
       // 6. PROPERTY RESOLUTION & STICKINESS
       const firstUserMsg = messages.find((m) => m.role === 'user')?.content || null
       const latestUserMsg = lastMessage.content || null
+      const allUserMsgs = messages.filter((m) => m.role === 'user').map((m) => m.content)
 
       const resolution = await resolvePropertyForConversation({
         db,
@@ -192,6 +193,7 @@ export async function dispatchInboundToAiReply(
         referral: (conv.ctwa_referral as unknown as CtwaReferral) || null,
         firstUserMessage: firstUserMsg,
         latestUserMessage: latestUserMsg,
+        userMessages: allUserMsgs,
       })
 
       let effectivePropertyId = conv.property_id || null

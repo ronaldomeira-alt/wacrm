@@ -428,6 +428,28 @@ export async function executeConversationalTurn(
     }
   }
 
+  // 8b. Defensive Media Auto-Resolution:
+  // If user requested photos OR the assistant's response explicitly promised photos ("estou enviando", "vou te enviar", etc.)
+  // but the LLM omitted `send_media` in its JSON, ensure available property media is sent.
+  if (
+    propertyId &&
+    availableMedia.length > 0 &&
+    (!decision.send_media || decision.send_media.length === 0)
+  ) {
+    const lastUserText = messages.filter((m) => m.role === 'user').pop()?.content || ''
+    const userWantsPhotos = /\b(foto|fotos|imagem|imagens|manda|mostra|vejo|ver|visual|fachada)\b/i.test(lastUserText)
+    const textPromisesPhotos = /\b(estou enviando|vou te enviar|vou enviar|segue|separar as imagens|separando|te envio|aqui est[aã]o as fotos|imagem do)\b/i.test(decision.response_text)
+
+    if (userWantsPhotos || textPromisesPhotos) {
+      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${availableMedia.length} available media items)`)
+      decision.send_media = availableMedia.slice(0, 5).map((m) => ({
+        property_id: propertyId,
+        media_id: m.id,
+        caption: m.description || null,
+      }))
+    }
+  }
+
   // 9. Validate and Resolve any media items requested by the model
   const validatedMediaToSend = await validateAndResolveMediaToSend(
     db,
