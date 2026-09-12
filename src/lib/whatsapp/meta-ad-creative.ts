@@ -76,6 +76,7 @@ interface RawMetaCreative {
 interface RawMetaAdResponse {
   id?: string
   name?: string
+  account_id?: string
   status?: string
   campaign?: { id?: string; name?: string }
   adset?: { id?: string; name?: string }
@@ -121,6 +122,7 @@ export async function fetchMetaAdCreative(
     const fields = [
       'id',
       'name',
+      'account_id',
       'status',
       'campaign{id,name}',
       'adset{id,name}',
@@ -216,9 +218,6 @@ export async function fetchMetaAdCreative(
     // Check Dynamic Creative (Advantage+)
     if (assetFeed) {
       creativeType = 'dynamic'
-      if (!imageUrl && assetFeed.images && assetFeed.images.length > 0) {
-        imageUrl = assetFeed.images[0]?.url || null
-      }
       if (!headline && assetFeed.titles && assetFeed.titles.length > 0) {
         headline = assetFeed.titles[0]?.text || null
       }
@@ -227,6 +226,47 @@ export async function fetchMetaAdCreative(
       }
       if (!sourceUrl && assetFeed.link_urls && assetFeed.link_urls.length > 0) {
         sourceUrl = assetFeed.link_urls[0]?.website_url || null
+      }
+
+      // Check if assetFeed has direct url or hashes
+      if (!imageUrl && assetFeed.images && assetFeed.images.length > 0) {
+        imageUrl = assetFeed.images[0]?.url || null
+        if (!imageUrl) {
+          const hashes = assetFeed.images.map((img) => img.hash).filter(Boolean) as string[]
+          const adAccountId = data.account_id
+          if (hashes.length > 0 && adAccountId) {
+            try {
+              const adImagesUrl = `${META_API_BASE}/act_${adAccountId}/adimages?hashes=${encodeURIComponent(
+                JSON.stringify(hashes),
+              )}&fields=hash,url,permalink_url,original_width,original_height&access_token=${encodeURIComponent(
+                accessToken,
+              )}`
+              const imgRes = await fetch(adImagesUrl)
+              if (imgRes.ok) {
+                const imgData = (await imgRes.json().catch(() => null)) as {
+                  data?: Array<{
+                    hash?: string
+                    url?: string
+                    permalink_url?: string
+                    original_width?: number
+                    original_height?: number
+                  }>
+                } | null
+                if (imgData?.data && imgData.data.length > 0) {
+                  // Prefer feed/square/highest resolution
+                  const sorted = [...imgData.data].sort((a, b) => {
+                    const areaA = (a.original_width || 0) * (a.original_height || 0)
+                    const areaB = (b.original_width || 0) * (b.original_height || 0)
+                    return areaB - areaA
+                  })
+                  imageUrl = sorted[0].url || sorted[0].permalink_url || null
+                }
+              }
+            } catch (adImgErr) {
+              console.warn('[meta-ad-creative] AdImages hash lookup failed:', adImgErr)
+            }
+          }
+        }
       }
     }
 
@@ -237,6 +277,22 @@ export async function fetchMetaAdCreative(
         objectStory?.link_data?.picture ||
         objectStory?.photo_data?.url ||
         null
+    }
+
+    // Check if thumbnail_url or image_url contains an encoded URL proxy parameter
+    const candidateUrl = imageUrl || thumbnailUrl || creative.thumbnail_url || null
+    if (candidateUrl && candidateUrl.includes('url=')) {
+      const match = candidateUrl.match(/[?&]url=([^&]+)/)
+      if (match) {
+        try {
+          const decoded = decodeURIComponent(match[1])
+          if (decoded.startsWith('http')) {
+            imageUrl = decoded
+          }
+        } catch {
+          // ignore decode errors
+        }
+      }
     }
 
     if (!sourceUrl && objectStory?.link_data?.link) {
@@ -373,7 +429,10 @@ export async function cacheAdCreativeImage(args: {
 
     const response = await fetch(remoteUrl, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'WACRM-Ad-Fetcher/1.0' },
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      },
     })
     clearTimeout(timeoutId)
 
@@ -382,15 +441,21 @@ export async function cacheAdCreativeImage(args: {
       return null
     }
 
-    const contentType = response.headers.get('content-type') || 'image/jpeg'
+    const rawContentType = response.headers.get('content-type') || ''
+    let contentType = 'image/jpeg'
+    let extension = 'jpg'
+    if (rawContentType.includes('png')) {
+      contentType = 'image/png'
+      extension = 'png'
+    } else if (rawContentType.includes('webp')) {
+      contentType = 'image/webp'
+      extension = 'webp'
+    }
+
     const arrayBuffer = await response.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
 
-    let extension = 'jpg'
-    if (contentType.includes('png')) extension = 'png'
-    if (contentType.includes('webp')) extension = 'webp'
-
-    const storagePath = `account-${accountId}/ad-creatives/${adSourceId}-${Date.now()}.${extension}`
+    const storagePath = `account-${accountId}/ad-creatives/${adSourceId}.${extension}`
 
     const { error: uploadErr } = await supabase.storage
       .from('property-media')

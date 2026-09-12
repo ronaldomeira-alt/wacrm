@@ -69,6 +69,13 @@ describe('Ads API Route: /api/ai/properties/[id]/ads', () => {
             limit: vi.fn().mockResolvedValue({ data: [] }),
           }
         }
+        if (table === 'whatsapp_config') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: null }),
+          }
+        }
         return {}
       }),
       storage: {

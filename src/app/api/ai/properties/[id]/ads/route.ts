@@ -39,23 +39,62 @@ export async function GET(request: Request, { params }: Params) {
         let leadSourceUrl: string | null = null
         let hasLeadTelemetry = false
 
-        // 1. Storage Cached Image (if saved)
-        if (m.creative_storage_path) {
+        // 1. Storage Cached Image (if saved in DB or standard storage path)
+        const possiblePaths = [
+          m.creative_storage_path,
+          `account-${accountId}/ad-creatives/${m.ad_source_id}.jpg`,
+          `account-${accountId}/ad-creatives/${m.ad_source_id}.png`,
+          `account-${accountId}/ad-creatives/${m.ad_source_id}.webp`,
+        ].filter(Boolean) as string[]
+
+        for (const path of possiblePaths) {
           try {
             const { data: storageData } = supabase.storage
               .from(PROPERTY_MEDIA_BUCKET)
-              .getPublicUrl(m.creative_storage_path)
+              .getPublicUrl(path)
             if (storageData?.publicUrl) {
               finalImageUrl = storageData.publicUrl
+              break
             }
           } catch {
-            // keep direct URL
+            // keep looking
           }
         }
 
         // 2. Direct Meta Creative Image / Thumbnail
         if (!finalImageUrl) {
           finalImageUrl = m.creative_image_url || m.creative_thumbnail_url || null
+        }
+
+        // 3. Auto-resolve & Cache if missing
+        if (!finalImageUrl) {
+          try {
+            const { data: wcfg } = await supabase
+              .from('whatsapp_config')
+              .select('access_token')
+              .eq('account_id', accountId)
+              .maybeSingle()
+
+            if (wcfg?.access_token) {
+              const token = decrypt(wcfg.access_token)
+              const resolved = await fetchMetaAdCreative(m.ad_source_id, token)
+              if (resolved.success && resolved.creative_image_url) {
+                const cached = await cacheAdCreativeImage({
+                  supabase,
+                  accountId,
+                  adSourceId: m.ad_source_id,
+                  remoteUrl: resolved.creative_image_url,
+                })
+                if (cached?.publicUrl) {
+                  finalImageUrl = cached.publicUrl
+                } else {
+                  finalImageUrl = resolved.creative_image_url
+                }
+              }
+            }
+          } catch (autoErr) {
+            console.warn('[property/ads] On-the-fly resolution failed:', m.ad_source_id, autoErr)
+          }
         }
 
         // 3. Fallback: Check past inbound lead telemetry in conversations
@@ -212,11 +251,29 @@ export async function POST(request: Request, { params }: Params) {
       upsertPayload.creative_synced_at = new Date().toISOString()
     }
 
-    const { data: mapping, error: insertErr } = await supabase
+    let { data: mapping, error: insertErr } = await supabase
       .from('property_ad_mappings')
       .upsert(upsertPayload, { onConflict: 'account_id,ad_source_id' })
       .select()
       .single()
+
+    if (insertErr && (insertErr as { code?: string }).code === '42703') {
+      // If new creative_* columns have not been migrated yet, fallback to base columns
+      const basePayload = {
+        account_id: accountId,
+        property_id: propertyId,
+        ad_source_id: adSourceId,
+        ad_name: finalAdName,
+        updated_at: new Date().toISOString(),
+      }
+      const retry = await supabase
+        .from('property_ad_mappings')
+        .upsert(basePayload, { onConflict: 'account_id,ad_source_id' })
+        .select()
+        .single()
+      mapping = retry.data
+      insertErr = retry.error
+    }
 
     if (insertErr) {
       console.error('[property/ads] Error saving ad mapping:', insertErr)
@@ -325,12 +382,29 @@ export async function PATCH(request: Request, { params }: Params) {
       patchPayload.ad_name = creativeResult.ad_name
     }
 
-    const { data: updatedMapping, error: updateErr } = await supabase
+    let { data: updatedMapping, error: updateErr } = await supabase
       .from('property_ad_mappings')
       .update(patchPayload)
       .eq('id', mapping.id)
       .select()
       .single()
+
+    if (updateErr && (updateErr as { code?: string }).code === '42703') {
+      const fallbackPayload: Record<string, unknown> = {
+        updated_at: new Date().toISOString(),
+      }
+      if (creativeResult.ad_name && !mapping.ad_name) {
+        fallbackPayload.ad_name = creativeResult.ad_name
+      }
+      const retry = await supabase
+        .from('property_ad_mappings')
+        .update(fallbackPayload)
+        .eq('id', mapping.id)
+        .select()
+        .single()
+      updatedMapping = retry.data
+      updateErr = retry.error
+    }
 
     if (updateErr) {
       return NextResponse.json({ error: 'Failed to update ad mapping' }, { status: 500 })
