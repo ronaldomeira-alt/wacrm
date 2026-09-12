@@ -10,7 +10,7 @@ describe('AI Auto-Reply with Property Media Sending', () => {
     vi.clearAllMocks()
   })
 
-  it('sends decided property media before text message', async () => {
+  it('sends text message first, then authorized property media', async () => {
     const mockAiConfig = {
       provider: 'openai' as const,
       model: 'gpt-4o-mini',
@@ -148,6 +148,16 @@ describe('AI Auto-Reply with Property Media Sending', () => {
       configOwnerUserId: 'user-1',
     })
 
+    expect(sendTextSpy).toHaveBeenCalledTimes(1)
+    expect(sendTextSpy).toHaveBeenCalledWith({
+      accountId: 'account-1',
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      contactId: 'contact-1',
+      text: 'Aqui está a foto da nossa área de lazer e piscina!',
+      aiGenerated: true,
+    })
+
     expect(sendMediaSpy).toHaveBeenCalledTimes(1)
     expect(sendMediaSpy).toHaveBeenCalledWith({
       accountId: 'account-1',
@@ -160,14 +170,9 @@ describe('AI Auto-Reply with Property Media Sending', () => {
       aiGenerated: true,
     })
 
-    expect(sendTextSpy).toHaveBeenCalledTimes(1)
-    expect(sendTextSpy).toHaveBeenCalledWith({
-      accountId: 'account-1',
-      userId: 'user-1',
-      conversationId: 'conv-1',
-      contactId: 'contact-1',
-      text: 'Aqui está a foto da nossa área de lazer e piscina!',
-      aiGenerated: true,
-    })
+    // Assert that text is sent BEFORE media in invocation order
+    const textCallOrder = sendTextSpy.mock.invocationCallOrder[0]
+    const mediaCallOrder = sendMediaSpy.mock.invocationCallOrder[0]
+    expect(textCallOrder).toBeLessThan(mediaCallOrder)
   })
 })

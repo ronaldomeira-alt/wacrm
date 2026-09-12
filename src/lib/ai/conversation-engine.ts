@@ -52,6 +52,7 @@ export interface ConversationalTurnResult {
   validatedMediaToSend: ResolvedMediaToSend[];
   businessHoursContext: BusinessHoursContext;
   leadContext: FormattedLeadContext | null;
+  mediaSendAllowed?: boolean;
 }
 
 const VALID_BOUNDARIES = new Set<string>([
@@ -251,6 +252,152 @@ export function parseStructuredDecision(rawText: string): AiDecision {
   };
 }
 
+export type MediaFilterTopic = 'lazer' | 'fachada' | 'planta' | 'piscina' | 'decorado' | 'geral';
+
+export interface MediaAuthorizationResult {
+  authorized: boolean;
+  reason: string;
+  filterTopic?: MediaFilterTopic;
+}
+
+/**
+ * Checks whether user explicitly requested media (photos, videos, floorplans, etc.)
+ */
+export function isExplicitMediaRequest(text: string): { requested: boolean; topic?: MediaFilterTopic } {
+  if (!text || typeof text !== 'string') return { requested: false };
+  const trimmed = text.trim();
+
+  // Negative check: If user says "não precisa de fotos" or "sem fotos"
+  const negativeRegex = /\b(n[aã]o|sem)\s+(?:precisa\s+)?(?:me\s+)?(?:de\s+)?(?:enviar|mandar|compartilhar)?\s*(?:fotos?|imagens?|v[ií]deos?|plantas?)\b/i;
+  if (negativeRegex.test(trimmed)) {
+    return { requested: false };
+  }
+
+  // Direct media noun keywords:
+  const directMediaNoun = /\b(fotos?|fotografia|imagens?|imagem|v[ií]deos?|plantas?(?:\s+baixas?)?|perspectivas?|renders?|panor[aâ]micas?)\b/i.test(trimmed);
+
+  // Visual action verbs targeted at specific visual aspects:
+  // e.g., "quero ver a área de lazer", "mostra a piscina", "quero ver o apartamento decorado", "mostra a fachada"
+  const visualTargetMatch = trimmed.match(
+    /\b(ver|olhar|mostr(?:ar?|a|e)|conhecer\s+visualmente)\b.*?(\b(?:[aá]rea\s+de\s+lazer|lazer|piscina|fachada|apartamento(?:\s+decorado)?|decorado|interna|espa[cç]o\s+gourmet|academia|vista|varanda)\b)/i
+  );
+
+  if (!directMediaNoun && !visualTargetMatch) {
+    return { requested: false };
+  }
+
+  // Determine specific topic if present
+  let topic: MediaFilterTopic = 'geral';
+  if (/\b(fachada|frontal|externa)\b/i.test(trimmed)) {
+    topic = 'fachada';
+  } else if (/\b(lazer|[aá]rea\s+de\s+lazer|gourmet|quadra|recrea|playground)\b/i.test(trimmed)) {
+    topic = 'lazer';
+  } else if (/\b(piscina|deck)\b/i.test(trimmed)) {
+    topic = 'piscina';
+  } else if (/\b(planta|plantas|planta\s+baixa)\b/i.test(trimmed)) {
+    topic = 'planta';
+  } else if (/\b(decorado|interna|apartamento\s+decorado)\b/i.test(trimmed)) {
+    topic = 'decorado';
+  }
+
+  return { requested: true, topic };
+}
+
+/**
+ * Checks if the assistant offered media in the immediately preceding turn
+ */
+export function didAssistantOfferMedia(lastAssistantText: string): boolean {
+  if (!lastAssistantText) return false;
+  const offerRegex = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser posso|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:algumas?\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
+  const questionOfferRegex = /(?:fotos?|imagens?|plantas?|v[ií]deos?).*?\b(?:quer|gostaria|deseja|posso|te envio|te mando)\b.*?\?/i;
+  const directOfferRegex = /(?:posso te enviar|quer que eu mande|quer ver)\s+(?:as\s+|algumas?\s+)?(?:fotos?|imagens?|plantas?)/i;
+  return offerRegex.test(lastAssistantText) || questionOfferRegex.test(lastAssistantText) || directOfferRegex.test(lastAssistantText);
+}
+
+/**
+ * Checks if the user gave an affirmative confirmation (e.g. to a previous media offer)
+ */
+export function isAffirmativeConfirmation(userText: string): boolean {
+  if (!userText) return false;
+  const trimmed = userText.trim().toLowerCase();
+  return (
+    /^(?:sim|claro|pode(?:\s*(?:mandar|enviar|ser|sim))?|manda(?:\s*(?:a[ií]|sim|por\s*favor))?|envia(?:\s*(?:a[ií]|sim|por\s*favor))?|quero(?:\s*sim)?|com\s*certeza|por\s*favor|fique\s*a\s*vontade|mande|manda\s*fotos?|quero\s*ver)[.!]*$/i.test(trimmed) ||
+    /^(?:sim|claro|com\s*certeza)[,\s]+(?:pode|manda|envia|quero|por\s*favor)/i.test(trimmed)
+  );
+}
+
+/**
+ * Low-level Architectural Guard for property media dispatch.
+ */
+export function isMediaSendAuthorized(args: {
+  messages: ChatMessage[];
+  isInitialContact: boolean;
+  userMessageCount: number;
+}): MediaAuthorizationResult {
+  const { messages, isInitialContact, userMessageCount } = args;
+
+  // 1. Get user messages for the current turn (all user messages after the last assistant response)
+  const lastAssistantIndex = messages.map((m) => m.role).lastIndexOf('assistant');
+  const currentTurnUserMessages = messages
+    .slice(lastAssistantIndex + 1)
+    .filter((m) => m.role === 'user');
+
+  // 2. Check if the user explicitly requested media in any message of the current turn
+  let explicitCheck: { requested: boolean; topic?: MediaFilterTopic } = { requested: false };
+  for (const uMsg of currentTurnUserMessages) {
+    const check = isExplicitMediaRequest(uMsg.content);
+    if (check.requested) {
+      explicitCheck = check;
+      break;
+    }
+  }
+
+  // 3. Absolute First Turn Gate:
+  // If isInitialContact is true:
+  // Media is ONLY allowed if the user explicitly requested photos/media.
+  if (isInitialContact) {
+    if (explicitCheck.requested) {
+      return {
+        authorized: true,
+        reason: 'Lead explicitou pedido de mídia no primeiro contato.',
+        filterTopic: explicitCheck.topic,
+      };
+    }
+    return {
+      authorized: false,
+      reason: 'Primeiro contato sem solicitação explícita de mídia. Envio proibido.',
+    };
+  }
+
+  // 4. Ongoing Turns:
+  // 4a. If user explicitly requested media in this turn
+  if (explicitCheck.requested) {
+    return {
+      authorized: true,
+      reason: 'Lead explicitou pedido de mídia na conversa.',
+      filterTopic: explicitCheck.topic,
+    };
+  }
+
+  // 4b. If Clara offered media in the previous assistant message and lead confirmed
+  const assistantMessages = messages.filter((m) => m.role === 'assistant');
+  const lastAssistantText = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1].content : '';
+  const latestUserText = currentTurnUserMessages.length > 0 ? currentTurnUserMessages[currentTurnUserMessages.length - 1].content : '';
+
+  if (didAssistantOfferMedia(lastAssistantText) && isAffirmativeConfirmation(latestUserText)) {
+    return {
+      authorized: true,
+      reason: 'Lead confirmou afirmativamente oferta de fotos feita pela Clara no turno anterior.',
+      filterTopic: 'geral',
+    };
+  }
+
+  return {
+    authorized: false,
+    reason: 'Nenhuma solicitação ou confirmação de mídia identificada neste turno.',
+  };
+}
+
 /**
  * Execute a complete conversational turn using Stage 4 behavioral architecture.
  */
@@ -437,35 +584,94 @@ export async function executeConversationalTurn(
     }
   }
 
-  // 8b. Defensive Media Auto-Resolution:
-  // If user requested photos OR the assistant's response explicitly promised photos ("estou enviando", "vou te enviar", etc.)
-  // but the LLM omitted `send_media` in its JSON, ensure available property media is sent.
-  if (
-    propertyId &&
-    availableMedia.length > 0 &&
-    (!decision.send_media || decision.send_media.length === 0)
-  ) {
-    const lastUserText = messages.filter((m) => m.role === 'user').pop()?.content || ''
-    const userWantsPhotos = /\b(foto|fotos|imagem|imagens|manda|mostra|vejo|ver|visual|fachada)\b/i.test(lastUserText)
-    const textPromisesPhotos = /\b(estou enviando|vou te enviar|vou enviar|segue|separar as imagens|separando|te envio|aqui est[aã]o as fotos|imagem do)\b/i.test(decision.response_text)
+  // 8b. Media Authorization Architectural Guard (HARD BLOCK)
+  const mediaAuth = isMediaSendAuthorized({
+    messages,
+    isInitialContact,
+    userMessageCount,
+  });
 
-    if (userWantsPhotos || textPromisesPhotos) {
-      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${availableMedia.length} available media items)`)
-      decision.send_media = availableMedia.slice(0, 5).map((m) => ({
+  if (!mediaAuth.authorized) {
+    // Hard block: Strip any media that LLM hallucinates or suggests
+    decision.send_media = null;
+
+    // Defensive Sanitization: If LLM generated text claiming to attach/send photos when unauthorized,
+    // sanitize to avoid confusing the lead.
+    if (decision.response_text) {
+      decision.response_text = decision.response_text
+        .replace(/(?:estou\s+te\s+enviando|aqui\s+est[aã]o|seguem|segue)\s+(?:algumas?\s+)?(?:fotos?|imagens?|as\s+fotos?)[^.!?]*[.!?]/gi, '')
+        .trim();
+    }
+  } else {
+    // 8c. Media Auto-Resolution / Topic Filtering when authorized:
+    // Filter matching media by requested topic (e.g. lazer, fachada, piscina)
+    const getTopicRegex = (topic?: MediaFilterTopic): RegExp | null => {
+      if (!topic || topic === 'geral') return null;
+      switch (topic) {
+        case 'lazer':
+          return /lazer|[aá]rea\s+de\s+lazer|piscina|deck|churrasqueira|gourmet|quadra|recrea|playground/i;
+        case 'piscina':
+          return /piscina|deck|molhado/i;
+        case 'fachada':
+          return /fachada|frontal|externa|perspectiva|render/i;
+        case 'planta':
+          return /planta|layout|baixa/i;
+        case 'decorado':
+          return /decorado|interna|apartamento|sala|quarto|su[ií]te/i;
+        default:
+          return null;
+      }
+    };
+
+    const topicRegex = getTopicRegex(mediaAuth.filterTopic);
+
+    // If decision.send_media is empty or null, auto-resolve from availableMedia
+    if (
+      propertyId &&
+      availableMedia.length > 0 &&
+      (!decision.send_media || decision.send_media.length === 0)
+    ) {
+      let filteredMedia = availableMedia;
+      if (topicRegex) {
+        const matches = availableMedia.filter(
+          (m) => (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name),
+        );
+        if (matches.length > 0) {
+          filteredMedia = matches;
+        }
+      }
+
+      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, topic=${mediaAuth.filterTopic || 'geral'})`);
+      decision.send_media = filteredMedia.slice(0, 5).map((m) => ({
         property_id: propertyId,
         media_id: m.id,
         caption: null,
-      }))
+      }));
+    } else if (decision.send_media && decision.send_media.length > 0 && topicRegex) {
+      // If LLM returned media but lead asked for a specific topic, prioritize matching items
+      const matchingMediaIds = new Set(
+        availableMedia
+          .filter((m) => (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name))
+          .map((m) => m.id),
+      );
+      if (matchingMediaIds.size > 0) {
+        const filtered = decision.send_media.filter((sm) => matchingMediaIds.has(sm.media_id));
+        if (filtered.length > 0) {
+          decision.send_media = filtered;
+        }
+      }
     }
   }
 
-  // 9. Validate and Resolve any media items requested by the model
-  const validatedMediaToSend = await validateAndResolveMediaToSend(
-    db,
-    accountId,
-    propertyId || null,
-    decision.send_media,
-  );
+  // 9. Validate and Resolve any media items requested by the model (strictly when authorized)
+  const validatedMediaToSend = mediaAuth.authorized
+    ? await validateAndResolveMediaToSend(
+        db,
+        accountId,
+        propertyId || null,
+        decision.send_media,
+      )
+    : [];
 
   return {
     responseText: decision.response_text,
@@ -480,5 +686,6 @@ export async function executeConversationalTurn(
     validatedMediaToSend,
     businessHoursContext: businessHours,
     leadContext,
+    mediaSendAllowed: mediaAuth.authorized,
   };
 }

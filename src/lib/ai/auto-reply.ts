@@ -329,7 +329,18 @@ export async function dispatchInboundToAiReply(
         return
       }
 
-      // 12. SEND MEDIA & TEXT TO META CLOUD API
+      // 12. SEND TEXT & MEDIA TO META CLOUD API (TEXT ALWAYS FIRST, MEDIA SECOND)
+      if (turnResult.responseText && turnResult.responseText.trim().length > 0) {
+        await engineSendText({
+          accountId,
+          userId: configOwnerUserId,
+          conversationId,
+          contactId,
+          text: turnResult.responseText,
+          aiGenerated: true,
+        })
+      }
+
       const mediaItems = turnResult.validatedMediaToSend || []
       if (mediaItems.length > 0) {
         for (const mediaItem of mediaItems) {
@@ -349,17 +360,6 @@ export async function dispatchInboundToAiReply(
             console.error(`[ai auto-reply] Failed to send media ${mediaItem.mediaId}:`, mediaSendErr)
           }
         }
-      }
-
-      if (turnResult.responseText && turnResult.responseText.trim().length > 0) {
-        await engineSendText({
-          accountId,
-          userId: configOwnerUserId,
-          conversationId,
-          contactId,
-          text: turnResult.responseText,
-          aiGenerated: true,
-        })
       }
 
       // 13. POST-TURN HANDOFF HANDLING
