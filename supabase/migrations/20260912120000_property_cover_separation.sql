@@ -1,4 +1,4 @@
-﻿-- ============================================================
+-- ============================================================
 -- 20260912120000_property_cover_separation.sql
 --
 -- Separates Property Cover Image (internal CRM visual identity)
