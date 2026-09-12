@@ -116,6 +116,7 @@ export async function dispatchInboundToAiReply(
     // Ensures only 1 AI process actively generates and sends for this conversation at any given time.
     const lockToken = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `lock-${Date.now()}-${Math.random()}`
     let lockAcquired = false
+    let rpcAvailable = true
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -124,20 +125,27 @@ export async function dispatchInboundToAiReply(
           p_lock_token: lockToken,
           p_ttl_seconds: 45,
         })
-        if (!lockErr && lockResult === true) {
+        if (lockErr) {
+          console.warn(`[ai auto-reply] acquire_ai_conversation_lock warning:`, lockErr.message)
+          rpcAvailable = false
+          break
+        }
+        if (lockResult === true) {
           lockAcquired = true
           break
         }
-      } catch {
-        // RPC fallback
+      } catch (err) {
+        console.warn(`[ai auto-reply] acquire_ai_conversation_lock exception:`, err)
+        rpcAvailable = false
+        break
       }
       if (attempt < 2) {
         await new Promise((r) => setTimeout(r, 1000))
       }
     }
 
-    // If lock couldn't be acquired, another runner is active; yield gracefully
-    if (!lockAcquired) {
+    // If lock couldn't be acquired because another runner is legitimately active, yield gracefully
+    if (rpcAvailable && !lockAcquired) {
       console.log(`[ai auto-reply] Conversation ${conversationId} is currently locked by another active run. Skipping.`)
       return
     }
