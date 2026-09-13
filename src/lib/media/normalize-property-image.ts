@@ -1,4 +1,5 @@
-import sharp, { type Metadata } from 'sharp'
+import sharp, { type Sharp } from 'sharp'
+import decodeHeic from 'heic-decode'
 
 export const META_WHATSAPP_IMAGE_MAX_BYTES = 5 * 1024 * 1024 // 5 MB
 export const MAX_UPLOAD_INPUT_BYTES = 16 * 1024 * 1024 // 16 MB
@@ -81,6 +82,33 @@ function toBuffer(input: Buffer | Uint8Array | ArrayBuffer): Buffer {
 }
 
 /**
+ * Detects if a buffer contains a HEIF/HEIC image by inspecting the ISO BMFF ftyp box.
+ */
+export function isHeicBuffer(buffer: Buffer | Uint8Array): boolean {
+  if (buffer.length < 12) return false
+  // Check 'ftyp' at offset 4
+  const isFtyp =
+    buffer[4] === 0x66 &&
+    buffer[5] === 0x74 &&
+    buffer[6] === 0x79 &&
+    buffer[7] === 0x70
+  if (!isFtyp) return false
+
+  const brandMajor = String.fromCharCode(
+    buffer[8],
+    buffer[9],
+    buffer[10],
+    buffer[11],
+  ).toLowerCase().trim()
+
+  // AVIF is natively handled by sharp, not heic-decode
+  if (brandMajor === 'avif' || brandMajor === 'avis') return false
+
+  const heicBrands = ['mif1', 'msf1', 'heic', 'heix', 'hevc', 'hevx', 'heim', 'heis']
+  return heicBrands.includes(brandMajor)
+}
+
+/**
  * Normalizes any supported input image to a Meta WhatsApp Cloud API compliant
  * JPEG (or PNG if preserving transparency) image <= 5MB.
  *
@@ -105,22 +133,41 @@ export async function normalizePropertyImage(
     throw new Error('Arquivo de imagem vazio ou corrompido.')
   }
 
-  let pipeline = sharp(rawBuffer)
+  let pipeline: Sharp
+  let metadata: { format?: string; width?: number; height?: number; hasAlpha?: boolean }
+  let originalFormat = 'jpeg'
+  let decodedHeicRaw: { data: Uint8ClampedArray | Uint8Array; width: number; height: number } | null = null
 
-  let metadata: Metadata
-  try {
-    metadata = await pipeline.metadata()
-  } catch (err) {
-    throw new Error(
-      `Formato de imagem não reconhecido ou arquivo inválido: ${err instanceof Error ? err.message : String(err)}`,
-    )
+  if (isHeicBuffer(rawBuffer)) {
+    try {
+      const { data, width, height } = await decodeHeic({ buffer: rawBuffer })
+      decodedHeicRaw = { data, width, height }
+      pipeline = sharp(Buffer.from(data), { raw: { width, height, channels: 4 } })
+      metadata = { format: 'heif', width, height, hasAlpha: false }
+      originalFormat = 'heif'
+    } catch (err) {
+      throw new Error(
+        `Formato de imagem não reconhecido ou arquivo inválido: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  } else {
+    pipeline = sharp(rawBuffer, { unlimited: true })
+    try {
+      metadata = await pipeline.metadata()
+    } catch (err) {
+      throw new Error(
+        `Formato de imagem não reconhecido ou arquivo inválido: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+
+    if (!metadata.format) {
+      throw new Error('Não foi possível identificar o formato da imagem.')
+    }
+
+    originalFormat = metadata.format
+    // Auto-rotate according to EXIF orientation
+    pipeline = pipeline.rotate()
   }
-
-  if (!metadata.format) {
-    throw new Error('Não foi possível identificar o formato da imagem.')
-  }
-
-  const originalFormat = metadata.format
 
   // Determine target format:
   // Meta Cloud API supports image/jpeg and image/png.
@@ -128,9 +175,6 @@ export async function normalizePropertyImage(
   // In almost all property photo cases, JPEG provides far better compression and ensures <= 5MB.
   const hasAlpha = Boolean(metadata.hasAlpha)
   const preferPng = hasAlpha && (metadata.format === 'png' || metadata.format === 'webp')
-
-  // Auto-rotate according to EXIF orientation
-  pipeline = pipeline.rotate()
 
   // Limit maximum dimension to 3840px (4K) to avoid giant memory usage while maintaining crisp quality
   if (
@@ -180,16 +224,34 @@ export async function normalizePropertyImage(
     let resizedDimension = Math.min(maxDimension, 2560)
 
     for (const q of qualitySteps) {
-      currentBuffer = await sharp(rawBuffer)
-        .rotate()
-        .resize({
-          width: resizedDimension,
-          height: resizedDimension,
-          fit: 'inside',
-          withoutEnlargement: true,
+      if (decodedHeicRaw) {
+        currentBuffer = await sharp(Buffer.from(decodedHeicRaw.data), {
+          raw: {
+            width: decodedHeicRaw.width,
+            height: decodedHeicRaw.height,
+            channels: 4,
+          },
         })
-        .jpeg({ quality: q, mozjpeg: true })
-        .toBuffer()
+          .resize({
+            width: resizedDimension,
+            height: resizedDimension,
+            fit: 'inside',
+            withoutEnlargement: true,
+          })
+          .jpeg({ quality: q, mozjpeg: true })
+          .toBuffer()
+      } else {
+        currentBuffer = await sharp(rawBuffer, { unlimited: true })
+          .rotate()
+          .resize({
+            width: resizedDimension,
+            height: resizedDimension,
+            fit: 'inside',
+            withoutEnlargement: true,
+          })
+          .jpeg({ quality: q, mozjpeg: true })
+          .toBuffer()
+      }
 
       if (currentBuffer.length <= maxBytes) {
         break

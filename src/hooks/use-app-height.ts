@@ -4,7 +4,21 @@ import { useEffect } from "react";
 
 function isTextInput(el: EventTarget | null): el is HTMLElement {
   if (!(el instanceof HTMLElement)) return false;
-  return el.tagName === "TEXTAREA" || el.tagName === "INPUT";
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") {
+    const type = (el as HTMLInputElement).type;
+    return (
+      type === "text" ||
+      type === "search" ||
+      type === "tel" ||
+      type === "url" ||
+      type === "email" ||
+      type === "password" ||
+      type === "number" ||
+      !type
+    );
+  }
+  return false;
 }
 
 /** Sets `--app-height`, the app shell's structural height, only in real

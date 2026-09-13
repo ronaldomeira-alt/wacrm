@@ -55,17 +55,36 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { MessageBubble } from './message-bubble';
+import { MessageErrorBoundary } from './message-error-boundary';
 import { MessageActions } from './message-actions';
 import { MessageAlbum, computeAlbumGroups } from './message-album';
 import {
   MessageComposer,
   CHAT_MEDIA_BUCKET,
   type SendMediaPayload,
+  type SendMediaBatchPayload,
+  type SendMediaBatchItem,
 } from './message-composer';
 import { deleteAccountMedia } from '@/lib/storage/upload-media';
-import { deleteR2Media } from '@/lib/storage/upload-media-r2';
+import { deleteR2Media, presignAndUpload } from '@/lib/storage/upload-media-r2';
 import { isR2MediaKey } from '@/lib/storage/media-url-kind';
-import { prefetchMediaKeys } from '@/lib/inbox/use-resolved-media-src';
+import {
+  resolveMediaKeys,
+  getCachedMediaSrc,
+  registerLocalMediaBlob,
+  getLocalMediaBlob,
+  seedMediaResolution,
+  scheduleRevokeLocalMediaBlob,
+} from '@/lib/inbox/use-resolved-media-src';
+import { pollNormalizationStatus } from '@/lib/media/batch-upload-pool';
+import { isHeicFile, normalizeImageForUpload } from '@/lib/media/image-compat';
+import { shouldTranscodeVideo, convertMovToMp4ViaWebCodecs } from '@/lib/media/transcode-mov-webcodecs';
+import {
+  extractVideoThumbnail,
+  getLocalVideoThumbnail,
+  registerLocalVideoThumbnail,
+} from '@/lib/media/video-thumbnail';
+import { createOptimisticAlbum } from '@/lib/inbox/optimistic-album';
 import { getPendingAudio } from '@/lib/inbox/pending-audio-db';
 import { runPendingAudio, discardPendingAudio } from '@/lib/inbox/pending-audio-sync';
 import { markConversationUnread } from '@/lib/inbox/conversations';
@@ -98,6 +117,65 @@ interface ReplyDraft {
   id: string;
   authorLabel: string;
   preview: string;
+}
+
+// iPhone/iPad only — WebKit's hardware video decoder + per-tab memory
+// budget is the actual scarce resource the video batch pipeline below
+// protects (Jetsam/OOM risk with 2+ videos). Desktop browsers aren't
+// under that constraint, so gating every mitigation behind this check
+// keeps desktop at full throughput instead of inheriting iPhone-only
+// caution for no reason.
+const isIOSDevice =
+  typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+// One macrotask tick — enough for the JS engine to reclaim the previous
+// video's hash ArrayBuffer / decode buffers before the next one
+// allocates its own. Cheap no-op skip on desktop, where that memory
+// pressure isn't the bottleneck.
+function yieldToReleaseMemory(): Promise<void> {
+  if (!isIOSDevice) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Uploads a locally-generated video thumbnail (small JPEG data: URL,
+ * ~480px/quality 0.8 from extractVideoThumbnail) to R2 as a private
+ * chat-attachment image, returning the R2 key to persist on the
+ * message. Best-effort: failure here must never block the video's own
+ * send — every caller treats `undefined` as "no persisted thumbnail
+ * this time", same as before this existed (the in-memory-only
+ * behavior). Reuses the exact same upload path as any other image
+ * attachment, so it gets dedup/hash for free at negligible cost (a
+ * thumbnail this size is a rounding error next to a video's own hash).
+ */
+async function persistVideoThumbnail(dataUrl: string): Promise<string | undefined> {
+  try {
+    const blob = await fetch(dataUrl).then((r) => r.blob());
+    const file = new File([blob], `thumb-${Date.now()}.jpg`, { type: "image/jpeg" });
+    const result = await presignAndUpload("chat-attachment", "image", file);
+    return result.normalizedKey || result.key;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolves `promise` or `undefined` after `ms`, whichever comes first
+ *  — bounds how long the heavy video pipeline waits on thumbnail work
+ *  before proceeding without it. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
 }
 
 interface TransferSubmenuProps {
@@ -202,6 +280,7 @@ interface MessageRowProps {
   transcriptRevealed: boolean;
   /** Resend a voice note that failed to upload/send — see MessageBubble's own doc. */
   onRetryAudio: (message: Message) => void;
+  onRetryMedia?: (message: Message) => void;
 }
 
 /**
@@ -225,29 +304,33 @@ const MessageRow = memo(function MessageRow({
   onToggleReaction,
   transcriptRevealed,
   onRetryAudio,
+  onRetryMedia,
 }: MessageRowProps) {
   return (
-    <MessageActions
-      message={message}
-      currentContactId={currentContactId}
-      onReply={onReply}
-      onReact={onReact}
-      onDelete={onDelete}
-      onTranscribe={onTranscribe}
-    >
-      {(cornerAction) => (
-        <MessageBubble
-          message={message}
-          reply={reply}
-          reactions={reactions}
-          currentUserId={currentUserId}
-          onToggleReaction={onToggleReaction}
-          transcriptRevealed={transcriptRevealed}
-          cornerAction={cornerAction}
-          onRetryAudio={onRetryAudio}
-        />
-      )}
-    </MessageActions>
+    <MessageErrorBoundary messageId={message.id}>
+      <MessageActions
+        message={message}
+        currentContactId={currentContactId}
+        onReply={onReply}
+        onReact={onReact}
+        onDelete={onDelete}
+        onTranscribe={onTranscribe}
+      >
+        {(cornerAction) => (
+          <MessageBubble
+            message={message}
+            reply={reply}
+            reactions={reactions}
+            currentUserId={currentUserId}
+            onToggleReaction={onToggleReaction}
+            transcriptRevealed={transcriptRevealed}
+            cornerAction={cornerAction}
+            onRetryAudio={onRetryAudio}
+            onRetryMedia={onRetryMedia}
+          />
+        )}
+      </MessageActions>
+    </MessageErrorBoundary>
   );
 });
 
@@ -257,6 +340,7 @@ interface MessageThreadProps {
   messages: Message[];
   onMessagesLoaded: (messages: Message[]) => void;
   onNewMessage: (message: Message) => void;
+  onNewMessages?: (messages: Message[]) => void;
   onUpdateMessage: (id: string, updates: Partial<Message>) => void;
   /** Removes a message from local state — fired after the DB delete
    *  succeeds, and again (as a no-op) when the realtime DELETE echoes
@@ -369,14 +453,13 @@ function groupMessagesByDate(messages: Message[]) {
 const DOODLE_BG_CLASSES =
   "bg-background bg-[url('/inbox-doodle.svg')] bg-repeat";
 
-const INITIAL_CHUNK_SIZE = 25;
-
 export function MessageThread({
   conversation,
   contact,
   messages,
   onMessagesLoaded,
   onNewMessage,
+  onNewMessages,
   onUpdateMessage,
   onDeleteMessage,
   onStatusChange,
@@ -395,6 +478,12 @@ export function MessageThread({
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The actual message-list content, one level inside scrollRef — its
+  // own rendered height is what grows/shrinks as media loads (see the
+  // content-resize auto-scroll effect below); scrollRef's box itself
+  // stays a fixed viewport size.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const bottomMarkerRef = useRef<HTMLDivElement>(null);
   // Non-scrolling wrapper around the messages area — the confinement
   // target for the pre-send PDF preview (see document-fullscreen-
   // preview.tsx). `absolute inset-0` inside `scrollRef` itself would
@@ -453,8 +542,6 @@ export function MessageThread({
     () => new Set()
   );
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
-  // Initial render chunking: render recent 25 messages during slide transition, then expand
-  const [renderedCount, setRenderedCount] = useState(INITIAL_CHUNK_SIZE);
   // The 3 dialogs opened from the header's "⋮" menu — Transfer stays a
   // DropdownMenuSub (it's just the old Assign dropdown's content, one
   // level deeper), these three are substantial enough to want a real
@@ -640,14 +727,27 @@ export function MessageThread({
         console.error('Failed to fetch messages:', error);
       } else {
         const loaded = data ?? [];
+
+        // Pre-resolve any uncached R2 media keys in batch BEFORE exposing messages to UI
+        const uncachedR2Keys = loaded
+          .map((m) => m.media_url)
+          .filter(
+            (url): url is string =>
+              Boolean(url && isR2MediaKey(url) && !getCachedMediaSrc(url))
+          );
+
+        if (uncachedR2Keys.length > 0) {
+          try {
+            await resolveMediaKeys(uncachedR2Keys);
+          } catch (err) {
+            console.warn('[message-thread] Pre-resolving media keys failed:', err);
+          }
+        }
+
+        if (cancelled) return;
+
         setCachedMessages(conversationId, loaded);
         onMessagesLoadedRef.current(loaded);
-        const r2Keys = loaded
-          .map((m) => m.media_url)
-          .filter((url): url is string => Boolean(url && isR2MediaKey(url)));
-        if (r2Keys.length > 0) {
-          prefetchMediaKeys(r2Keys);
-        }
       }
 
       if (!cancelled) setLoading(false);
@@ -792,90 +892,192 @@ export function MessageThread({
       });
   }, [conversationId, hasUnread]);
 
-  // Whether the user is currently at (near) the bottom of the thread
-  const isNearBottomRef = useRef(true);
+  // Whether the viewport is pinned to the bottom of the conversation
+  const isPinnedToBottomRef = useRef(true);
+  // Track whether the user is actively touching or dragging the scroll container
+  const isUserTouchingRef = useRef(false);
+  // Track whether the current scroll movement was triggered programmatically
+  const isProgrammaticScrollRef = useRef(false);
+  const programmaticTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track initial conversation load to ensure we land at the bottom once rendered
+  const isInitialLoadRef = useRef(true);
 
-  // Reset initial chunk size and pin to bottom when switching conversation
-  useEffect(() => {
-    setRenderedCount(INITIAL_CHUNK_SIZE);
-    isNearBottomRef.current = true;
-  }, [conversationId]);
-
-  // Expand renderedCount to include full history after initial transition (250ms)
-  useEffect(() => {
-    if (messages.length > renderedCount) {
-      const timer = setTimeout(() => {
-        setRenderedCount(messages.length);
-      }, 250);
-      return () => clearTimeout(timer);
+  const markProgrammaticScroll = useCallback(() => {
+    isProgrammaticScrollRef.current = true;
+    if (programmaticTimerRef.current) {
+      clearTimeout(programmaticTimerRef.current);
     }
-  }, [messages.length, renderedCount]);
+    programmaticTimerRef.current = setTimeout(() => {
+      isProgrammaticScrollRef.current = false;
+    }, 120);
+  }, []);
 
-  // Take the most recent `renderedCount` messages for initial snappy render
-  const visibleMessages = useMemo(() => {
-    if (messages.length <= renderedCount) return messages;
-    return messages.slice(-renderedCount);
-  }, [messages, renderedCount]);
-
-  // Auto-scroll to bottom on new messages / initial render if near bottom
+  // Cleanup timer on unmount
   useEffect(() => {
-    if (scrollRef.current && isNearBottomRef.current) {
-      const el = scrollRef.current;
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [visibleMessages]);
+    return () => {
+      if (programmaticTimerRef.current) clearTimeout(programmaticTimerRef.current);
+    };
+  }, []);
 
+  // Unified, high-resilience scroll-to-bottom helper.
+  // Directly operates on scrollRef without scrollIntoView (preventing Safari iOS ancestor shifts).
+  const scrollToBottom = useCallback((force = false) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (force) {
+      isPinnedToBottomRef.current = true;
+    }
+    if (!isPinnedToBottomRef.current && !force) return;
+
+    markProgrammaticScroll();
+    el.scrollTop = el.scrollHeight;
+
+    requestAnimationFrame(() => {
+      if (scrollRef.current && (isPinnedToBottomRef.current || force)) {
+        markProgrammaticScroll();
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    });
+  }, [markProgrammaticScroll]);
+
+  // All messages of the conversation are rendered stably to prevent layout shifts/jumps
+  const visibleMessages = messages;
+
+  // Track user touch/pointer/wheel interaction to never fight user gestures
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const NEAR_BOTTOM_PX = 80;
-    const onScroll = () => {
-      // If user scrolls up, load all messages immediately
-      if (el.scrollTop < 200 && renderedCount < messages.length) {
-        setRenderedCount(messages.length);
-      }
-      isNearBottomRef.current =
-        el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
-    };
-    onScroll();
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
-  }, [conversationId, messages.length, renderedCount]);
 
-  // Keep the last message visible as the iOS keyboard opens/closes and
-  // resizes the app shell (--app-height, use-app-height.ts) — which
-  // cascades down through ordinary flexbox to this container's own
-  // rendered height. A `ResizeObserver` on the container itself is what
-  // that resize actually *is*, regardless of what caused it (keyboard,
-  // orientation change, the contact drawer, anything) — more direct and
-  // reliable than inferring it from a `visualViewport` event, whose
-  // firing/ordering relative to the layout reflow isn't guaranteed. No-op
-  // whenever the user wasn't already at the bottom (`isNearBottomRef`).
+    const onTouchStart = () => {
+      isUserTouchingRef.current = true;
+    };
+    const onTouchEnd = () => {
+      isUserTouchingRef.current = false;
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
+        isUserTouchingRef.current = true;
+      }
+    };
+    const onPointerUp = () => {
+      isUserTouchingRef.current = false;
+    };
+    let wheelTimer: ReturnType<typeof setTimeout> | null = null;
+    const onWheel = () => {
+      isUserTouchingRef.current = true;
+      if (wheelTimer) clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(() => {
+        isUserTouchingRef.current = false;
+      }, 150);
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    el.addEventListener('pointerdown', onPointerDown, { passive: true });
+    el.addEventListener('pointerup', onPointerUp, { passive: true });
+    el.addEventListener('pointercancel', onPointerUp, { passive: true });
+    el.addEventListener('wheel', onWheel, { passive: true });
+
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+      el.removeEventListener('pointerdown', onPointerDown);
+      el.removeEventListener('pointerup', onPointerUp);
+      el.removeEventListener('pointercancel', onPointerUp);
+      el.removeEventListener('wheel', onWheel);
+      if (wheelTimer) clearTimeout(wheelTimer);
+    };
+  }, []);
+
+  // Track whether user scrolled up to read history vs stayed at bottom
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    // The shell's own height now animates smoothly over ~250ms
-    // (dashboard-shell.tsx's `transition-[height]`) rather than jumping
-    // in one or two steps, so this container's size changes on every
-    // frame of that transition, not just once or twice. Coalescing into
-    // a single rAF-scheduled write per frame (instead of forcing a
-    // synchronous scrollHeight read + scrollTop write on every single
-    // ResizeObserver tick) keeps this from fighting the transition and
-    // causing the very stutter it's meant to avoid.
+    if (!el) return;
+    const NEAR_BOTTOM_PX = 160;
+
+    const onScroll = () => {
+      // If triggered by programmatic pin, keep pinned state
+      if (isProgrammaticScrollRef.current) {
+        isPinnedToBottomRef.current = true;
+        return;
+      }
+
+      const distanceFromBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight;
+      isPinnedToBottomRef.current = distanceFromBottom < NEAR_BOTTOM_PX;
+    };
+
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Reset flags when switching conversation
+  useEffect(() => {
+    isPinnedToBottomRef.current = true;
+    isInitialLoadRef.current = true;
+  }, [conversationId]);
+
+  // Initial load auto-positioning:
+  // When messages are ready and rendered, pin to bottom across layout frames.
+  useEffect(() => {
+    if (loading || messages.length === 0) return;
+    if (isInitialLoadRef.current) {
+      scrollToBottom(true);
+      const r1 = requestAnimationFrame(() => {
+        scrollToBottom(true);
+        const r2 = requestAnimationFrame(() => {
+          scrollToBottom(true);
+          isInitialLoadRef.current = false;
+        });
+        return () => cancelAnimationFrame(r2);
+      });
+      return () => cancelAnimationFrame(r1);
+    }
+  }, [conversationId, loading, messages.length, scrollToBottom]);
+
+  // Realtime/subsequent new messages: scroll to bottom if user is pinned
+  useEffect(() => {
+    if (loading || isInitialLoadRef.current) return;
+    if (isPinnedToBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [messages.length, loading, scrollToBottom]);
+
+  // Single unified ResizeObserver:
+  // Monitors both container height changes (e.g. iOS virtual keyboard toggle, orientation)
+  // and content height changes (e.g. image/video thumbnails loading, previews expanding).
+  // Dynamically re-binds when loading finishes so contentRef is observed immediately!
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    const contentEl = contentRef.current;
+    if (!scrollEl || typeof ResizeObserver === 'undefined') return;
+
     let rafId: number | null = null;
     const ro = new ResizeObserver(() => {
-      if (!isNearBottomRef.current || rafId !== null) return;
+      if (isUserTouchingRef.current || !isPinnedToBottomRef.current) return;
+
+      if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        el.scrollTop = el.scrollHeight;
+        if (!isUserTouchingRef.current && isPinnedToBottomRef.current && scrollRef.current) {
+          markProgrammaticScroll();
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
       });
     });
-    ro.observe(el);
+
+    ro.observe(scrollEl);
+    if (contentEl) {
+      ro.observe(contentEl);
+    }
+
     return () => {
       ro.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [conversationId]);
+  }, [conversationId, loading, markProgrammaticScroll]);
 
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
@@ -896,6 +1098,7 @@ export function MessageThread({
         reply_to_message_id: replyToId,
       };
       onNewMessage(optimisticMsg);
+      scrollToBottom(true);
       setReplyTo(null);
 
       // One-shot: a message going out on a thread primed from a
@@ -942,7 +1145,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: 'failed' });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage, user?.id]
+    [conversation, onNewMessage, onUpdateMessage, scrollToBottom, user?.id]
   );
 
   const handleSendMedia = useCallback(
@@ -971,6 +1174,7 @@ export function MessageThread({
         reply_to_message_id: payload.replyToId,
       };
       onNewMessage(optimisticMsg);
+      scrollToBottom(true);
       setReplyTo(null);
 
       try {
@@ -1020,7 +1224,1068 @@ export function MessageThread({
         );
       }
     },
-    [conversation, onNewMessage, onUpdateMessage, user?.id]
+    [conversation, onNewMessage, onUpdateMessage, scrollToBottom, user?.id]
+  );
+
+  const batchRetryMapRef = useRef<
+    Map<
+      string,
+      {
+        file?: File;
+        item?: SendMediaBatchItem;
+        replyToId?: string;
+        caption?: string;
+        albumId?: string;
+        albumIndex?: number;
+        kind?: 'image' | 'video';
+      }
+    >
+  >(new Map());
+
+  const batchControllersRef = useRef<
+    Map<string, { abort: AbortController; albumId?: string }>
+  >(new Map());
+
+  // Per-video thumbnail pipeline: local extraction (data: URL, instant)
+  // chained into a background R2 upload of that small JPEG, keyed by
+  // the optimistic message id. The heavy hash/transcode step below
+  // awaits this (bounded) both to avoid decoding the same file twice
+  // at once (thumbnail extraction + hash both touch the video's bytes)
+  // and to have the persisted key ready for the WhatsApp send payload.
+  const thumbnailUploadRef = useRef<Map<string, Promise<string | undefined>>>(new Map());
+
+  // Aborts any video/image batch still uploading in the background if
+  // the thread itself unmounts (e.g. the agent navigates away from the
+  // inbox entirely) — conversation switches don't remount this
+  // component (no `key` on <MessageThread>), so this only fires on a
+  // genuine teardown, not on every conversation change.
+  useEffect(() => {
+    const controllers = batchControllersRef.current;
+    return () => {
+      for (const entry of controllers.values()) {
+        entry.abort.abort();
+      }
+      controllers.clear();
+    };
+  }, []);
+
+  const handleSendMediaBatch = useCallback(
+    async (payload: SendMediaBatchPayload) => {
+      if (!conversation) return;
+
+      const hasFiles = payload.files && payload.files.length > 0;
+      const hasItems = payload.items && payload.items.length > 0;
+      if (!hasFiles && !hasItems) return;
+
+      const batchBaseTime = Date.now();
+
+      // 1. WhatsApp Instant Video Send (when payload.kind === 'video')
+      if (hasFiles && payload.kind === 'video') {
+        const files = payload.files!;
+        // 2+ videos get grouped into a visual album — same mechanism
+        // images already use (shared album_id, computeAlbumGroups) — so
+        // the thread shows one grid with one central progress ring
+        // instead of N separate bubbles each animating on its own.
+        // A single video keeps today's plain bubble (no album_id at all).
+        const videoAlbumId =
+          files.length >= 2
+            ? (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+                ? crypto.randomUUID()
+                : `video-album-${batchBaseTime}-${Math.random().toString(36).slice(2, 8)}`)
+            : undefined;
+        const optimisticMsgs: Message[] = files.map((file, idx) => {
+          const tempId = `temp-video-${batchBaseTime}-${idx}`;
+          const localBlobUrl = URL.createObjectURL(file);
+          registerLocalMediaBlob(tempId, localBlobUrl);
+          return {
+            id: tempId,
+            conversation_id: conversation.id,
+            sender_type: 'agent',
+            sender_id: user?.id,
+            content_type: 'video',
+            content_text: idx === 0 ? payload.caption : undefined,
+            media_url: localBlobUrl,
+            status: 'sending',
+            created_at: new Date(batchBaseTime + idx * 10).toISOString(),
+            reply_to_message_id: payload.replyToId,
+            album_id: videoAlbumId,
+            album_index: videoAlbumId ? idx : undefined,
+            client_ref: tempId,
+            metadata: videoAlbumId ? { album_id: videoAlbumId, album_index: idx, client_ref: tempId } : { client_ref: tempId },
+          };
+        });
+
+        for (const msg of optimisticMsgs) {
+          const controller = new AbortController();
+          batchControllersRef.current.set(msg.id, { abort: controller, albumId: videoAlbumId });
+        }
+
+        // Save to retry map
+        for (let i = 0; i < optimisticMsgs.length; i++) {
+          const entry = {
+            file: files[i],
+            replyToId: payload.replyToId,
+            caption: i === 0 ? payload.caption : undefined,
+            kind: 'video' as const,
+            albumId: videoAlbumId,
+            albumIndex: videoAlbumId ? i : undefined,
+          };
+          batchRetryMapRef.current.set(optimisticMsgs[i].id, entry);
+          if (optimisticMsgs[i].client_ref) {
+            batchRetryMapRef.current.set(optimisticMsgs[i].client_ref!, entry);
+          }
+        }
+
+        // Inject optimistic messages in one atomic update (0ms perceived speed)
+        if (onNewMessages) {
+          onNewMessages(optimisticMsgs);
+        } else {
+          for (const msg of optimisticMsgs) {
+            onNewMessage(msg);
+          }
+        }
+        scrollToBottom(true);
+        setReplyTo(null);
+
+        // Instantly extract video thumbnail in background to display in optimistic bubble (0ms perceived speed)
+        files.forEach((file, idx) => {
+          const tempId = optimisticMsgs[idx].id;
+          const blobUrl = optimisticMsgs[idx].media_url;
+          const thumbPromise = extractVideoThumbnail(file, tempId)
+            .then((thumb) => {
+              if (!thumb) return undefined;
+              registerLocalVideoThumbnail(tempId, thumb);
+              if (blobUrl) registerLocalVideoThumbnail(blobUrl, thumb);
+              onUpdateMessage(tempId, {
+                metadata: { thumbnail_url: thumb },
+              });
+              // Background-persist to R2 so this thumbnail survives a
+              // conversation reload — see message-bubble.tsx's poster
+              // resolution, which reads this same R2 key back once the
+              // message round-trips through the DB.
+              return persistVideoThumbnail(thumb);
+            })
+            .catch(() => undefined);
+          thumbnailUploadRef.current.set(tempId, thumbPromise);
+        });
+
+        // Background upload & send queue for videos
+        const queue = optimisticMsgs.map((msg, idx) => ({
+          msg,
+          file: files[idx],
+          index: idx,
+        }));
+
+        // Heavy processing (transcode + upload) runs sequentially on
+        // iPhone/iPad (concurrency 1) to protect Safari iOS WebKit
+        // memory from Jetsam/OOM termination and guarantee exact
+        // message arrival order in WhatsApp. Desktop isn't under that
+        // memory constraint, so it gets real concurrency — same value
+        // already used for the image batch queue below.
+        const UPLOAD_CONCURRENCY = isIOSDevice ? 1 : 3;
+        let activeUploads = 0;
+        let nextIdx = 0;
+
+        const pumpUploadQueue = () => {
+          while (activeUploads < UPLOAD_CONCURRENCY && nextIdx < queue.length) {
+            const task = queue[nextIdx++];
+            activeUploads++;
+
+            const taskContentText = task.index === 0 ? payload.caption : undefined;
+
+            (async () => {
+              let uploadedKey: string | null = null;
+              let uploadSlotReleased = false;
+              const ctrlEntry = batchControllersRef.current.get(task.msg.id);
+              const signal = ctrlEntry?.abort.signal;
+
+              const releaseUploadSlot = () => {
+                if (!uploadSlotReleased) {
+                  uploadSlotReleased = true;
+                  activeUploads--;
+                  pumpUploadQueue();
+                }
+              };
+
+              try {
+                if (signal?.aborted) {
+                  releaseUploadSlot();
+                  return;
+                }
+
+                // A0. Wait (briefly, bounded) for this file's own thumbnail
+                // extraction to finish before starting hash/transcode —
+                // both touch the same video's decode pipeline, and letting
+                // them race is exactly the kind of double resource-use a
+                // 2-video batch doesn't need. Cheap in practice: thumbnail
+                // extraction is a metadata-seek, typically well under a
+                // second, so this rarely actually waits.
+                const thumbnailKey = await withTimeout(
+                  thumbnailUploadRef.current.get(task.msg.id) ?? Promise.resolve(undefined),
+                  8_000,
+                );
+
+                if (signal?.aborted) {
+                  releaseUploadSlot();
+                  return;
+                }
+
+                // A. QuickTime transcode if .mov
+                let fileToUpload = task.file;
+
+                // .m4v is standard MPEG-4 Part 14 — directly compatible as MP4, no transcode needed
+                if (/\.m4v$/i.test(fileToUpload.name)) {
+                  fileToUpload = new File([fileToUpload], fileToUpload.name.replace(/\.m4v$/i, '.mp4'), {
+                    type: 'video/mp4',
+                  });
+                }
+
+                const needsTranscode = await shouldTranscodeVideo(fileToUpload);
+                if (needsTranscode) {
+                  try {
+                    fileToUpload = await convertMovToMp4ViaWebCodecs(fileToUpload);
+                    const mp4Blob = URL.createObjectURL(fileToUpload);
+                    registerLocalMediaBlob(task.msg.id, mp4Blob);
+                  } catch (transcodeErr) {
+                    console.error('Failed to transcode video:', transcodeErr);
+                    const reason = transcodeErr instanceof Error ? transcodeErr.message : 'Falha ao processar vídeo.';
+                    toast.error(`Falha ao converter vídeo: ${reason}`);
+                    onUpdateMessage(task.msg.id, { status: 'failed' });
+                    releaseUploadSlot();
+                    return;
+                  }
+                }
+
+                if (signal?.aborted) {
+                  releaseUploadSlot();
+                  return;
+                }
+
+                // WhatsApp Cloud API enforces a strict 16MB limit for video attachments
+                if (fileToUpload.size > 16 * 1024 * 1024) {
+                  const sizeMb = (fileToUpload.size / (1024 * 1024)).toFixed(1);
+                  console.error('Video exceeds WhatsApp 16MB limit:', fileToUpload.size);
+                  toast.error(`O vídeo "${fileToUpload.name}" tem ${sizeMb} MB e excede o limite de 16 MB do WhatsApp.`);
+                  onUpdateMessage(task.msg.id, { status: 'failed' });
+                  releaseUploadSlot();
+                  return;
+                }
+
+                await yieldToReleaseMemory();
+
+                // B. Upload directly to R2 (this hashes the file first —
+                // see hash-file.ts — then streams the PUT itself)
+                const uploadResult = await presignAndUpload('chat-attachment', 'video', fileToUpload);
+                uploadedKey = uploadResult.key;
+
+                releaseUploadSlot();
+
+                if (signal?.aborted) {
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+
+                await yieldToReleaseMemory();
+
+                const finalKey = uploadResult.key;
+                if (uploadResult.resolvedUrl) {
+                  seedMediaResolution(uploadResult.key, uploadResult.resolvedUrl);
+                }
+
+                const localBlob = getLocalMediaBlob(task.msg.id);
+                if (localBlob) {
+                  registerLocalMediaBlob(finalKey, localBlob);
+                }
+
+                // C. Dispatch to WhatsApp API
+                const res = await fetch('/api/whatsapp/send', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    conversation_id: conversation.id,
+                    message_type: 'video',
+                    media_url: finalKey,
+                    content_text: taskContentText,
+                    filename: fileToUpload.name,
+                    reply_to_message_id: payload.replyToId,
+                    client_ref: task.msg.id,
+                    // R2 key of the small JPEG thumbnail (undefined if
+                    // extraction/upload didn't finish in time) — persisted
+                    // server-side so it survives a reload. See
+                    // send-message.ts and message-bubble.tsx's poster
+                    // resolution.
+                    thumbnail_url: thumbnailKey,
+                    // Persists the album grouping server-side (same fields
+                    // the image batch already sends) so a reload still
+                    // renders this as part of the grid instead of falling
+                    // back to a standalone bubble — see computeAlbumGroups.
+                    album_id: videoAlbumId,
+                    album_index: videoAlbumId ? task.index : undefined,
+                  }),
+                  signal,
+                });
+
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  const reason = data?.error || `HTTP ${res.status}`;
+                  console.error('Failed to send video:', reason);
+                  toast.error(`Falha ao enviar vídeo: ${reason}`);
+                  onUpdateMessage(task.msg.id, { status: 'failed' });
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+
+                batchControllersRef.current.delete(task.msg.id);
+                thumbnailUploadRef.current.delete(task.msg.id);
+
+                // D. Succeeded. Prefer the persisted R2 key (survives
+                // reload) over the raw local data: URL for the metadata
+                // this session keeps — the local registry below still
+                // covers instant same-session display either way.
+                const localThumb = getLocalVideoThumbnail(task.msg.id) || getLocalVideoThumbnail(task.msg.media_url);
+                if (localThumb) {
+                  registerLocalVideoThumbnail(finalKey, localThumb);
+                }
+
+                onUpdateMessage(task.msg.id, {
+                  status: 'sent',
+                  media_url: finalKey,
+                  client_ref: task.msg.id,
+                  metadata: thumbnailKey
+                    ? { thumbnail_url: thumbnailKey }
+                    : localThumb
+                      ? { thumbnail_url: localThumb }
+                      : undefined,
+                });
+
+                // The original blob is never actually displayed once
+                // `status` leaves "sending" (MediaVideo shows the R2-
+                // resolved src, not the local preview) — a short buffer
+                // for any in-flight re-render is enough, instead of the
+                // 60-90s this used to hold onto full-size video blobs,
+                // which is real memory pressure across a multi-video batch.
+                scheduleRevokeLocalMediaBlob(task.msg.id, 10_000);
+                if (finalKey) scheduleRevokeLocalMediaBlob(finalKey, 15_000);
+              } catch (err: unknown) {
+                releaseUploadSlot();
+                if (signal?.aborted || (err as { name?: string })?.name === 'AbortError') {
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+                console.error('Error sending video:', err);
+                const errMsg = err instanceof Error ? err.message : 'Falha ao enviar vídeo.';
+                toast.error(errMsg);
+                onUpdateMessage(task.msg.id, { status: 'failed' });
+                if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+              } finally {
+                releaseUploadSlot();
+                batchControllersRef.current.delete(task.msg.id);
+                thumbnailUploadRef.current.delete(task.msg.id);
+              }
+            })();
+          }
+        };
+
+        pumpUploadQueue();
+        return;
+      }
+
+      const totalCount = hasFiles ? payload.files!.length : payload.items!.length;
+      const albumId =
+        payload.albumId ||
+        (totalCount >= 2
+          ? (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+              ? crypto.randomUUID()
+              : `album-${batchBaseTime}-${Math.random().toString(36).slice(2, 8)}`)
+          : undefined);
+
+      // 2. WhatsApp Instant Album Model (when payload.files is provided for images)
+      if (hasFiles) {
+        const files = payload.files!;
+        const { messages: optimisticMsgs } = createOptimisticAlbum({
+          conversationId: conversation.id,
+          files,
+          caption: payload.caption,
+          replyToId: payload.replyToId,
+          userId: user?.id,
+          albumId,
+          baseTime: batchBaseTime,
+        });
+
+        for (const msg of optimisticMsgs) {
+          const controller = new AbortController();
+          batchControllersRef.current.set(msg.id, { abort: controller, albumId });
+        }
+
+        // Save to retry map
+        for (let i = 0; i < optimisticMsgs.length; i++) {
+          const entry = {
+            file: files[i],
+            replyToId: payload.replyToId,
+            caption: i === 0 ? payload.caption : undefined,
+            albumId,
+            albumIndex: i,
+          };
+          batchRetryMapRef.current.set(optimisticMsgs[i].id, entry);
+          if (optimisticMsgs[i].client_ref) {
+            batchRetryMapRef.current.set(optimisticMsgs[i].client_ref!, entry);
+          }
+        }
+
+        // Inject optimistic messages in one atomic update (0ms perceived speed)
+        if (onNewMessages) {
+          onNewMessages(optimisticMsgs);
+        } else {
+          for (const msg of optimisticMsgs) {
+            onNewMessage(msg);
+          }
+        }
+        setReplyTo(null);
+        scrollToBottom(true);
+
+        // Background upload & send queue with concurrency = 3 for R2 network upload
+        // Crucial decoupling: The upload concurrency slot is released IMMEDIATELY once
+        // presignAndUpload finishes. Normalization polling (for HEIC) and WhatsApp send
+        // run completely independently per image in the background without holding up the upload queue!
+        const queue = optimisticMsgs.map((msg, idx) => ({
+          msg,
+          file: files[idx],
+          index: idx,
+        }));
+
+        const UPLOAD_CONCURRENCY = 3;
+        let activeUploads = 0;
+        let nextIdx = 0;
+
+        const pumpUploadQueue = () => {
+          while (activeUploads < UPLOAD_CONCURRENCY && nextIdx < queue.length) {
+            const task = queue[nextIdx++];
+            activeUploads++;
+
+            const taskContentText =
+              task.index === 0 ? payload.caption : undefined;
+
+            (async () => {
+              let uploadedKey: string | null = null;
+              let uploadSlotReleased = false;
+              const ctrlEntry = batchControllersRef.current.get(task.msg.id);
+              const signal = ctrlEntry?.abort.signal;
+
+              const releaseUploadSlot = () => {
+                if (!uploadSlotReleased) {
+                  uploadSlotReleased = true;
+                  activeUploads--;
+                  pumpUploadQueue();
+                }
+              };
+
+              try {
+                if (signal?.aborted) {
+                  releaseUploadSlot();
+                  return;
+                }
+
+                // A. Client-side auto-orient if not HEIC
+                let fileToUpload = task.file;
+                if (!isHeicFile(fileToUpload)) {
+                  try {
+                    const norm = await normalizeImageForUpload(fileToUpload);
+                    fileToUpload = norm.file;
+                  } catch {
+                    // proceed with original
+                  }
+                }
+
+                if (signal?.aborted) {
+                  releaseUploadSlot();
+                  return;
+                }
+
+                // B. Upload directly to R2
+                const uploadResult = await presignAndUpload('chat-attachment', 'image', fileToUpload);
+                uploadedKey = uploadResult.key;
+
+                // IMMEDIATELY RELEASE the upload slot so the next file in queue can start uploading to R2 right away!
+                // Fast images will NEVER wait for slow HEIC normalization or WhatsApp send!
+                releaseUploadSlot();
+
+                if (signal?.aborted) {
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+
+                let finalKey = uploadResult.key;
+                if (uploadResult.requiresProcessing) {
+                  // Poll server for normalized JPEG key in background without holding upload slot
+                  const { normalizedKey, resolvedUrl } = await pollNormalizationStatus(uploadResult.key);
+                  finalKey = normalizedKey;
+                  if (resolvedUrl) seedMediaResolution(normalizedKey, resolvedUrl);
+                } else if (uploadResult.resolvedUrl) {
+                  seedMediaResolution(uploadResult.key, uploadResult.resolvedUrl);
+                }
+
+                if (signal?.aborted) {
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+
+                // Pre-register local blob for the final key so the transition is 100% seamless (0ms flash)
+                const localBlob = getLocalMediaBlob(task.msg.id);
+                if (localBlob) {
+                  registerLocalMediaBlob(finalKey, localBlob);
+                  if (uploadedKey && uploadedKey !== finalKey) {
+                    registerLocalMediaBlob(uploadedKey, localBlob);
+                  }
+                }
+
+                // C. Dispatch to WhatsApp
+                const res = await fetch('/api/whatsapp/send', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    conversation_id: conversation.id,
+                    message_type: 'image',
+                    media_url: finalKey,
+                    content_text: taskContentText,
+                    filename: task.file.name,
+                    reply_to_message_id: payload.replyToId,
+                    client_ref: task.msg.id,
+                    album_id: albumId,
+                    album_index: task.index,
+                  }),
+                  signal,
+                });
+
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  const reason = data?.error || `HTTP ${res.status}`;
+                  console.error('Failed to send media batch item:', reason);
+                  toast.error(`Falha ao enviar foto ${task.index + 1}: ${reason}`);
+                  onUpdateMessage(task.msg.id, { status: 'failed' });
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+
+                batchControllersRef.current.delete(task.msg.id);
+
+                // D. Succeeded! Smoothly update message status and remote key
+                onUpdateMessage(task.msg.id, {
+                  status: 'sent',
+                  media_url: finalKey,
+                  client_ref: task.msg.id,
+                  album_id: albumId,
+                  album_index: task.index,
+                  metadata: { album_id: albumId, album_index: task.index },
+                });
+              } catch (err: unknown) {
+                releaseUploadSlot();
+                if (signal?.aborted || (err as { name?: string })?.name === 'AbortError') {
+                  if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+                  return;
+                }
+                console.error('Network error sending media batch item:', err);
+                toast.error(`Falha de rede ao enviar foto ${task.index + 1}`);
+                onUpdateMessage(task.msg.id, { status: 'failed' });
+                if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+              } finally {
+                releaseUploadSlot();
+                batchControllersRef.current.delete(task.msg.id);
+              }
+            })();
+          }
+        };
+
+        pumpUploadQueue();
+        return;
+      }
+
+      // 2. Legacy items path (backward-compatibility for existing tests)
+      const items = payload.items!;
+      const optimisticMsgs: Message[] = items.map((item, idx) => {
+        const tempId = `temp-${batchBaseTime}-${idx}`;
+        if (item.localPreviewUrl?.startsWith('blob:')) {
+          registerLocalMediaBlob(item.path, item.localPreviewUrl);
+        }
+        return {
+          id: tempId,
+          conversation_id: conversation.id,
+          sender_type: 'agent',
+          sender_id: user?.id,
+          content_type: 'image',
+          content_text: idx === 0 ? (payload.caption || item.caption) : item.caption,
+          media_url: item.path,
+          status: 'sending',
+          created_at: new Date(batchBaseTime + idx * 10).toISOString(),
+          reply_to_message_id: payload.replyToId,
+          album_id: albumId,
+          metadata: { album_id: albumId, album_index: idx },
+        };
+      });
+
+      for (let i = 0; i < optimisticMsgs.length; i++) {
+        batchRetryMapRef.current.set(optimisticMsgs[i].id, {
+          item: items[i],
+          replyToId: payload.replyToId,
+          caption: i === 0 ? (payload.caption || items[i].caption) : items[i].caption,
+          albumId,
+        });
+      }
+
+      if (onNewMessages) {
+        onNewMessages(optimisticMsgs);
+      } else {
+        for (const msg of optimisticMsgs) {
+          onNewMessage(msg);
+        }
+      }
+      setReplyTo(null);
+      scrollToBottom(true);
+
+      const queue = optimisticMsgs.map((msg, idx) => ({
+        msg,
+        item: items[idx],
+        index: idx,
+      }));
+
+      let active = 0;
+      let nextIdx = 0;
+
+      const sendNext = () => {
+        while (active < 3 && nextIdx < queue.length) {
+          const task = queue[nextIdx++];
+          active++;
+
+          const taskContentText =
+            task.index === 0
+              ? payload.caption || task.item.caption
+              : task.item.caption;
+
+          fetch('/api/whatsapp/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversation_id: conversation.id,
+              message_type: 'image',
+              media_url: task.item.mediaUrl,
+              content_text: taskContentText,
+              filename: task.item.filename,
+              reply_to_message_id: payload.replyToId,
+              album_id: albumId,
+            }),
+          })
+            .then(async (res) => {
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) {
+                const reason = data?.error || `HTTP ${res.status}`;
+                console.error('Failed to send media batch item:', reason);
+                toast.error(`Falha ao enviar foto ${task.index + 1}: ${reason}`);
+                onUpdateMessage(task.msg.id, { status: 'failed' });
+                void deleteR2Media(task.item.path).catch(() => {});
+                return;
+              }
+              onUpdateMessage(task.msg.id, {
+                status: 'sent',
+                media_url: task.item.mediaUrl,
+                album_id: albumId,
+                metadata: { album_id: albumId, album_index: task.index },
+              });
+            })
+            .catch((err) => {
+              console.error('Network error sending media batch item:', err);
+              toast.error(`Falha de rede ao enviar foto ${task.index + 1}`);
+              onUpdateMessage(task.msg.id, { status: 'failed' });
+              void deleteR2Media(task.item.path).catch(() => {});
+            })
+            .finally(() => {
+              active--;
+              sendNext();
+            });
+        }
+      };
+
+      sendNext();
+    },
+    [conversation, onNewMessages, onNewMessage, onUpdateMessage, user?.id, scrollToBottom]
+  );
+
+  const handleCancelMediaMessage = useCallback(
+    (message: Message) => {
+      const entry = batchControllersRef.current.get(message.id);
+      if (entry) {
+        entry.abort.abort();
+        batchControllersRef.current.delete(message.id);
+      }
+      onUpdateMessage(message.id, {
+        status: 'failed',
+        metadata: {
+          ...(typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : {}),
+          cancelled: true,
+        },
+      });
+      toast.info('Envio da foto cancelado.');
+    },
+    [onUpdateMessage]
+  );
+
+  const handleCancelMediaAlbum = useCallback(
+    (albumId: string) => {
+      let count = 0;
+      const cancelledIds = new Set<string>();
+
+      for (const [msgId, entry] of Array.from(batchControllersRef.current.entries())) {
+        if (entry.albumId === albumId) {
+          entry.abort.abort();
+          batchControllersRef.current.delete(msgId);
+          cancelledIds.add(msgId);
+          onUpdateMessage(msgId, {
+            status: 'failed',
+            metadata: { cancelled: true },
+          });
+          count++;
+        }
+      }
+
+      for (const m of messages) {
+        if (cancelledIds.has(m.id)) continue;
+        const msgAlbumId =
+          m.album_id ||
+          (typeof m.metadata === 'object' && m.metadata !== null
+            ? (m.metadata as { album_id?: string }).album_id
+            : undefined);
+        if (msgAlbumId === albumId && m.status === 'sending') {
+          cancelledIds.add(m.id);
+          onUpdateMessage(m.id, {
+            status: 'failed',
+            metadata: {
+              ...(typeof m.metadata === 'object' && m.metadata !== null ? m.metadata : {}),
+              cancelled: true,
+            },
+          });
+          count++;
+        }
+      }
+
+      if (count > 0) {
+        toast.info('Envio do lote cancelado.');
+      }
+    },
+    [messages, onUpdateMessage]
+  );
+
+  const handleRetryMediaMessage = useCallback(
+    async (message: Message) => {
+      if (!conversation) return;
+      const retryData =
+        batchRetryMapRef.current.get(message.id) ||
+        (message.client_ref ? batchRetryMapRef.current.get(message.client_ref) : undefined);
+
+      if (!retryData && !message.media_url) {
+        toast.error('Não foi possível reenviar: foto indisponível.');
+        return;
+      }
+
+      const albumId = retryData?.albumId || message.album_id || undefined;
+      const albumIndex =
+        retryData?.albumIndex ??
+        message.album_index ??
+        (typeof message.metadata === 'object' && message.metadata !== null
+          ? (message.metadata as { album_index?: number }).album_index
+          : undefined);
+      const clientRef = message.client_ref || message.id;
+
+      const controller = new AbortController();
+      batchControllersRef.current.set(message.id, { abort: controller, albumId });
+
+      onUpdateMessage(message.id, {
+        status: 'sending',
+        metadata: {
+          ...(typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : {}),
+          cancelled: false,
+        },
+      });
+
+      // If retrying a video
+      if (retryData?.kind === 'video' || (!retryData?.kind && message.content_type === 'video')) {
+        let uploadedKey: string | null = null;
+        try {
+          if (controller.signal.aborted) return;
+          let fileToUpload = retryData?.file;
+          if (!fileToUpload && message.media_url?.startsWith('blob:')) {
+            try {
+              const bRes = await fetch(message.media_url);
+              const blob = await bRes.blob();
+              fileToUpload = new File([blob], 'video.mp4', { type: blob.type || 'video/mp4' });
+            } catch {}
+          }
+          if (fileToUpload) {
+            if (/\.m4v$/i.test(fileToUpload.name)) {
+              fileToUpload = new File([fileToUpload], fileToUpload.name.replace(/\.m4v$/i, '.mp4'), {
+                type: 'video/mp4',
+              });
+            }
+            const needsTranscode = await shouldTranscodeVideo(fileToUpload);
+            if (needsTranscode) {
+              try {
+                fileToUpload = await convertMovToMp4ViaWebCodecs(fileToUpload);
+                const mp4Blob = URL.createObjectURL(fileToUpload);
+                registerLocalMediaBlob(message.id, mp4Blob);
+              } catch (transcodeErr) {
+                console.error('Failed to transcode video on retry:', transcodeErr);
+                const reason = transcodeErr instanceof Error ? transcodeErr.message : 'Falha ao processar vídeo.';
+                toast.error(`Falha ao converter vídeo: ${reason}`);
+                onUpdateMessage(message.id, { status: 'failed' });
+                return;
+              }
+            }
+            if (controller.signal.aborted) return;
+            // WhatsApp Cloud API enforces a strict 16MB limit for video attachments
+            if (fileToUpload.size > 16 * 1024 * 1024) {
+              console.error('Video exceeds WhatsApp 16MB limit:', fileToUpload.size);
+              toast.error('O vídeo excede o limite de 16 MB permitido pelo WhatsApp.');
+              onUpdateMessage(message.id, { status: 'failed' });
+              return;
+            }
+            const uploadResult = await presignAndUpload('chat-attachment', 'video', fileToUpload);
+            uploadedKey = uploadResult.key;
+            if (uploadResult.resolvedUrl) {
+              seedMediaResolution(uploadResult.key, uploadResult.resolvedUrl);
+            }
+            const localBlob = getLocalMediaBlob(message.id);
+            if (localBlob) {
+              registerLocalMediaBlob(uploadedKey, localBlob);
+            }
+            const res = await fetch('/api/whatsapp/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                conversation_id: conversation.id,
+                message_type: 'video',
+                media_url: uploadedKey,
+                content_text: retryData?.caption || message.content_text,
+                filename: fileToUpload.name,
+                reply_to_message_id: retryData?.replyToId || message.reply_to_message_id,
+                client_ref: clientRef,
+                album_id: albumId,
+                album_index: albumIndex,
+              }),
+              signal: controller.signal,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              const reason = data?.error || `HTTP ${res.status}`;
+              toast.error(`Falha ao reenviar: ${reason}`);
+              onUpdateMessage(message.id, { status: 'failed' });
+              if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+              return;
+            }
+            const localThumb = getLocalVideoThumbnail(message.id) || getLocalVideoThumbnail(message.media_url);
+            if (localThumb && uploadedKey) {
+              registerLocalVideoThumbnail(uploadedKey, localThumb);
+            }
+            batchControllersRef.current.delete(message.id);
+            onUpdateMessage(message.id, {
+              status: 'sent',
+              media_url: uploadedKey,
+              client_ref: clientRef,
+              metadata: localThumb ? { thumbnail_url: localThumb } : undefined,
+            });
+            scheduleRevokeLocalMediaBlob(message.id, 60_000);
+            if (uploadedKey) scheduleRevokeLocalMediaBlob(uploadedKey, 90_000);
+            return;
+          } else if (message.media_url) {
+            const res = await fetch('/api/whatsapp/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                conversation_id: conversation.id,
+                message_type: 'video',
+                media_url: message.media_url,
+                content_text: retryData?.caption || message.content_text,
+                filename: 'video.mp4',
+                reply_to_message_id: retryData?.replyToId || message.reply_to_message_id,
+                client_ref: clientRef,
+              }),
+              signal: controller.signal,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              const reason = data?.error || `HTTP ${res.status}`;
+              toast.error(`Falha ao reenviar: ${reason}`);
+              onUpdateMessage(message.id, { status: 'failed' });
+              return;
+            }
+            batchControllersRef.current.delete(message.id);
+            onUpdateMessage(message.id, {
+              status: 'sent',
+              client_ref: clientRef,
+            });
+            return;
+          }
+        } catch (err: unknown) {
+          if (controller.signal.aborted || (err as { name?: string })?.name === 'AbortError') {
+            if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+            return;
+          }
+          toast.error('Erro de conexão ao reenviar vídeo.');
+          onUpdateMessage(message.id, { status: 'failed' });
+          if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+        } finally {
+          batchControllersRef.current.delete(message.id);
+        }
+        return;
+      }
+
+      let fileToUpload = retryData?.file;
+      if (!fileToUpload && message.media_url?.startsWith('blob:')) {
+        try {
+          const bRes = await fetch(message.media_url);
+          const blob = await bRes.blob();
+          fileToUpload = new File([blob], 'image.jpg', { type: blob.type || 'image/jpeg' });
+        } catch {}
+      }
+
+      // If retryData has raw file or recovered blob, run the upload and send pipeline
+      if (fileToUpload) {
+        let uploadedKey: string | null = null;
+        try {
+          if (controller.signal.aborted) return;
+          if (!isHeicFile(fileToUpload)) {
+            try {
+              const norm = await normalizeImageForUpload(fileToUpload);
+              fileToUpload = norm.file;
+            } catch {}
+          }
+
+          if (controller.signal.aborted) return;
+          const uploadResult = await presignAndUpload('chat-attachment', 'image', fileToUpload);
+          uploadedKey = uploadResult.key;
+
+          let finalKey = uploadResult.key;
+          if (uploadResult.requiresProcessing) {
+            const { normalizedKey, resolvedUrl } = await pollNormalizationStatus(uploadResult.key);
+            finalKey = normalizedKey;
+            if (resolvedUrl) seedMediaResolution(normalizedKey, resolvedUrl);
+          } else if (uploadResult.resolvedUrl) {
+            seedMediaResolution(uploadResult.key, uploadResult.resolvedUrl);
+          }
+
+          if (controller.signal.aborted) {
+            if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+            return;
+          }
+
+          const localBlob = getLocalMediaBlob(message.id);
+          if (localBlob) {
+            registerLocalMediaBlob(finalKey, localBlob);
+            if (uploadedKey && uploadedKey !== finalKey) {
+              registerLocalMediaBlob(uploadedKey, localBlob);
+            }
+          }
+
+          const res = await fetch('/api/whatsapp/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversation_id: conversation.id,
+              message_type: 'image',
+              media_url: finalKey,
+              content_text: retryData?.caption || message.content_text,
+              filename: fileToUpload.name,
+              reply_to_message_id: retryData?.replyToId || message.reply_to_message_id,
+              client_ref: clientRef,
+              album_id: albumId,
+              album_index: albumIndex,
+            }),
+            signal: controller.signal,
+          });
+
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const reason = data?.error || `HTTP ${res.status}`;
+            toast.error(`Falha ao reenviar: ${reason}`);
+            onUpdateMessage(message.id, { status: 'failed' });
+            if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+            return;
+          }
+
+          batchControllersRef.current.delete(message.id);
+          onUpdateMessage(message.id, {
+            status: 'sent',
+            media_url: finalKey,
+            client_ref: clientRef,
+            album_id: albumId,
+            album_index: albumIndex,
+            metadata: {
+              ...(typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : {}),
+              album_id: albumId,
+              album_index: albumIndex,
+              cancelled: false,
+            },
+          });
+        } catch (err: unknown) {
+          if (controller.signal.aborted || (err as { name?: string })?.name === 'AbortError') {
+            if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+            return;
+          }
+          toast.error('Erro de conexão ao reenviar foto.');
+          onUpdateMessage(message.id, { status: 'failed' });
+          if (uploadedKey) void deleteR2Media(uploadedKey).catch(() => {});
+        } finally {
+          batchControllersRef.current.delete(message.id);
+        }
+        return;
+      }
+
+      // Legacy item retry fallback or already-uploaded media_url fallback
+      const fallbackUrl = retryData?.item?.mediaUrl || message.media_url;
+      if (fallbackUrl) {
+        try {
+          const res = await fetch('/api/whatsapp/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversation_id: conversation.id,
+              message_type: 'image',
+              media_url: fallbackUrl,
+              content_text: retryData?.caption,
+              filename: retryData?.item?.filename || 'image.jpg',
+              reply_to_message_id: retryData?.replyToId,
+              client_ref: clientRef,
+              album_id: albumId,
+              album_index: albumIndex,
+            }),
+            signal: controller.signal,
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const reason = data?.error || `HTTP ${res.status}`;
+            toast.error(`Falha ao reenviar: ${reason}`);
+            onUpdateMessage(message.id, { status: 'failed' });
+            return;
+          }
+          batchControllersRef.current.delete(message.id);
+          onUpdateMessage(message.id, {
+            status: 'sent',
+            media_url: fallbackUrl,
+            client_ref: clientRef,
+            album_id: albumId,
+            album_index: albumIndex,
+            metadata: {
+              ...(typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : {}),
+              album_id: albumId,
+              album_index: albumIndex,
+              cancelled: false,
+            },
+          });
+        } catch {
+          toast.error('Erro de conexão ao reenviar foto.');
+          onUpdateMessage(message.id, { status: 'failed' });
+        } finally {
+          batchControllersRef.current.delete(message.id);
+        }
+      }
+    },
+    [conversation, onUpdateMessage]
   );
 
   // A voice note the composer just committed to sending (message-
@@ -1058,6 +2323,7 @@ export function MessageThread({
         reply_to_message_id: replyToId,
       };
       onNewMessage(optimisticMsg);
+      scrollToBottom(true);
 
       const result = await runPendingAudio(recordId, {
         onMediaUrl: (url) => onUpdateMessage(tempId, { media_url: url }),
@@ -1068,7 +2334,7 @@ export function MessageThread({
         toast.error(`Failed to send: ${result.error}`);
       }
     },
-    [conversation, onNewMessage, onUpdateMessage, user?.id]
+    [conversation, onNewMessage, onUpdateMessage, user?.id, scrollToBottom]
   );
 
   // Retries a voice note bubble already showing `status: 'failed'` — the
@@ -1236,6 +2502,7 @@ export function MessageThread({
         created_at: new Date().toISOString(),
       };
       onNewMessage(optimisticMsg);
+      scrollToBottom(true);
 
       const followupSuggestionId = followupPrimeRef.current?.suggestionId;
       setFollowupPrime(null);
@@ -1285,7 +2552,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: 'failed' });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage, user?.id]
+    [conversation, onNewMessage, onUpdateMessage, user?.id, scrollToBottom]
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
@@ -1899,7 +3166,7 @@ export function MessageThread({
       <div ref={messagesAreaRef} className="relative flex-1 overflow-hidden">
         <div
           ref={scrollRef}
-          className="h-full overflow-y-auto px-4 py-4"
+          className="h-full overflow-y-auto [overflow-anchor:none] px-4 py-4"
           onPointerDown={() => {
             if (
               document.activeElement instanceof HTMLElement &&
@@ -1924,7 +3191,7 @@ export function MessageThread({
               </p>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div ref={contentRef} className="space-y-4">
               {messageGroups.map((group) => (
                 <div key={group.date}>
                   {/* Date separator */}
@@ -1946,7 +3213,7 @@ export function MessageThread({
                         if (album.messages[0].id !== msg.id) return null;
                         return (
                           <MessageAlbum
-                            key={album.id}
+                            key={album.albumId || album.id}
                             messages={album.messages}
                             currentUserId={user?.id}
                             currentContactId={contact?.id}
@@ -1957,6 +3224,9 @@ export function MessageThread({
                             onReact={postReaction}
                             onDelete={handleDeleteMessage}
                             onToggleReaction={handleReactionToggle}
+                            onRetryMessage={handleRetryMediaMessage}
+                            onCancelMessage={handleCancelMediaMessage}
+                            onCancelAlbum={handleCancelMediaAlbum}
                           />
                         );
                       }
@@ -1975,12 +3245,15 @@ export function MessageThread({
                           onToggleReaction={handleReactionToggle}
                           transcriptRevealed={revealedTranscriptIds.has(msg.id)}
                           onRetryAudio={handleRetryAudio}
+                          onRetryMedia={handleRetryMediaMessage}
                         />
                       );
                     })}
                   </div>
                 </div>
               ))}
+              {/* Invisible bottom marker used for stable scrollIntoView anchor */}
+              <div ref={bottomMarkerRef} className="h-px w-full pointer-events-none opacity-0" aria-hidden="true" />
             </div>
           )}
         </div>
@@ -1993,6 +3266,7 @@ export function MessageThread({
         conversationId={conversation.id}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
+        onSendMediaBatch={handleSendMediaBatch}
         onRecordAudio={(recordId, replyToId) => void handleQueuedAudio(recordId, replyToId)}
         onOpenTemplates={handleOpenTemplates}
         replyTo={replyTo}

@@ -5,6 +5,7 @@ import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
 import { getR2Client, RESOLVE_TTL_SECONDS, type MediaKind } from "@/lib/storage/r2-client";
 import { buildPublicMediaUrl, validateSizeAndMime } from "@/lib/storage/media-purpose";
+import { enqueueMediaNormalization } from "@/lib/media/server-media-normalization";
 
 /**
  * Step 2 of the R2 upload flow: the browser calls this once its direct
@@ -80,6 +81,13 @@ export async function POST(request: Request) {
 
     const publicUrl = row.visibility === "public" ? buildPublicMediaUrl(key) : null;
 
+    const isHeicOrNeedsNormalization =
+      row.kind === "image" &&
+      (actualContentType === "image/heic" ||
+        actualContentType === "image/heif" ||
+        key.toLowerCase().endsWith(".heic") ||
+        key.toLowerCase().endsWith(".heif"));
+
     const { error: updateError } = await supabase
       .from("media_objects")
       .update({
@@ -88,11 +96,16 @@ export async function POST(request: Request) {
         content_type: actualContentType,
         size_bytes: actualSize,
         public_url: publicUrl,
+        processing_status: isHeicOrNeedsNormalization ? "pending" : "none",
       })
       .eq("id", row.id);
 
     if (updateError) {
       return NextResponse.json({ error: "Failed to finalize the upload" }, { status: 500 });
+    }
+
+    if (isHeicOrNeedsNormalization) {
+      enqueueMediaNormalization({ objectKey: key, accountId });
     }
 
     const expiresAt = Date.now() + RESOLVE_TTL_SECONDS * 1000;
@@ -114,6 +127,8 @@ export async function POST(request: Request) {
       publicUrl: publicUrl ?? undefined,
       resolvedUrl,
       expiresAt,
+      requiresProcessing: isHeicOrNeedsNormalization,
+      processingStatus: isHeicOrNeedsNormalization ? "pending" : "none",
     });
   } catch (error) {
     console.error("[media/confirm-upload] error:", error);

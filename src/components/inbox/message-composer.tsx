@@ -29,16 +29,17 @@ import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
+  MEDIA_MAX_BYTES,
   MEDIA_MAX_BYTES_BY_KIND,
   ALLOWED_MIME_TYPES_BY_KIND,
   CHAT_MEDIA_BUCKET,
 } from "@/lib/storage/upload-media";
-import { presignAndUpload, deleteR2Media } from "@/lib/storage/upload-media-r2";
+import { presignAndUpload, deleteR2Media, resolveClientFileMime } from "@/lib/storage/upload-media-r2";
 import {
-  isQuickTimeVideo,
+  shouldTranscodeVideo,
   convertMovToMp4ViaWebCodecs,
 } from "@/lib/media/transcode-mov-webcodecs";
-import { autoOrientImage } from "@/lib/media/auto-orient-image";
+import { isHeicFile, normalizeImageForUpload } from "@/lib/media/image-compat";
 import { ReplyQuote } from "./reply-quote";
 import { DocumentFullscreenPreview } from "./document-fullscreen-preview";
 import { useTranslations } from "next-intl";
@@ -51,6 +52,14 @@ import {
 } from "@/lib/inbox/pending-audio-db";
 import { discardPendingAudio } from "@/lib/inbox/pending-audio-sync";
 import { audioLog, audioLogError } from "@/lib/inbox/pending-audio-log";
+import { pollNormalizationStatus } from "@/lib/media/batch-upload-pool";
+import {
+  registerLocalMediaBlob,
+  scheduleRevokeLocalMediaBlob,
+  revokeLocalMediaBlobImmediately,
+} from "@/lib/inbox/use-resolved-media-src";
+import { stopAllAudioPlayback } from "@/lib/inbox/audio-playback-coordinator";
+import { forensic } from "@/lib/media/forensic-tracer";
 
 /** Media content types an agent can send from the composer. */
 export type ComposerMediaKind = "image" | "video" | "document" | "audio";
@@ -79,6 +88,24 @@ export interface SendMediaPayload {
   replyToId?: string;
 }
 
+export interface SendMediaBatchItem {
+  kind: "image";
+  mediaUrl: string;
+  path: string;
+  localPreviewUrl: string;
+  filename: string;
+  caption?: string;
+}
+
+export interface SendMediaBatchPayload {
+  kind?: "image" | "video";
+  albumId?: string;
+  files?: File[];
+  items?: SendMediaBatchItem[];
+  caption?: string;
+  replyToId?: string;
+}
+
 interface ReplyDraft {
   /** Internal UUID of the message being replied to — sent back through onSend. */
   id: string;
@@ -93,13 +120,13 @@ interface ReplyDraft {
 // through the staged-draft preview below (see the recording state
 // machine further down).
 const PICKER_ACCEPT: Record<"image" | "video" | "document", string> = {
-  image: "image/png,image/jpeg,image/webp",
+  image: "image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,.webp",
   // video/quicktime + .mov: iPhone recordings are transcoded to MP4
   // client-side before upload (see transcode-mov.ts) — listed here so
   // they don't get filtered out of the OS picker in the first place.
-  video: "video/mp4,video/3gpp,video/quicktime,.mov",
+  video: "video/mp4,video/3gpp,video/quicktime,.mov,.mp4,.3gp,.3gpp,.m4v",
   document:
-    "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain",
+    "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,video/*,.mp4,.mov,.avi,.mkv,.wmv,.3gp,.3gpp,.webm,.m4v",
 };
 
 interface MediaDraft {
@@ -132,6 +159,7 @@ interface MessageComposerProps {
   conversationId: string;
   onSend: (text: string, replyToId?: string) => void;
   onSendMedia: (payload: SendMediaPayload) => void;
+  onSendMediaBatch?: (payload: SendMediaBatchPayload) => void;
   /**
    * A voice note has been recorded and the agent committed to sending it
    * (or it was queued hands-free via lock+send). The composer has
@@ -264,6 +292,7 @@ export function MessageComposer({
   conversationId,
   onSend,
   onSendMedia,
+  onSendMediaBatch,
   onRecordAudio,
   onOpenTemplates,
   replyTo,
@@ -302,6 +331,7 @@ export function MessageComposer({
   // update itself is async (setState), so the actual focus/selection call
   // happens in the effect below once the new value has committed to the DOM.
   const pendingCaretRef = useRef<number | null>(null);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -346,15 +376,16 @@ export function MessageComposer({
   const [busy, setBusy] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const attachWrapperRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
 
-  // Closes attachment popup on outside interaction or Escape without shifting focus
+  // Closes attachment popup on outside interaction, Escape, or file picker cancel
   useEffect(() => {
     if (!attachMenuOpen) return;
     const handleOutside = (e: MouseEvent | TouchEvent) => {
-      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+      if (attachWrapperRef.current && !attachWrapperRef.current.contains(e.target as Node)) {
         setAttachMenuOpen(false);
       }
     };
@@ -363,9 +394,23 @@ export function MessageComposer({
         setAttachMenuOpen(false);
       }
     };
+    const handleCancel = () => {
+      setAttachMenuOpen(false);
+    };
+
+    const imgEl = imageInputRef.current;
+    const vidEl = videoInputRef.current;
+    const docEl = documentInputRef.current;
+
+    imgEl?.addEventListener("cancel", handleCancel);
+    vidEl?.addEventListener("cancel", handleCancel);
+    docEl?.addEventListener("cancel", handleCancel);
     document.addEventListener("pointerdown", handleOutside);
     document.addEventListener("keydown", handleKeyDown);
     return () => {
+      imgEl?.removeEventListener("cancel", handleCancel);
+      vidEl?.removeEventListener("cancel", handleCancel);
+      docEl?.removeEventListener("cancel", handleCancel);
       document.removeEventListener("pointerdown", handleOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
@@ -553,21 +598,30 @@ export function MessageComposer({
   }, []);
 
   const handleSend = useCallback(async () => {
-    const trimmed = text.trim();
-    if (!trimmed || sending || sessionExpired) return;
+    if (isSubmittingRef.current || sending || sessionExpired) return;
+    isSubmittingRef.current = true;
 
-    setSending(true);
     try {
-      onSend(trimmed, replyTo?.id);
-      setText("");
-      setSlashToken(null);
-      if (textareaRef.current) {
-        textareaRef.current.removeAttribute("data-multiline");
-        textareaRef.current.style.height = "auto";
-        textareaRef.current.focus();
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      setSending(true);
+      try {
+        onSend(trimmed, replyTo?.id);
+        setText("");
+        setSlashToken(null);
+        if (textareaRef.current) {
+          textareaRef.current.removeAttribute("data-multiline");
+          textareaRef.current.style.height = "auto";
+          textareaRef.current.focus();
+        }
+      } finally {
+        setSending(false);
       }
     } finally {
-      setSending(false);
+      setTimeout(() => {
+        isSubmittingRef.current = false;
+      }, 400);
     }
   }, [text, sending, sessionExpired, onSend, replyTo?.id]);
 
@@ -642,7 +696,7 @@ export function MessageComposer({
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        handleSend();
+        void handleSend();
       }
     },
     [slashToken, suggestions, activeSuggestion, applySuggestion, handleSend]
@@ -661,22 +715,36 @@ export function MessageComposer({
       // clip converted in 24.9s; the old ffmpeg.wasm path could hang
       // indefinitely on the same class of file).
       let file = pickedFile;
+      const isHeic = kind === "image" && isHeicFile(file);
       if (kind === "image") {
-        file = await autoOrientImage(file);
-      } else if (kind === "video" && isQuickTimeVideo(file)) {
-        setBusy(true);
-        try {
-          file = await convertMovToMp4ViaWebCodecs(file);
-        } catch (err) {
-          setBusy(false);
-          toast.error(err instanceof Error ? err.message : t("unsupportedVideoType"));
-          return;
+        if (!isHeic) {
+          setBusy(true);
+          try {
+            const normResult = await normalizeImageForUpload(file);
+            file = normResult.file;
+          } catch (err) {
+            setBusy(false);
+            toast.error(err instanceof Error ? err.message : t("unsupportedFileType"));
+            return;
+          }
+        }
+      } else if (kind === "video") {
+        const needsTranscode = await shouldTranscodeVideo(file);
+        if (needsTranscode) {
+          setBusy(true);
+          try {
+            file = await convertMovToMp4ViaWebCodecs(file);
+          } catch (err) {
+            setBusy(false);
+            toast.error(err instanceof Error ? err.message : t("unsupportedVideoType"));
+            return;
+          }
         }
       }
       // Per-kind ceiling mirrors Meta's caps (image 5 MB, etc.) so we
       // reject before upload rather than orphaning an object that Meta
-      // would then refuse at send.
-      const max = MEDIA_MAX_BYTES_BY_KIND[kind];
+      // would then refuse at send. HEIC allows MEDIA_MAX_BYTES (16MB) directly to R2.
+      const max = isHeic ? MEDIA_MAX_BYTES : MEDIA_MAX_BYTES_BY_KIND[kind];
       if (file.size > max) {
         // Was a hardcoded English string — silent to a non-English-reading
         // agent, who'd just see "attaching didn't work" with no clue it
@@ -700,8 +768,14 @@ export function MessageComposer({
       // video through "Browse"/Files, which Storage then rejects with a
       // raw, untranslated error. Catching it here gives an actionable
       // message instead.
+      const clientMime = resolveClientFileMime(file);
       const allowed = ALLOWED_MIME_TYPES_BY_KIND[kind] as readonly string[];
-      if (!allowed.includes(file.type)) {
+      const isAllowed =
+        allowed.includes(clientMime) ||
+        isHeic ||
+        (kind === "document" &&
+          (clientMime.startsWith("video/") || clientMime === "application/octet-stream"));
+      if (!isAllowed) {
         toast.error(
           kind === "video" ? t("unsupportedVideoType") : t("unsupportedFileType"),
         );
@@ -709,16 +783,38 @@ export function MessageComposer({
       }
       setBusy(true);
       try {
-        const { key } = await presignAndUpload("chat-attachment", kind, file);
+        const { key, requiresProcessing } = await presignAndUpload("chat-attachment", kind, file);
+        let finalKey = key;
+        let previewUrl = URL.createObjectURL(file);
+        if (isHeic && (!file.type || file.type === "application/octet-stream")) {
+          try {
+            previewUrl = URL.createObjectURL(new Blob([file], { type: "image/heic" }));
+          } catch {
+            previewUrl = URL.createObjectURL(file);
+          }
+        }
+        if (requiresProcessing) {
+          toast.info("Processando foto...");
+          const normResult = await pollNormalizationStatus(key);
+          finalKey = normResult.normalizedKey;
+          if (normResult.resolvedUrl) {
+            previewUrl = normResult.resolvedUrl;
+          }
+        }
         // Local preview only — the file is already in memory, so this
         // needs no network round trip (unlike resolving a private R2
         // key, which is for *sent* media, not a draft nobody's seen yet).
-        const previewUrl = URL.createObjectURL(file);
         // Replacing an existing draft? GC the previous object + revoke
         // its preview first.
         removeStaged(draftRef.current?.path);
         revokeStagedPreview(draftRef.current?.previewUrl);
-        setDraft({ kind, previewUrl, path: key, filename: file.name, caption: "" });
+        if (previewUrl?.startsWith("blob:")) {
+          registerLocalMediaBlob(finalKey, previewUrl);
+          if (key !== finalKey) {
+            registerLocalMediaBlob(key, previewUrl);
+          }
+        }
+        setDraft({ kind, previewUrl, path: finalKey, filename: file.name, caption: "" });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Upload failed.");
       } finally {
@@ -738,17 +834,29 @@ export function MessageComposer({
   const uploadAndSend = useCallback(
     async (kind: Exclude<ComposerMediaKind, "audio">, pickedFile: File) => {
       let file = pickedFile;
+      const isHeic = kind === "image" && isHeicFile(file);
       if (kind === "image") {
-        file = await autoOrientImage(file);
-      } else if (kind === "video" && isQuickTimeVideo(file)) {
-        try {
-          file = await convertMovToMp4ViaWebCodecs(file);
-        } catch (err) {
-          toast.error(err instanceof Error ? err.message : t("unsupportedVideoType"));
-          return;
+        if (!isHeic) {
+          try {
+            const normResult = await normalizeImageForUpload(file);
+            file = normResult.file;
+          } catch (err) {
+            toast.error(err instanceof Error ? err.message : t("unsupportedFileType"));
+            return;
+          }
+        }
+      } else if (kind === "video") {
+        const needsTranscode = await shouldTranscodeVideo(file);
+        if (needsTranscode) {
+          try {
+            file = await convertMovToMp4ViaWebCodecs(file);
+          } catch (err) {
+            toast.error(err instanceof Error ? err.message : t("unsupportedVideoType"));
+            return;
+          }
         }
       }
-      const max = MEDIA_MAX_BYTES_BY_KIND[kind];
+      const max = isHeic ? MEDIA_MAX_BYTES : MEDIA_MAX_BYTES_BY_KIND[kind];
       if (file.size > max) {
         toast.error(
           t("fileTooLarge", {
@@ -760,16 +868,27 @@ export function MessageComposer({
         return;
       }
       const allowed = ALLOWED_MIME_TYPES_BY_KIND[kind] as readonly string[];
-      if (!allowed.includes(file.type)) {
+      const isAllowed =
+        !file.type ||
+        allowed.includes(file.type) ||
+        isHeic ||
+        (kind === "document" &&
+          (file.type.startsWith("video/") || file.type === "application/octet-stream"));
+      if (!isAllowed) {
         toast.error(kind === "video" ? t("unsupportedVideoType") : t("unsupportedFileType"));
         return;
       }
       try {
-        const { key } = await presignAndUpload("chat-attachment", kind, file);
+        const { key, requiresProcessing } = await presignAndUpload("chat-attachment", kind, file);
+        let finalKey = key;
+        if (requiresProcessing) {
+          const normResult = await pollNormalizationStatus(key);
+          finalKey = normResult.normalizedKey;
+        }
         onSendMedia({
           kind,
-          mediaUrl: key,
-          path: key,
+          mediaUrl: finalKey,
+          path: finalKey,
           filename: kind === "document" ? file.name : undefined,
         });
       } catch (err) {
@@ -784,22 +903,35 @@ export function MessageComposer({
       if (!fileList || fileList.length === 0) return;
       const files = Array.from(fileList);
 
-      // Exactly one file — unchanged behavior: stage it as a draft with
-      // a caption field, wait for an explicit Send tap.
+      // WhatsApp Model: Images and Videos (single or multiple) are dispatched directly in 0ms,
+      // without ANY intermediate staging bar or second send click!
+      if (kind === "image" || kind === "video") {
+        const caption = text.trim() || undefined;
+        setText("");
+        setSlashToken(null);
+        if (textareaRef.current) {
+          textareaRef.current.removeAttribute("data-multiline");
+          textareaRef.current.style.height = "auto";
+        }
+        if (onSendMediaBatch) {
+          onSendMediaBatch({
+            kind,
+            files,
+            caption,
+            replyToId: replyTo?.id,
+          });
+        }
+        onClearReply?.();
+        return;
+      }
+
+      // Exactly one non-media file (document) — stage draft
       if (files.length === 1) {
         void stageUpload(kind, files[0]);
         return;
       }
 
-      // Multiple files — no per-file caption step, so upload and send
-      // each one as soon as it's ready. Sequential (not Promise.all): on
-      // iOS Safari/PWA (WKWebView) running several uploads — and
-      // possible .mov→.mp4 transcodes — at once is the kind of thing
-      // that's flaky on-device; one at a time is slower but reliable
-      // everywhere, and keeps messages landing in the order they were
-      // picked. `busy` covers the whole batch, same as it does for a
-      // single staged upload — disables the attach button/shows the
-      // spinner until every file has been handled.
+      // Multiple non-media files (documents): keep sequential behavior
       setBusy(true);
       void (async () => {
         try {
@@ -813,7 +945,7 @@ export function MessageComposer({
         }
       })();
     },
-    [stageUpload, uploadAndSend],
+    [onClearReply, onSendMediaBatch, replyTo?.id, stageUpload, text, uploadAndSend],
   );
 
   // The encoded Ogg/Opus bytes from opus-recorder, the instant the
@@ -930,6 +1062,12 @@ export function MessageComposer({
         encoderApplication: 2048, // VOIP — tuned for speech
         encoderSampleRate: 48000,
         streamPages: false, // one callback with the complete file on stop
+        mediaTrackConstraints: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+        },
       });
       cancelledRef.current = false;
       recorder.ondataavailable = (bytes) => {
@@ -1008,6 +1146,7 @@ export function MessageComposer({
   // duplicate request from a second event is always a no-op.
   const startRecordingGesture = useCallback(() => {
     if (micPhase !== "idle") return;
+    stopAllAudioPlayback();
     setLocked(false);
     setRecordSeconds(0);
     // Optimistic — the bar shows immediately; beginCapture (mic
@@ -1032,6 +1171,9 @@ export function MessageComposer({
   const handleMicPointerDown = useCallback(
     (e: React.PointerEvent<HTMLButtonElement>) => {
       if (inputsDisabled || busy) return;
+
+      // Stop any audio playing in the CRM immediately when mic interaction begins
+      stopAllAudioPlayback();
 
       if (e.pointerType === "mouse") {
         // Desktop: 1 click starts. The button itself is hidden the moment
@@ -1216,6 +1358,12 @@ export function MessageComposer({
 
   const sendDraft = useCallback(() => {
     if (!draft || busy) return;
+    forensic.log(22, "envio", "ok", {
+      mode: "single-draft",
+      path: draft.path,
+      kind: draft.kind,
+      caption: draft.caption.trim() || undefined,
+    });
     onSendMedia({
       kind: draft.kind,
       // The real R2 key — never the local preview blob, which is
@@ -1226,7 +1374,11 @@ export function MessageComposer({
       filename: draft.kind === "document" ? draft.filename : undefined,
       replyToId: replyTo?.id,
     });
-    revokeStagedPreview(draft.previewUrl);
+    // Keep local preview blob alive in localBlobRegistry for smooth optimistic display
+    if (draft.previewUrl?.startsWith("blob:")) {
+      registerLocalMediaBlob(draft.path, draft.previewUrl);
+      scheduleRevokeLocalMediaBlob(draft.path, 300_000);
+    }
     // The object is now owned by the sent message — clear without GC.
     setDraft(null);
     onClearReply?.();
@@ -1234,6 +1386,9 @@ export function MessageComposer({
 
   // Discard GCs the staged object — it was uploaded but never sent.
   const discardDraft = useCallback(() => {
+    if (draft?.path) {
+      revokeLocalMediaBlobImmediately(draft.path);
+    }
     removeStaged(draft?.path);
     revokeStagedPreview(draft?.previewUrl);
     setDraft(null);
@@ -1300,51 +1455,6 @@ export function MessageComposer({
         </div>
       )}
 
-      {/* Hidden file inputs driven by the attach menu. `multiple` lets
-          the OS picker (Photos/Files on iOS Safari + the installed PWA,
-          the native picker on Chrome/desktop) return more than one file;
-          handlePicked reads every entry off e.target.files, not just
-          the first. */}
-      <input
-        ref={imageInputRef}
-        type="file"
-        multiple
-        tabIndex={-1}
-        aria-hidden="true"
-        accept={PICKER_ACCEPT.image}
-        className="hidden"
-        onChange={(e) => {
-          handlePicked("image", e.target.files);
-          e.target.value = "";
-        }}
-      />
-      <input
-        ref={videoInputRef}
-        type="file"
-        multiple
-        tabIndex={-1}
-        aria-hidden="true"
-        accept={PICKER_ACCEPT.video}
-        className="hidden"
-        onChange={(e) => {
-          handlePicked("video", e.target.files);
-          e.target.value = "";
-        }}
-      />
-      <input
-        ref={documentInputRef}
-        type="file"
-        multiple
-        tabIndex={-1}
-        aria-hidden="true"
-        accept={PICKER_ACCEPT.document}
-        className="hidden"
-        onChange={(e) => {
-          handlePicked("document", e.target.files);
-          e.target.value = "";
-        }}
-      />
-
       {draft ? (
         <MediaDraftPreview
           draft={draft}
@@ -1362,7 +1472,7 @@ export function MessageComposer({
         // instead of unmounting it — removing an element mid-gesture
         // would drop its pointer capture and break drag-to-lock. The
         // recording bar overlays in its place, visually replacing the
-        // whole row exactly as if it were a swap.
+        // whole row exactly as if it were a swap. */}
         <div className="relative">
           <div
             // `data-composer-capsule` — structural hook only, always
@@ -1387,7 +1497,7 @@ export function MessageComposer({
             )}
           >
             {/* Left — attach media: photo / video / document. */}
-            <div ref={attachMenuRef} data-composer-attach-wrapper className="relative inline-flex shrink-0">
+            <div ref={attachWrapperRef} data-composer-attach-wrapper className="relative inline-flex shrink-0">
               <button
                 type="button"
                 data-composer-attach
@@ -1401,10 +1511,11 @@ export function MessageComposer({
                 }
                 aria-label={t("attachMedia")}
                 aria-expanded={attachMenuOpen}
-                onPointerDown={(e) => e.preventDefault()}
-                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   if (inputsDisabled || busy) return;
+                  if (document.activeElement instanceof HTMLElement) {
+                    document.activeElement.blur();
+                  }
                   setAttachMenuOpen((prev) => !prev);
                 }}
                 className="inline-flex h-[47px] w-[47px] shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1418,51 +1529,78 @@ export function MessageComposer({
 
               {attachMenuOpen && (
                 <div
+                  ref={attachMenuRef}
                   role="menu"
-                  className="absolute bottom-full left-0 z-50 mb-2.5 min-w-[165px] rounded-lg border border-border bg-popover p-[5.5px] shadow-md ring-1 ring-foreground/10 duration-150 animate-in fade-in-0 zoom-in-95"
+                  aria-label={t("attachMedia")}
+                  className="absolute bottom-full left-0 z-20 mb-2 w-[190px] rounded-lg border border-border bg-popover p-[6.5px] shadow-lg"
                 >
-                  <button
-                    type="button"
+                  <label
                     role="menuitem"
-                    onPointerDown={(e) => e.preventDefault()}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setAttachMenuOpen(false);
-                      imageInputRef.current?.click();
-                    }}
-                    className="flex w-full items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
+                    className="flex w-full cursor-pointer items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
                   >
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      multiple
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      accept={PICKER_ACCEPT.image}
+                      className="sr-only"
+                      onChange={(e) => {
+                        setAttachMenuOpen(false);
+                        forensic.log(2, "evento change", "info", {
+                          targetFilesCount: e.target.files?.length ?? 0,
+                          hasFiles: !!e.target.files,
+                        });
+                        handlePicked("image", e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
                     <ImageIcon className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
                     {t("photo")}
-                  </button>
-                  <button
-                    type="button"
+                  </label>
+                  <label
                     role="menuitem"
-                    onPointerDown={(e) => e.preventDefault()}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setAttachMenuOpen(false);
-                      videoInputRef.current?.click();
-                    }}
-                    className="flex w-full items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
+                    className="flex w-full cursor-pointer items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
                   >
+                    <input
+                      ref={videoInputRef}
+                      type="file"
+                      multiple
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      accept={PICKER_ACCEPT.video}
+                      className="sr-only"
+                      onChange={(e) => {
+                        setAttachMenuOpen(false);
+                        handlePicked("video", e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
                     <Video className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
                     {t("video")}
-                  </button>
-                  <button
-                    type="button"
+                  </label>
+                  <label
                     role="menuitem"
-                    onPointerDown={(e) => e.preventDefault()}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setAttachMenuOpen(false);
-                      documentInputRef.current?.click();
-                    }}
-                    className="flex w-full items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
+                    className="flex w-full cursor-pointer items-center gap-[13px] rounded-md px-[8.5px] py-[5px] text-[16.75px] font-normal text-popover-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:bg-primary/15"
                   >
+                    <input
+                      ref={documentInputRef}
+                      type="file"
+                      multiple
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      accept={PICKER_ACCEPT.document}
+                      className="sr-only"
+                      onChange={(e) => {
+                        setAttachMenuOpen(false);
+                        handlePicked("document", e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
                     <FileText className="mr-[11px] size-[19px] text-muted-foreground" strokeWidth={1.75} />
                     {t("document")}
-                  </button>
+                  </label>
                 </div>
               )}
             </div>
@@ -1576,6 +1714,7 @@ export function MessageComposer({
               onMouseDown={(e) => e.preventDefault()}
               onClick={handleSend}
               className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
+              title={readOnly ? undefined : t("send")}
             >
               <Send className="h-4 w-4" />
             </GatedButton>

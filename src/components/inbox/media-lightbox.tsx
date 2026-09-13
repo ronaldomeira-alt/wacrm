@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ImageOff, X } from "lucide-react";
+import { AlertCircle, ImageOff, RotateCw, X } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useTranslations } from "next-intl";
 import { useResolvedMediaSrc } from "@/lib/inbox/use-resolved-media-src";
+import type { Message } from "@/types";
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
@@ -31,6 +32,10 @@ interface MediaLightboxProps {
   images?: string[];
   /** Index into `images` to open on. Ignored when `images` is omitted. */
   initialIndex?: number;
+  /** Optional messages corresponding 1:1 with `images` to display status/retry actions */
+  messages?: Message[];
+  /** Callback to retry sending a failed message */
+  onRetryMessage?: (message: Message) => void;
 }
 
 function LightboxImageItem({
@@ -102,6 +107,8 @@ export function MediaLightbox({
   alt,
   images,
   initialIndex = 0,
+  messages,
+  onRetryMessage,
 }: MediaLightboxProps) {
   const t = useTranslations("Inbox.bubble");
   const items = images && images.length > 0 ? images : [src];
@@ -303,6 +310,12 @@ export function MediaLightbox({
     setTy(clamped.ty);
   }
 
+  const currentMessage = messages?.[index];
+  const isCurrentFailed =
+    currentMessage?.status === "failed" &&
+    !Boolean((currentMessage?.metadata as Record<string, unknown> | undefined)?.cancelled);
+  const isCurrentSending = currentMessage?.status === "sending";
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
@@ -342,7 +355,7 @@ export function MediaLightbox({
             {items.map((url, i) => (
               <div
                 key={i}
-                className="flex h-full w-full snap-start snap-always items-center justify-center"
+                className="relative flex h-full w-full snap-start snap-always items-center justify-center p-2"
               >
                 <LightboxImageItem
                   src={url}
@@ -372,6 +385,40 @@ export function MediaLightbox({
                 transition: dragging ? "none" : "transform 150ms ease-out",
               }}
             />
+          </div>
+        )}
+
+        {/* Floating Action Bar for Failed Image */}
+        {isCurrentFailed && (
+          <div
+            className="absolute left-1/2 z-20 -translate-x-1/2 flex items-center gap-3 rounded-full bg-black/75 backdrop-blur-xl border border-white/15 px-4 py-2 text-white shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200 select-none max-w-[90vw] whitespace-nowrap"
+            style={{ bottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
+          >
+            <div className="flex items-center gap-1.5 text-xs text-white/90">
+              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+              <span className="font-medium">Falha no envio</span>
+            </div>
+            {onRetryMessage && currentMessage && (
+              <button
+                type="button"
+                onClick={() => onRetryMessage(currentMessage)}
+                className="flex items-center gap-1.5 rounded-full bg-primary hover:bg-primary/90 active:scale-95 px-3 py-1 text-xs font-medium text-primary-foreground shadow transition shrink-0"
+              >
+                <RotateCw className="h-3.5 w-3.5" />
+                <span>Reenviar</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Floating status indicator when sending/retrying */}
+        {isCurrentSending && (
+          <div
+            className="absolute left-1/2 z-20 -translate-x-1/2 flex items-center gap-2 rounded-full bg-black/85 backdrop-blur-md px-4 py-2 text-white/90 border border-white/20 shadow-2xl text-xs font-medium animate-in fade-in duration-200 select-none"
+            style={{ bottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
+          >
+            <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <span>Enviando foto {index + 1}...</span>
           </div>
         )}
       </DialogContent>

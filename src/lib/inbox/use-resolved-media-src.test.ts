@@ -3,6 +3,10 @@ import {
   getCachedMediaSrc,
   seedMediaResolution,
   resolveMediaKeys,
+  registerLocalMediaBlob,
+  getLocalMediaBlob,
+  scheduleRevokeLocalMediaBlob,
+  revokeLocalMediaBlobImmediately,
   __resetResolvedMediaCacheForTests,
 } from "./use-resolved-media-src";
 import { isR2MediaKey } from "@/lib/storage/media-url-kind";
@@ -150,6 +154,92 @@ describe("use-resolved-media-src", () => {
 
       // First 5 blobs should have been evicted and revoked
       expect(revokeMock).toHaveBeenCalledTimes(5);
+    });
+  });
+
+  describe("Local Blob Registry (Instant 0ms Staging & Send Continuity)", () => {
+    it("registers and returns local blob URL synchronously at 0ms for an R2 key", () => {
+      const key = "acc_test/image/2026/09/photo1.jpg";
+      const blobUrl = "blob:http://localhost:3000/mock-uuid-1";
+
+      registerLocalMediaBlob(key, blobUrl);
+
+      expect(getLocalMediaBlob(key)).toBe(blobUrl);
+      // getCachedMediaSrc must prioritize local blob over resolveCache/null
+      expect(getCachedMediaSrc(key)).toBe(blobUrl);
+    });
+
+    it("ignores non-blob or invalid inputs safely", () => {
+      registerLocalMediaBlob("key1", "https://example.com/not-a-blob.jpg");
+      expect(getLocalMediaBlob("key1")).toBeUndefined();
+
+      registerLocalMediaBlob("", "blob:http://localhost:3000/test");
+      expect(getLocalMediaBlob("")).toBeUndefined();
+    });
+
+    it("revokes local blob immediately when requested (e.g. user discard)", () => {
+      const revokeMock = vi.fn();
+      vi.stubGlobal("URL", {
+        ...globalThis.URL,
+        revokeObjectURL: revokeMock,
+      });
+
+      const key = "acc_test/image/discarded.jpg";
+      const blobUrl = "blob:http://localhost:3000/discard-me";
+
+      registerLocalMediaBlob(key, blobUrl);
+      expect(getCachedMediaSrc(key)).toBe(blobUrl);
+
+      revokeLocalMediaBlobImmediately(key);
+      expect(getLocalMediaBlob(key)).toBeUndefined();
+      expect(getCachedMediaSrc(key)).toBeNull();
+      expect(revokeMock).toHaveBeenCalledWith(blobUrl);
+    });
+
+    it("revokes local blob after scheduled delay expires without breaking early reads", () => {
+      vi.useFakeTimers();
+      const revokeMock = vi.fn();
+      vi.stubGlobal("URL", {
+        ...globalThis.URL,
+        revokeObjectURL: revokeMock,
+      });
+
+      const key = "acc_test/image/scheduled.jpg";
+      const blobUrl = "blob:http://localhost:3000/scheduled-blob";
+
+      registerLocalMediaBlob(key, blobUrl);
+      scheduleRevokeLocalMediaBlob(key, 5000); // 5 second delay
+
+      // Immediately: still active in memory
+      expect(getCachedMediaSrc(key)).toBe(blobUrl);
+      expect(revokeMock).not.toHaveBeenCalled();
+
+      // Advance 2.5s: still active
+      vi.advanceTimersByTime(2500);
+      expect(getCachedMediaSrc(key)).toBe(blobUrl);
+      expect(revokeMock).not.toHaveBeenCalled();
+
+      // Advance past 5s: revoked and cleared
+      vi.advanceTimersByTime(3000);
+      expect(getLocalMediaBlob(key)).toBeUndefined();
+      expect(getCachedMediaSrc(key)).toBeNull();
+      expect(revokeMock).toHaveBeenCalledWith(blobUrl);
+
+      vi.useRealTimers();
+    });
+
+    it("resolveMediaKeys uses local blob synchronously without network request", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const key = "acc_test/image/batch_photo.jpg";
+      const blobUrl = "blob:http://localhost:3000/batch-preview";
+
+      registerLocalMediaBlob(key, blobUrl);
+
+      const results = await resolveMediaKeys([key]);
+      expect(results.get(key)).toBe(blobUrl);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });

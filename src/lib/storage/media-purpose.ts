@@ -1,5 +1,6 @@
 import {
   ALLOWED_MIME_TYPES_BY_KIND,
+  MEDIA_MAX_BYTES,
   MEDIA_MAX_BYTES_BY_KIND,
 } from "@/lib/storage/upload-media";
 import type { AccountRole } from "@/lib/auth/roles";
@@ -134,14 +135,18 @@ export function validateSizeAndMime(
   contentType: string,
   sizeBytes: number,
 ): MediaValidationError | null {
-  const maxBytes = MEDIA_MAX_BYTES_BY_KIND[kind];
+  const maxBytes = kind === "image" ? MEDIA_MAX_BYTES : MEDIA_MAX_BYTES_BY_KIND[kind];
   if (sizeBytes > maxBytes) {
     return {
       error: `File too large for kind "${kind}": ${sizeBytes} bytes exceeds the ${maxBytes}-byte limit`,
     };
   }
   const allowedMimes = allowedMimeTypesForKind(kind);
-  if (!allowedMimes.includes(contentType)) {
+  const isAllowed =
+    allowedMimes.includes(contentType) ||
+    (kind === "document" &&
+      (contentType.startsWith("video/") || contentType === "application/octet-stream"));
+  if (!isAllowed) {
     return { error: `Unsupported content type "${contentType}" for kind "${kind}"` };
   }
   return null;

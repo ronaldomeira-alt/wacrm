@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useId, useMemo, useState, type ReactNode } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -15,13 +15,24 @@ import {
   CornerDownLeft,
   Sparkles,
   AlertCircle,
+  RotateCw,
+  Play,
+  Maximize2,
+  X,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
 import { MediaLightbox } from "./media-lightbox";
 import { LinkPreviewCard } from "./link-preview-card";
 import { useResolvedMediaSrc } from "@/lib/inbox/use-resolved-media-src";
+import { getLocalVideoThumbnail } from "@/lib/media/video-thumbnail";
 import { useLinkPreview } from "@/hooks/use-link-preview";
 import { extractUrls, linkifyText } from "@/lib/inbox/linkify";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
@@ -66,6 +77,7 @@ interface MessageBubbleProps {
    * receipt, so retrying never requires re-recording.
    */
   onRetryAudio?: (message: Message) => void;
+  onRetryMedia?: (message: Message) => void;
 }
 
 function StatusIcon({
@@ -115,6 +127,7 @@ function MediaImage({
   url: string;
   alt: string;
   t: ReturnType<typeof useTranslations>;
+  status?: Message["status"];
   /** WhatsApp-iOS-style timestamp/status drawn over the photo itself
    *  (bottom-right, on a bottom-edge gradient) instead of the bubble's
    *  normal row below it. Only passed for a caption-less image message —
@@ -154,7 +167,7 @@ function MediaImage({
         type="button"
         onClick={() => setLightboxOpen(true)}
         aria-label={t("photo")}
-        className={cn("block cursor-zoom-in", overlay && "relative")}
+        className={cn("block cursor-zoom-in relative rounded-[inherit] overflow-hidden border-0 p-0")}
       >
         {/* blob: URLs (see above) aren't something next/image's optimizer
             can fetch/serve — plain <img> is required here. */}
@@ -164,9 +177,17 @@ function MediaImage({
           alt={alt}
           loading="lazy"
           decoding="async"
-          className="max-h-64 max-w-60 rounded-lg object-cover"
+          className="max-h-64 max-w-60 object-cover block border-0"
           onError={() => setError(true)}
         />
+        {/* WhatsApp-style circular loading indicator */}
+        {status === "sending" && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] bg-black/20 backdrop-blur-[0.5px]">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 shadow-md backdrop-blur-[2px]">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+            </div>
+          </div>
+        )}
         {overlay && (
           <>
             {/* Contrast shading — one blurred ellipse (SVG + feGaussianBlur),
@@ -227,44 +248,434 @@ function MediaImage({
  * those native controls) instead of reusing MediaImage's blurred-shade
  * treatment.
  */
+/**
+ * Framed-video counterpart to MediaImage.
+ * Renders an instant video thumbnail preview (WhatsApp-style) during loading and when sent,
+ * avoiding blank/purple transparent video elements on iOS Safari.
+ * Clicking play seamlessly starts inline video playback.
+ */
+const isIOSDevice =
+  typeof window !== "undefined" &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+
 function MediaVideo({
   url,
+  status,
   overlay,
+  onRetry,
+  thumbnailUrl,
 }: {
   url: string;
+  status?: Message["status"];
   overlay?: { time: string; status: ReactNode };
+  onRetry?: () => void;
+  thumbnailUrl?: string | null;
 }) {
   // `url` may be a bare R2 key (private chat media) or the Meta inbound
   // proxy path, neither of which `<video src>` can load directly — same
   // resolution as MediaImage above.
   const { src, loading, error } = useResolvedMediaSrc(url);
+  const shadeFilterId = useId();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [isPlayingInline, setIsPlayingInline] = useState(false);
 
-  if (error) {
+  // `thumbnailUrl` is either a locally-generated `data:` URL (fresh
+  // send, same session — usable directly) or a persisted R2 key read
+  // back from `message.metadata.thumbnail_url` after a reload (needs
+  // the same signed-URL resolution as the video itself). The in-memory
+  // registry stays as a same-session fallback for either case.
+  const { src: resolvedThumbnailSrc } = useResolvedMediaSrc(
+    thumbnailUrl && !thumbnailUrl.startsWith("data:") ? thumbnailUrl : undefined,
+  );
+  const poster =
+    (thumbnailUrl?.startsWith("data:") ? thumbnailUrl : resolvedThumbnailSrc) ||
+    getLocalVideoThumbnail(url) ||
+    null;
+
+  // Pause video on iOS native fullscreen exit
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const handleEndFullscreen = () => {
+      video.pause();
+    };
+    video.addEventListener("webkitendfullscreen", handleEndFullscreen);
+    return () => {
+      video.removeEventListener("webkitendfullscreen", handleEndFullscreen);
+    };
+  }, []);
+
+  // Handle desktop standard fullscreen exit
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (!document.fullscreenElement) {
+        video.controls = false;
+        video.pause();
+      }
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  const handlePlay = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!src && !poster) return;
+
+    // iOS iPhone / iPad Safari: maintain 100% existing native webkitEnterFullscreen flow!
+    if (isIOSDevice) {
+      const video = videoRef.current;
+      if (video && src) {
+        const v = video as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
+        if (typeof v.webkitEnterFullscreen === "function") {
+          try {
+            const playPromise = video.play();
+            if (playPromise !== undefined) playPromise.catch(() => {});
+            v.webkitEnterFullscreen();
+            return;
+          } catch {
+            // fallback
+          }
+        }
+      }
+      setFullscreenOpen(true);
+      return;
+    }
+
+    // Google Chrome Desktop / Windows:
+    // Play directly INLINE in the conversation bubble!
+    setIsPlayingInline(true);
+  };
+
+  const handleExpand = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!src && !poster) return;
+    setFullscreenOpen(true);
+  };
+
+  if (error && !poster) {
     return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
-        <ImageOff className="h-8 w-8 text-muted-foreground" />
+      <div className="flex h-44 w-60 items-center justify-center rounded-lg bg-black/40 text-muted-foreground">
+        <ImageOff className="h-8 w-8" />
       </div>
     );
   }
 
-  if (loading || !src) {
+  // A. Sending state: EXACTLY like images!
+  // Displays the video thumbnail with the WhatsApp circular loading spinner!
+  if (status === "sending") {
     return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <div className="relative block overflow-hidden rounded-[inherit] bg-black/30 border-0 p-0">
+        {poster ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={poster}
+            alt="Vídeo"
+            className="max-h-64 max-w-60 object-cover block border-0"
+          />
+        ) : (
+          <div className="flex h-56 w-60 items-center justify-center bg-black/20">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/60 border-t-transparent" />
+          </div>
+        )}
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] bg-black/25 backdrop-blur-[0.5px]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 shadow-md backdrop-blur-[2px]">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+          </div>
+        </div>
+        {overlay && (
+          <span className="pointer-events-none absolute right-2 top-2 z-[1] flex items-center gap-1 rounded-full bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
+            {overlay.time}
+            {overlay.status}
+          </span>
+        )}
       </div>
     );
   }
 
+  // B. Failed state: thumbnail + retry button overlay
+  if (status === "failed") {
+    return (
+      <div className="relative block overflow-hidden rounded-[inherit] bg-black/30 border-0 p-0">
+        {poster ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={poster}
+            alt="Vídeo"
+            className="max-h-64 max-w-60 object-cover block border-0"
+          />
+        ) : (
+          <div className="flex h-56 w-60 items-center justify-center bg-black/30">
+            <ImageOff className="h-8 w-8 text-white/50" />
+          </div>
+        )}
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] bg-black/40 backdrop-blur-[0.5px] transition-opacity hover:opacity-90 cursor-pointer"
+            title="Tentar novamente"
+          >
+            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-black/70 shadow-lg text-white">
+              <RotateCw className="h-5 w-5" />
+            </div>
+          </button>
+        )}
+        {overlay && (
+          <span className="pointer-events-none absolute right-2 top-2 z-[1] flex items-center gap-1 rounded-full bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
+            {overlay.time}
+            {overlay.status}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  // C. Ready to play:
+  // If user on desktop clicked play, display the active inline video player with full controls!
+  if (isPlayingInline && src && !isIOSDevice) {
+    return (
+      <>
+        <div className="group relative block overflow-hidden rounded-[inherit] bg-black max-h-64 max-w-60 border-0 p-0">
+          <video
+            src={src}
+            poster={poster ?? undefined}
+            controls
+            autoPlay
+            playsInline
+            preload="auto"
+            className="max-h-64 max-w-60 w-full object-contain rounded-[inherit] block border-0 bg-black"
+          />
+          {/* Corner expand button to pop out to the enlarged modal */}
+          <button
+            type="button"
+            onClick={handleExpand}
+            className="absolute top-2 left-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white/90 shadow-md backdrop-blur-sm transition-all hover:bg-black/85 hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
+            title="Expandir vídeo"
+            aria-label="Expandir vídeo"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Enlarged Video Modal */}
+        <Dialog open={fullscreenOpen} onOpenChange={setFullscreenOpen}>
+          <DialogContent
+            showCloseButton={false}
+            className="fixed inset-0 top-0 left-0 z-50 flex h-full max-h-screen w-full max-w-none translate-x-0 translate-y-0 flex-col items-center justify-center rounded-none border-none bg-black/95 p-0 text-white shadow-none ring-0 focus:outline-none select-none sm:max-w-none"
+          >
+            <DialogTitle className="sr-only">Vídeo ampliado</DialogTitle>
+            <DialogDescription className="sr-only">
+              Visualização do vídeo ampliado
+            </DialogDescription>
+
+            <div
+              className="absolute top-0 right-0 left-0 z-20 flex items-center justify-end p-4 pointer-events-none"
+              style={{ paddingTop: "calc(1rem + env(safe-area-inset-top))" }}
+            >
+              <button
+                type="button"
+                onClick={() => setFullscreenOpen(false)}
+                aria-label="Fechar"
+                className="pointer-events-auto rounded-full bg-black/50 p-2.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white active:scale-95 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div
+              onClick={() => setFullscreenOpen(false)}
+              className="relative flex flex-1 h-full w-full items-center justify-center p-4 sm:p-8 overflow-hidden cursor-pointer"
+            >
+              {src ? (
+                <video
+                  src={src}
+                  poster={poster ?? undefined}
+                  controls
+                  autoPlay
+                  preload="auto"
+                  playsInline
+                  onClick={(e) => e.stopPropagation()}
+                  className="max-h-[85vh] max-w-[90vw] md:max-h-[88vh] md:max-w-[85vw] rounded-lg object-contain shadow-2xl cursor-default m-auto"
+                />
+              ) : (
+                <div className="relative flex h-full w-full max-h-[85vh] max-w-[90vw] items-center justify-center">
+                  {poster && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={poster}
+                      alt="Prévia do vídeo"
+                      className="max-h-[85vh] max-w-[90vw] md:max-h-[88vh] md:max-w-[85vw] rounded-xl object-contain opacity-50 m-auto select-none pointer-events-none"
+                    />
+                  )}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="h-10 w-10 animate-spin rounded-full border-3 border-primary border-t-transparent" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
+
+  // D. Initial state: display thumbnail preview with WhatsApp circular play button.
+  // Clicking play starts inline playback on desktop, and native fullscreen on iOS!
   return (
-    <div className="relative block">
-      <video src={src} controls className="max-h-64 max-w-60 rounded-lg" />
-      {overlay && (
-        <span className="pointer-events-none absolute right-2 top-2 z-[1] flex items-center gap-1 rounded-full bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
-          {overlay.time}
-          {overlay.status}
-        </span>
-      )}
-    </div>
+    <>
+      <div
+        onClick={handlePlay}
+        className="group relative block cursor-pointer overflow-hidden rounded-[inherit] bg-black/40 select-none max-h-64 max-w-60 border-0 p-0"
+        role="button"
+        tabIndex={0}
+        aria-label="Reproduzir vídeo"
+      >
+        {/* Invisible in-DOM video tag ready for native iOS webkitEnterFullscreen with preload="none" */}
+        {src && isIOSDevice && (
+          <video
+            ref={videoRef}
+            src={src}
+            preload="none"
+            playsInline
+            className="pointer-events-none absolute inset-0 h-full w-full opacity-0 object-cover"
+          />
+        )}
+
+        {poster ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={poster}
+            alt="Vídeo"
+            className="max-h-64 max-w-60 object-cover block border-0"
+            loading="lazy"
+          />
+        ) : src ? (
+          <video
+            src={src}
+            preload="metadata"
+            playsInline
+            className="max-h-64 max-w-60 object-cover block border-0"
+          />
+        ) : loading ? (
+          <div className="flex h-56 w-60 items-center justify-center bg-black/20">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/60 border-t-transparent" />
+          </div>
+        ) : (
+          <div className="flex h-56 w-60 items-center justify-center bg-black/30">
+            <ImageOff className="h-8 w-8 text-white/50" />
+          </div>
+        )}
+
+        {/* WhatsApp centered play button */}
+        {(src || poster) && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-black/60 shadow-lg text-white backdrop-blur-[2px] transition-transform group-hover:scale-110 group-active:scale-95">
+              <Play className="h-6 w-6 fill-white ml-0.5" />
+            </div>
+          </div>
+        )}
+
+        {/* Desktop-only corner expand button */}
+        {!isIOSDevice && (src || poster) && (
+          <button
+            type="button"
+            onClick={handleExpand}
+            className="absolute top-2 left-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white/80 opacity-0 group-hover:opacity-100 shadow-md backdrop-blur-sm transition-all hover:bg-black/80 hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
+            title="Expandir vídeo"
+            aria-label="Expandir vídeo"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+
+        {overlay && (
+          <>
+            <svg
+              aria-hidden
+              className="pointer-events-none absolute inset-0 z-[1] h-full w-full"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+            >
+              <defs>
+                <filter id={shadeFilterId} x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="8" />
+                </filter>
+              </defs>
+              <ellipse
+                cx="100"
+                cy="100"
+                rx="42"
+                ry="18"
+                fill="rgba(0,0,0,0.5)"
+                filter={`url(#${shadeFilterId})`}
+                transform="rotate(-40 100 100)"
+              />
+            </svg>
+            <span className="absolute bottom-[6px] right-2 z-[2] flex items-center gap-1 text-[11px] text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
+              {overlay.time}
+              {overlay.status}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Enlarged Video Modal */}
+      <Dialog open={fullscreenOpen} onOpenChange={setFullscreenOpen}>
+        <DialogContent
+          showCloseButton={false}
+          className="fixed inset-0 top-0 left-0 z-50 flex h-full max-h-screen w-full max-w-none translate-x-0 translate-y-0 flex-col items-center justify-center rounded-none border-none bg-black/95 p-0 text-white shadow-none ring-0 focus:outline-none select-none"
+        >
+          <DialogTitle className="sr-only">Vídeo ampliado</DialogTitle>
+          <DialogDescription className="sr-only">
+            Visualização do vídeo ampliado
+          </DialogDescription>
+
+          <div
+            className="absolute top-0 right-0 left-0 z-20 flex items-center justify-end p-4 pointer-events-none"
+            style={{ paddingTop: "calc(1rem + env(safe-area-inset-top))" }}
+          >
+            <button
+              type="button"
+              onClick={() => setFullscreenOpen(false)}
+              aria-label="Fechar"
+              className="pointer-events-auto rounded-full bg-black/50 p-2.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white active:scale-95 cursor-pointer"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div
+            onClick={() => setFullscreenOpen(false)}
+            className="relative flex flex-1 h-full w-full items-center justify-center p-4 sm:p-8 overflow-hidden cursor-pointer"
+          >
+            {src ? (
+              <video
+                src={src}
+                poster={poster ?? undefined}
+                controls
+                autoPlay
+                preload="auto"
+                playsInline
+                onClick={(e) => e.stopPropagation()}
+                className="max-h-[85vh] max-w-[90vw] md:max-h-[88vh] md:max-w-[85vw] rounded-lg object-contain shadow-2xl cursor-default m-auto"
+              />
+            ) : (
+              <div className="flex h-40 w-40 items-center justify-center">
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -354,6 +765,7 @@ function MessageContent({
   status,
   transcriptRevealed,
   onRetryAudio,
+  onRetryMedia,
 }: {
   message: Message;
   t: ReturnType<typeof useTranslations>;
@@ -367,6 +779,7 @@ function MessageContent({
    *  is not permission to show it unprompted. */
   transcriptRevealed?: boolean;
   onRetryAudio?: (message: Message) => void;
+  onRetryMedia?: (message: Message) => void;
 }) {
   switch (message.content_type) {
     case "text":
@@ -380,7 +793,7 @@ function MessageContent({
       return (
         <div>
           {message.media_url ? (
-            <MediaImage url={message.media_url} alt="Shared image" t={t} />
+            <MediaImage url={message.media_url} alt="Shared image" t={t} status={message.status} />
           ) : (
             <MediaUnavailable label={t("photo")} t={t} />
           )}
@@ -396,7 +809,12 @@ function MessageContent({
       return (
         <div>
           {message.media_url ? (
-            <MediaVideo url={message.media_url} />
+            <MediaVideo
+              url={message.media_url}
+              status={message.status}
+              thumbnailUrl={(message.metadata?.thumbnail_url as string) || null}
+              onRetry={onRetryMedia ? () => onRetryMedia(message) : undefined}
+            />
           ) : (
             <MediaUnavailable label={t("video")} t={t} />
           )}
@@ -404,6 +822,16 @@ function MessageContent({
             <p className="mt-1 select-text whitespace-pre-wrap break-words pr-8 text-sm">
               {linkifyText(message.content_text)}
             </p>
+          )}
+          {isAgent && message.status === "failed" && onRetryMedia && (
+            <button
+              type="button"
+              onClick={() => onRetryMedia(message)}
+              className="mt-1.5 flex items-center gap-1 text-xs font-medium text-red-400 transition-colors hover:text-red-300"
+            >
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              Reenviar vídeo
+            </button>
           )}
         </div>
       );
@@ -553,6 +981,7 @@ function MessageBubbleComponent({
   transcriptRevealed,
   cornerAction,
   onRetryAudio,
+  onRetryMedia,
 }: MessageBubbleProps) {
   const t = useTranslations("Inbox.bubble");
 
@@ -640,21 +1069,27 @@ function MessageBubbleComponent({
       <div
         className={cn(
           "relative rounded-2xl",
-          isFramedMedia
-            ? "overflow-hidden p-[2px]"
-            : // Extra top clearance (vs. the symmetric px-3 py-2 every
-              // other bubble uses) is what actually separates the corner
-              // chevron from a single-line message instead of them
-              // sharing the same visual row — see message-actions.tsx's
-              // trigger-position comment. Audio keeps the tighter py-2:
-              // AudioMessagePlayer's waveform is already tuned to sit
-              // flush under a smaller, lower chevron (isAudioContent).
-              hasAudioPlayer
-              ? "px-3 py-2"
-              : "px-3 pb-2 pt-3",
-          isAgent
-            ? "rounded-br-md bg-primary text-primary-foreground"
-            : "rounded-bl-md bg-muted text-foreground",
+          isFramedPhoto || isFramedVideo
+            ? "overflow-hidden p-0 bg-transparent border-0 shadow-none"
+            : isFramedMedia
+              ? "overflow-hidden p-[2px]"
+              : // Extra top clearance (vs. the symmetric px-3 py-2 every
+                // other bubble uses) is what actually separates the corner
+                // chevron from a single-line message instead of them
+                // sharing the same visual row — see message-actions.tsx's
+                // trigger-position comment. Audio keeps the tighter py-2:
+                // AudioMessagePlayer's waveform is already tuned to sit
+                // flush under a smaller, lower chevron (isAudioContent).
+                hasAudioPlayer
+                ? "px-3 py-2"
+                : "px-3 pb-2 pt-3",
+          isFramedPhoto || isFramedVideo
+            ? isAgent
+              ? "rounded-br-md"
+              : "rounded-bl-md"
+            : isAgent
+              ? "rounded-br-md bg-primary text-primary-foreground"
+              : "rounded-bl-md bg-muted text-foreground",
         )}
       >
         {reply && (
@@ -680,6 +1115,9 @@ function MessageBubbleComponent({
         ) : isFramedVideo && message.media_url ? (
           <MediaVideo
             url={message.media_url}
+            status={message.status}
+            thumbnailUrl={(message.metadata?.thumbnail_url as string) || null}
+            onRetry={onRetryMedia ? () => onRetryMedia(message) : undefined}
             overlay={{
               time,
               status: isAgent ? <StatusIcon status={message.status} overlay /> : null,
@@ -726,6 +1164,7 @@ function MessageBubbleComponent({
               status={isAgent ? <StatusIcon status={message.status} /> : null}
               transcriptRevealed={transcriptRevealed}
               onRetryAudio={onRetryAudio}
+              onRetryMedia={onRetryMedia}
             />
             {!hasDocumentPreview && !hasAudioPlayer && (
               <div

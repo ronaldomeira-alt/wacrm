@@ -642,6 +642,16 @@ export interface Message {
   document_page_count?: number | null;
   document_file_size?: number | null;
   document_thumbnail_url?: string | null;
+  /**
+   * Batch/album identifier grouping multiple media items sent together.
+   * Messages sharing the same album_id are grouped into a MessageAlbum regardless
+   * of timestamp difference.
+   */
+  album_id?: string | null;
+  /** Fixed 0-based position within an album batch */
+  album_index?: number | null;
+  /** Arbitrary message metadata */
+  metadata?: Record<string, unknown> | null;
 }
 
 export type ReactionActor = 'customer' | 'agent';

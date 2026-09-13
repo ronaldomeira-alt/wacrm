@@ -3,6 +3,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getR2Bucket, getR2Client, isR2MediaKey } from "./r2-client";
 import { publicMediaUrlPrefix } from "./media-purpose";
 import { supabaseAdmin } from "./admin-client";
+import { normalizeMediaObjectInR2 } from "@/lib/media/server-media-normalization";
 
 /**
  * How long a signed URL minted for an outbound fetch stays valid.
@@ -75,11 +76,48 @@ export async function resolveMediaUrlForSend(mediaUrl: string): Promise<string> 
     return mediaUrl;
   }
 
+  // Check if this R2 key is an original HEIC that has a normalized JPEG key
+  let targetKey = mediaUrl;
+  try {
+    const admin = supabaseAdmin();
+    const { data: row } = await admin
+      .from("media_objects")
+      .select("account_id, normalized_key, processing_status, content_type")
+      .eq("object_key", mediaUrl)
+      .maybeSingle();
+
+    if (row?.normalized_key) {
+      targetKey = row.normalized_key;
+    } else if (
+      row?.content_type === "image/heic" ||
+      row?.content_type === "image/heif" ||
+      mediaUrl.toLowerCase().endsWith(".heic") ||
+      mediaUrl.toLowerCase().endsWith(".heif")
+    ) {
+      if (row?.processing_status === "failed") {
+        throw new Error("A imagem não pôde ser convertida para envio ao WhatsApp.");
+      }
+      // On-demand synchronous normalization fallback so send never fails
+      const accountId = row?.account_id || mediaUrl.split("/")[0].replace(/^account-/, "");
+      console.log(`[resolveMediaUrlForSend] Normalizing HEIC on-demand for key: ${mediaUrl}`);
+      const normResult = await normalizeMediaObjectInR2({
+        objectKey: mediaUrl,
+        accountId,
+      });
+      targetKey = normResult.normalizedKey;
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("WhatsApp")) {
+      throw err;
+    }
+    // Fallback to mediaUrl on non-blocking DB lookup error
+  }
+
   const client = getR2Client();
   const bucket = getR2Bucket();
   return getSignedUrl(
     client,
-    new GetObjectCommand({ Bucket: bucket, Key: mediaUrl }),
+    new GetObjectCommand({ Bucket: bucket, Key: targetKey }),
     { expiresIn: SEND_TIME_URL_TTL_SECONDS },
   );
 }

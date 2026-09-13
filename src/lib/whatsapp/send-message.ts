@@ -140,6 +140,20 @@ export interface SendMessageParams {
    * migration 20260903230000 for the schema + full incident writeup.
    */
   clientRef?: string | null;
+  /**
+   * Batch/album identifier grouping multiple media items sent in one action.
+   */
+  albumId?: string | null;
+  /** Fixed 0-based position within an album batch */
+  albumIndex?: number | null;
+  /**
+   * R2 key of a small JPEG thumbnail (video messages only, so far) —
+   * persisted into `messages.metadata.thumbnail_url` so the preview
+   * survives a conversation reload instead of only living in browser
+   * memory. See message-thread.tsx's `persistVideoThumbnail` and
+   * message-bubble.tsx's poster resolution.
+   */
+  thumbnailUrl?: string | null;
 }
 
 export interface SendMessageResult {
@@ -255,7 +269,28 @@ export async function sendMessageToConversation(
     replyToMessageId,
     senderId,
     clientRef,
+    albumId,
+    albumIndex,
+    thumbnailUrl,
   } = params;
+
+  const metadata = thumbnailUrl ? { thumbnail_url: thumbnailUrl } : null;
+  // `messages.metadata` may not exist yet on every environment this
+  // code runs against until its migration has been applied there —
+  // rather than let that turn into a hard failure for every message
+  // send (audio/video/interactive all pass through this same claim
+  // upsert), PostgREST's "unknown column" error is detected here so
+  // every metadata-bearing write below can drop the field and retry
+  // once instead of throwing. Once the column exists everywhere, this
+  // fallback is simply never triggered.
+  let metadataColumnMissing = false;
+  function isMissingMetadataColumn(error: { code?: string; message?: string } | null): boolean {
+    if (!error) return false;
+    return (
+      error.code === 'PGRST204' ||
+      /metadata.*column|column.*metadata/i.test(error.message || '')
+    );
+  }
 
   if (!conversationId) {
     throw new SendMessageError(
@@ -302,23 +337,51 @@ export async function sendMessageToConversation(
   // than risk a duplicate send — pending-audio-sync.ts treats that as an
   // ordinary failed attempt and retries later, by which point the winner
   // has settled.
+  const interactiveBody =
+    messageType === 'interactive' ? interactivePayload?.body ?? null : null;
+
   let claimedMessageId: string | null = null;
   if (clientRef) {
-    const { data: claimed, error: claimError } = await db
-      .from('messages')
-      .upsert(
-        {
-          conversation_id: conversationId,
-          sender_type: 'agent',
-          sender_id: senderId || null,
-          content_type: messageType,
-          status: 'sending',
-          client_ref: clientRef,
-        },
-        { onConflict: 'client_ref', ignoreDuplicates: true }
-      )
-      .select('id')
-      .maybeSingle();
+    const claimRow = {
+      conversation_id: conversationId,
+      sender_type: 'agent',
+      sender_id: senderId || null,
+      content_type: messageType,
+      content_text: interactiveBody ?? contentText ?? null,
+      media_url: mediaUrl || null,
+      status: 'sending',
+      client_ref: clientRef,
+      album_id: albumId || null,
+      album_index: typeof albumIndex === 'number' ? albumIndex : null,
+    };
+
+    // Only attempt the metadata-bearing write when there's actually a
+    // thumbnail to persist (i.e. never for audio/plain sends) — keeps
+    // the common case a single round trip even while the column is
+    // still missing on an environment that hasn't run the migration yet.
+    let { data: claimed, error: claimError } = metadata
+      ? await db
+          .from('messages')
+          .upsert(
+            { ...claimRow, metadata },
+            { onConflict: 'client_ref', ignoreDuplicates: true }
+          )
+          .select('id')
+          .maybeSingle()
+      : await db
+          .from('messages')
+          .upsert(claimRow, { onConflict: 'client_ref', ignoreDuplicates: true })
+          .select('id')
+          .maybeSingle();
+
+    if (metadata && claimError && isMissingMetadataColumn(claimError)) {
+      metadataColumnMissing = true;
+      ({ data: claimed, error: claimError } = await db
+        .from('messages')
+        .upsert(claimRow, { onConflict: 'client_ref', ignoreDuplicates: true })
+        .select('id')
+        .maybeSingle());
+    }
 
     if (claimError) {
       logError('send-message.claim_failed', claimError, { clientRef });
@@ -350,16 +413,37 @@ export async function sendMessageToConversation(
         return { messageId: existing.id, whatsappMessageId: existing.message_id };
       }
 
-      logIdempotencyEvent({
-        client_ref: clientRef,
-        status: 'claim-conflict',
-        action: 'rejected_in_progress',
-      });
-      throw new SendMessageError(
-        'conflict',
-        'A send for this client_ref is already in progress',
-        409
-      );
+      if (existing?.status === 'failed') {
+        // Explicit retry of a previously failed message: reclaim this row and proceed to send
+        const { error: retryError } = await db
+          .from('messages')
+          .update({
+            status: 'sending',
+            media_url: mediaUrl || undefined,
+            content_text: interactiveBody ?? contentText ?? null,
+          })
+          .eq('id', existing.id);
+
+        if (retryError) {
+          throw new SendMessageError(
+            'db_error',
+            `Failed to reclaim failed send: ${retryError.message}`,
+            500
+          );
+        }
+        claimedMessageId = existing.id;
+      } else {
+        logIdempotencyEvent({
+          client_ref: clientRef,
+          status: 'claim-conflict',
+          action: 'rejected_in_progress',
+        });
+        throw new SendMessageError(
+          'conflict',
+          'A send for this client_ref is already in progress',
+          409
+        );
+      }
     }
   }
 
@@ -630,13 +714,6 @@ export async function sendMessageToConversation(
   const isFirstAgentMessage = (priorAgentMessageCount ?? 0) === 0;
 
   // Persist the sent message. Field names MUST match the messages
-  // schema (see 001_initial_schema.sql).
-  // Interactive messages persist the body as content_text (so the
-  // conversation-list preview reads sensibly) plus the full structured
-  // payload so the thread can re-render the buttons / rows.
-  const interactiveBody =
-    messageType === 'interactive' ? interactivePayload!.body : null;
-
   // A claimed client_ref already has its row (status: 'sending') from the
   // idempotency claim above — fill it in with an UPDATE rather than
   // inserting a second row, which messages_client_ref_unique would reject
@@ -654,6 +731,13 @@ export async function sendMessageToConversation(
           message_id: waMessageId,
           status: 'sent',
           reply_to_message_id: replyToMessageId || null,
+          album_id: albumId || null,
+          album_index: typeof albumIndex === 'number' ? albumIndex : null,
+          // Already know from the claim upsert above whether this column
+          // exists on this environment — never re-attempt it here if not,
+          // which would otherwise fail the whole update (and thus the
+          // whole send) rather than just skip the thumbnail.
+          ...(metadata && !metadataColumnMissing ? { metadata } : {}),
         })
         .eq('id', claimedMessageId)
         .select()
@@ -674,6 +758,15 @@ export async function sendMessageToConversation(
           status: 'sent',
           reply_to_message_id: replyToMessageId || null,
           client_ref: clientRef || null,
+          album_id: albumId || null,
+          album_index: typeof albumIndex === 'number' ? albumIndex : null,
+          // This path never went through the claim upsert (no clientRef),
+          // so `metadataColumnMissing` may still be unset — only ever
+          // include the key when there's an actual thumbnail to persist,
+          // which keeps every ordinary (non-video) send payload free of
+          // it entirely rather than risking the whole insert on a column
+          // that might not exist yet on this environment.
+          ...(metadata ? { metadata } : {}),
         })
         .select()
         .single();

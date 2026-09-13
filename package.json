@@ -60,6 +60,7 @@
     "date-fns": "^4.4.0",
     "frimousse": "^0.3.0",
     "googleapis": "^174.0.1",
+    "heic-decode": "^2.1.0",
     "lucide-react": "^1.27.0",
     "mediabunny": "^1.53.1",
     "next": "16.2.12",

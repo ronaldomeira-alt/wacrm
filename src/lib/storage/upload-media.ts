@@ -68,7 +68,16 @@ export const MEDIA_MAX_BYTES_BY_KIND = {
  * instead — see `stageUpload` in `message-composer.tsx`.
  */
 export const ALLOWED_MIME_TYPES_BY_KIND = {
-  image: ["image/png", "image/jpeg", "image/webp"],
+  image: [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+    "image/x-heic",
+    "image/heic-sequence",
+    "image/heif-sequence",
+  ],
   video: ["video/mp4", "video/3gpp"],
   document: [
     "application/pdf",
@@ -79,6 +88,16 @@ export const ALLOWED_MIME_TYPES_BY_KIND = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "text/plain",
+    "video/mp4",
+    "video/3gpp",
+    "video/quicktime",
+    "video/x-matroska",
+    "video/x-msvideo",
+    "video/webm",
+    "video/x-ms-wmv",
+    "video/mpeg",
+    "video/ogg",
+    "application/octet-stream",
   ],
 } as const;
 

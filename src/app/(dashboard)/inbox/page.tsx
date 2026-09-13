@@ -28,6 +28,7 @@ import {
 } from "@/lib/inbox/message-cache";
 import { isR2MediaKey } from "@/lib/storage/media-url-kind";
 import { prefetchMediaKeys } from "@/lib/inbox/use-resolved-media-src";
+import { reconcileOptimisticMessages } from "@/lib/inbox/optimistic-album";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -442,11 +443,10 @@ function InboxPageInner() {
             ) {
               return prev;
             }
-            // Replace optimistic message if it exists
-            const withoutOptimistic = prev.filter(
-              (m) => !m.id.startsWith("temp-")
-            );
-            return [...withoutOptimistic, newMsg];
+
+            // In-place reconciliation: matches specific temp item by client_ref,
+            // album_id + album_index, or content_type without wiping other items.
+            return reconcileOptimisticMessages(prev, newMsg).updatedMessages;
           });
         }
 
@@ -517,7 +517,13 @@ function InboxPageInner() {
           if (activeConversation?.id) {
             removeCachedMessage(activeConversation.id, deletedId);
           }
-          setMessages((prev) => prev.filter((m) => m.id !== deletedId));
+          setMessages((prev) =>
+            prev.filter((m) => {
+              if (m.id !== deletedId) return true;
+              // Never silently discard a failed message on DELETE (e.g. backend released failed claim row)
+              return m.status === "failed";
+            })
+          );
         }
       }
     },
@@ -888,10 +894,33 @@ function InboxPageInner() {
 
 
   const handleMessagesLoaded = useCallback((loaded: Message[]) => {
-    setMessages(loaded);
-    if (activeConversationIdRef.current) {
-      setCachedMessages(activeConversationIdRef.current, loaded);
-    }
+    setMessages((prev) => {
+      const activeConvId = activeConversationIdRef.current;
+      const loadedIds = new Set(loaded.map((m) => m.id));
+      const loadedClientRefs = new Set(
+        loaded.map((m) => m.client_ref).filter((ref): ref is string => Boolean(ref))
+      );
+
+      // Preserve any pending or failed optimistic messages in the active conversation
+      const preservedTransient = prev.filter((m) => {
+        if (m.conversation_id !== activeConvId) return false;
+        const isTransient = m.status === "failed" || m.status === "sending";
+        if (!isTransient) return false;
+        if (loadedIds.has(m.id)) return false;
+        if (m.client_ref && loadedClientRefs.has(m.client_ref)) return false;
+        return true;
+      });
+
+      if (preservedTransient.length === 0) {
+        if (activeConvId) setCachedMessages(activeConvId, loaded);
+        return loaded;
+      }
+
+      const merged = [...loaded, ...preservedTransient];
+      merged.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      if (activeConvId) setCachedMessages(activeConvId, merged);
+      return merged;
+    });
   }, []);
 
   const handleNewMessage = useCallback((msg: Message) => {
@@ -926,10 +955,42 @@ function InboxPageInner() {
     }
   }, []);
 
+  const handleNewMessages = useCallback((msgs: Message[]) => {
+    if (msgs.length === 0) return;
+    for (const msg of msgs) {
+      appendCachedMessage(msg.conversation_id, msg);
+    }
+    const matching = msgs.filter(
+      (m) => m.conversation_id === activeConversationIdRef.current
+    );
+    if (matching.length > 0) {
+      setMessages((prev) => {
+        const existingIds = new Set(prev.map((m) => m.id));
+        const toAdd = matching.filter((m) => !existingIds.has(m.id));
+        if (toAdd.length === 0) return prev;
+        return [...prev, ...toAdd];
+      });
+    }
+    const first = msgs[0];
+    if (first.sender_type === "agent" && first.sender_id) {
+      const senderId = first.sender_id;
+      setAssignedAgentMap((prev) => {
+        if (prev.has(first.conversation_id)) return prev;
+        const next = new Map(prev);
+        next.set(first.conversation_id, senderId);
+        return next;
+      });
+    }
+  }, []);
+
   const handleUpdateMessage = useCallback(
     (id: string, updates: Partial<Message>) => {
       setMessages((prev) =>
-        prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
+        prev.map((m) =>
+          m.id === id || (m.client_ref && m.client_ref === id)
+            ? { ...m, ...updates }
+            : m
+        )
       );
       if (activeConversationIdRef.current) {
         updateCachedMessage(activeConversationIdRef.current, { id, ...updates });
@@ -1195,6 +1256,7 @@ function InboxPageInner() {
             messages={messages}
             onMessagesLoaded={handleMessagesLoaded}
             onNewMessage={handleNewMessage}
+            onNewMessages={handleNewMessages}
             onUpdateMessage={handleUpdateMessage}
             onDeleteMessage={handleDeleteMessage}
             onStatusChange={handleStatusChange}

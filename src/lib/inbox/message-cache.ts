@@ -1,4 +1,4 @@
-﻿import type { Message } from '@/types';
+import type { Message } from '@/types';
 
 /**
  * In-memory LRU cache for conversation messages (session-scoped).
@@ -39,9 +39,46 @@ export function appendCachedMessage(
 ): void {
   const cached = messageCache.get(conversationId);
   if (!cached) return;
-  if (!cached.some((m) => m.id === newMsg.id)) {
-    messageCache.set(conversationId, [...cached, newMsg]);
+
+  // 1. If already present by id, update in-place
+  const idIdx = cached.findIndex((m) => m.id === newMsg.id);
+  if (idIdx !== -1) {
+    const updated = cached.slice();
+    updated[idIdx] = { ...updated[idIdx], ...newMsg };
+    messageCache.set(conversationId, updated);
+    return;
   }
+
+  // 2. If matching by client_ref, replace temp row with new message
+  if (newMsg.client_ref) {
+    const refIdx = cached.findIndex(
+      (m) => m.client_ref === newMsg.client_ref || m.id === newMsg.client_ref
+    );
+    if (refIdx !== -1) {
+      const updated = cached.slice();
+      updated[refIdx] = { ...updated[refIdx], ...newMsg };
+      messageCache.set(conversationId, updated);
+      return;
+    }
+  }
+
+  // 3. If matching by album_id + album_index, update in-place
+  if (newMsg.album_id && typeof newMsg.album_index === 'number') {
+    const albumIdx = cached.findIndex(
+      (m) =>
+        m.album_id === newMsg.album_id &&
+        (m.album_index === newMsg.album_index ||
+          (m.metadata as Record<string, unknown> | undefined)?.album_index === newMsg.album_index)
+    );
+    if (albumIdx !== -1) {
+      const updated = cached.slice();
+      updated[albumIdx] = { ...updated[albumIdx], ...newMsg };
+      messageCache.set(conversationId, updated);
+      return;
+    }
+  }
+
+  messageCache.set(conversationId, [...cached, newMsg]);
 }
 
 export function updateCachedMessage(

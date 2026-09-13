@@ -73,6 +73,12 @@ export async function POST(request: Request) {
       // after an ambiguous outcome (currently only the voice-note pipeline
       // — see SendMessageParams.clientRef). Absent for every other send.
       client_ref,
+      // Batch/album identifier grouping multiple media items sent in one action.
+      album_id,
+      album_index,
+      // R2 key of a small persisted thumbnail (video sends) — see
+      // send-message.ts's `thumbnailUrl` param.
+      thumbnail_url,
     } = body
 
     if ((!conversationIdInput && !contact_id) || !message_type) {
@@ -220,6 +226,9 @@ export async function POST(request: Request) {
         replyToMessageId: reply_to_message_id,
         senderId: userId,
         clientRef: typeof client_ref === 'string' ? client_ref : null,
+        albumId: typeof album_id === 'string' ? album_id : null,
+        albumIndex: typeof album_index === 'number' ? album_index : null,
+        thumbnailUrl: typeof thumbnail_url === 'string' ? thumbnail_url : null,
       })
 
       // Best-effort, never blocks the response: a successful send from a

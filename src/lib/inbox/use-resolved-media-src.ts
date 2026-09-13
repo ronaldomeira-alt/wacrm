@@ -33,6 +33,135 @@ const resolveCache = new Map<string, CachedResolution>();
 // Re-resolve this long before the server's TTL actually lapses.
 const EXPIRY_BUFFER_MS = 60_000;
 
+const RESOLVE_CACHE_STORAGE_KEY = "wacrm_media_resolve_cache_v1";
+const MAX_PERSISTED_RESOLUTIONS = 300;
+
+export function loadPersistedResolutions(): void {
+  if (typeof localStorage === "undefined" || typeof localStorage.getItem !== "function") return;
+  try {
+    const raw = localStorage.getItem(RESOLVE_CACHE_STORAGE_KEY);
+    if (!raw) return;
+    const entries = JSON.parse(raw) as Record<string, CachedResolution>;
+    const now = Date.now();
+    for (const [key, item] of Object.entries(entries)) {
+      if (
+        item &&
+        typeof item.url === "string" &&
+        typeof item.expiresAt === "number" &&
+        item.expiresAt - EXPIRY_BUFFER_MS > now
+      ) {
+        resolveCache.set(key, item);
+      }
+    }
+  } catch {
+    // Ignore storage parse or private-mode errors
+  }
+}
+
+// Immediately load on module evaluation
+loadPersistedResolutions();
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+export function savePersistedResolutions(): void {
+  if (typeof localStorage === "undefined" || typeof localStorage.setItem !== "function") return;
+  if (persistTimer !== null) return;
+
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      const now = Date.now();
+      const toPersist: Record<string, CachedResolution> = {};
+      let count = 0;
+      for (const [key, item] of resolveCache.entries()) {
+        if (item.expiresAt - EXPIRY_BUFFER_MS > now) {
+          toPersist[key] = item;
+          count++;
+          if (count >= MAX_PERSISTED_RESOLUTIONS) break;
+        }
+      }
+      localStorage.setItem(RESOLVE_CACHE_STORAGE_KEY, JSON.stringify(toPersist));
+    } catch {
+      // Ignore quota or security errors
+    }
+  }, 50);
+}
+
+// ---------------------------------------------------------------------------
+// 0. Local Blob Registry (Instant 0ms preview for staging & optimistic messages)
+// ---------------------------------------------------------------------------
+const localBlobRegistry = new Map<string, string>();
+const revokeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Registers an in-memory blob: URL for a storage key or path.
+ * Used during staging and optimistic send so components (MessageAlbum,
+ * MessageBubble, Lightbox) render the instant local bitmap with 0ms delay
+ * and zero network roundtrips.
+ */
+export function registerLocalMediaBlob(key: string, blobUrl: string): void {
+  if (!key || !blobUrl || !blobUrl.startsWith("blob:")) return;
+  localBlobRegistry.set(key, blobUrl);
+  const existingTimer = revokeTimers.get(key);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    revokeTimers.delete(key);
+  }
+}
+
+/** Returns the registered local blob URL for a key if still active. */
+export function getLocalMediaBlob(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+  return localBlobRegistry.get(key);
+}
+
+/**
+ * Schedules revocation of a local blob after a safety delay (default 5 min).
+ * Gives plenty of time for message bubbles, animations, and transitions to
+ * settle while preventing long-term memory leaks.
+ */
+export function scheduleRevokeLocalMediaBlob(key: string, delayMs = 300_000): void {
+  const blobUrl = localBlobRegistry.get(key);
+  if (!blobUrl) return;
+
+  const existing = revokeTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    revokeTimers.delete(key);
+    const current = localBlobRegistry.get(key);
+    if (current === blobUrl) {
+      localBlobRegistry.delete(key);
+      try {
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        // Ignore
+      }
+    }
+  }, delayMs);
+
+  revokeTimers.set(key, timer);
+}
+
+/** Immediately revokes a local blob (e.g. user cancelled or discarded draft). */
+export function revokeLocalMediaBlobImmediately(key: string): void {
+  const existing = revokeTimers.get(key);
+  if (existing) {
+    clearTimeout(existing);
+    revokeTimers.delete(key);
+  }
+  const blobUrl = localBlobRegistry.get(key);
+  if (blobUrl) {
+    localBlobRegistry.delete(key);
+    if (blobUrl.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Inbound Meta blob LRU cache (Safeguard 1: bounded size + safe revoke)
 // ---------------------------------------------------------------------------
@@ -121,6 +250,7 @@ async function processBatchChunk(
       resolveCache.set(r.key, { url: r.url, expiresAt: r.expiresAt });
       resolvedMap.set(r.key, r.url);
     }
+    savePersistedResolutions();
 
     for (const key of keys) {
       const listeners = listenersMap.get(key) ?? [];
@@ -144,6 +274,12 @@ async function processBatchChunk(
 /** Synchronously checks if a media URL is already available in cache or plain format. */
 export function getCachedMediaSrc(url: string | undefined): string | null {
   if (!url) return null;
+  // 1. Instant local blob (0ms wait for staged/optimistic media)
+  const localBlob = localBlobRegistry.get(url);
+  if (localBlob) {
+    return localBlob;
+  }
+
   if (isR2MediaKey(url)) {
     const cached = resolveCache.get(url);
     if (cached && cached.expiresAt - EXPIRY_BUFFER_MS > Date.now()) {
@@ -163,7 +299,10 @@ export function seedMediaResolution(key: string, url: string, expiresAt?: number
     url,
     expiresAt: expiresAt ?? Date.now() + 24 * 60 * 60 * 1000,
   });
+  savePersistedResolutions();
 }
+
+const inFlightResolutions = new Map<string, Promise<string>>();
 
 /** Resolves a single private R2 key through the batched queue. */
 export async function resolvePrivateKey(key: string): Promise<string> {
@@ -172,7 +311,12 @@ export async function resolvePrivateKey(key: string): Promise<string> {
     return cached.url;
   }
 
-  return new Promise<string>((resolve, reject) => {
+  const existingInFlight = inFlightResolutions.get(key);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const promise = new Promise<string>((resolve, reject) => {
     let list = pendingBatch.get(key);
     if (!list) {
       list = [];
@@ -183,7 +327,12 @@ export async function resolvePrivateKey(key: string): Promise<string> {
     if (batchTimer === null) {
       batchTimer = setTimeout(flushBatch, BATCH_DEBOUNCE_MS);
     }
+  }).finally(() => {
+    inFlightResolutions.delete(key);
   });
+
+  inFlightResolutions.set(key, promise);
+  return promise;
 }
 
 /** Resolves an array of media keys/URLs, returning a map of original key -> resolved URL. */
@@ -208,9 +357,10 @@ export async function resolveMediaKeys(keys: string[]): Promise<Map<string, stri
 
   const tasks: Promise<void>[] = [];
 
-  if (neededR2.length > 0) {
+  const uniqueNeededR2 = Array.from(new Set(neededR2));
+  if (uniqueNeededR2.length > 0) {
     tasks.push(
-      ...neededR2.map(async (k) => {
+      ...uniqueNeededR2.map(async (k) => {
         try {
           const resolved = await resolvePrivateKey(k);
           result.set(k, resolved);
@@ -221,9 +371,10 @@ export async function resolveMediaKeys(keys: string[]): Promise<Map<string, stri
     );
   }
 
-  if (neededProxy.length > 0) {
+  const uniqueNeededProxy = Array.from(new Set(neededProxy));
+  if (uniqueNeededProxy.length > 0) {
     tasks.push(
-      ...neededProxy.map(async (k) => {
+      ...uniqueNeededProxy.map(async (k) => {
         try {
           const res = await fetch(k);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -317,7 +468,8 @@ export function useResolvedMediaSrc(url: string | undefined) {
       setSrc(currentCached);
       setLoading(false);
     }
-  }, [load, url, src]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, url]);
 
   return { src, loading, error, setError };
 }
@@ -413,7 +565,24 @@ export function useResolvedMediaSrcs(urls: (string | undefined)[]): {
 
 /** Test-only helper to clear module caches between unit test suites. */
 export function __resetResolvedMediaCacheForTests(): void {
+  for (const timer of revokeTimers.values()) {
+    clearTimeout(timer);
+  }
+  revokeTimers.clear();
+  localBlobRegistry.clear();
+
   resolveCache.clear();
+  if (typeof localStorage !== "undefined") {
+    try {
+      localStorage.removeItem(RESOLVE_CACHE_STORAGE_KEY);
+    } catch {
+      // Ignore
+    }
+  }
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
   for (const blobUrl of inboundBlobCache.values()) {
     if (blobUrl.startsWith("blob:")) {
       try {
@@ -425,6 +594,7 @@ export function __resetResolvedMediaCacheForTests(): void {
   }
   inboundBlobCache.clear();
   pendingBatch.clear();
+  inFlightResolutions.clear();
   if (batchTimer !== null) {
     clearTimeout(batchTimer);
     batchTimer = null;

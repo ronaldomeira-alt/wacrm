@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { Play, Pause } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useResolvedMediaSrc } from "@/lib/inbox/use-resolved-media-src";
+import { useAudioPlaybackSpeed } from "@/lib/inbox/use-audio-playback-speed";
+import {
+  PAUSE_ALL_AUDIO_EVENT,
+  AUDIO_PLAYING_EVENT,
+  type AudioPlayingDetail,
+  notifyAudioPlaying,
+} from "@/lib/inbox/audio-playback-coordinator";
 
 interface AudioMessagePlayerProps {
   url: string;
@@ -15,12 +22,6 @@ interface AudioMessagePlayerProps {
 }
 
 const BAR_COUNT = 40;
-const SPEEDS = [1, 1.5, 2] as const;
-const SPEED_LABELS: Record<(typeof SPEEDS)[number], string> = {
-  1: "1x",
-  1.5: "1.5x",
-  2: "2x",
-};
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -75,27 +76,76 @@ export function AudioMessagePlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [speedIndex, setSpeedIndex] = useState(0);
+  const { speed, speedLabel, cycleSpeed } = useAudioPlaybackSpeed();
   const bars = useWaveformBars(url);
+  const generatedId = useId();
+  const playerIdRef = useRef<string>(generatedId);
+
+  // Pause playback whenever all audio is requested to stop (e.g. mic recording started)
+  // or whenever another audio player begins playing.
+  useEffect(() => {
+    const handlePauseAll = () => {
+      const audio = audioRef.current;
+      if (audio && !audio.paused) {
+        audio.pause();
+      }
+      setIsPlaying(false);
+    };
+
+    const handleOtherPlaying = (e: Event) => {
+      const customEvent = e as CustomEvent<AudioPlayingDetail>;
+      if (customEvent.detail && customEvent.detail.playerId !== playerIdRef.current) {
+        const audio = audioRef.current;
+        if (audio && !audio.paused) {
+          audio.pause();
+        }
+        setIsPlaying(false);
+      }
+    };
+
+    window.addEventListener(PAUSE_ALL_AUDIO_EVENT, handlePauseAll);
+    window.addEventListener(AUDIO_PLAYING_EVENT, handleOtherPlaying);
+
+    return () => {
+      window.removeEventListener(PAUSE_ALL_AUDIO_EVENT, handlePauseAll);
+      window.removeEventListener(AUDIO_PLAYING_EVENT, handleOtherPlaying);
+    };
+  }, []);
+
+  // Keep audio.playbackRate in sync with the user's preferred speed
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = speed;
+    }
+  }, [speed]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     const onTime = () => setCurrentTime(audio.currentTime);
-    const onLoaded = () => setDuration(audio.duration || 0);
+    const onLoaded = () => {
+      setDuration(audio.duration || 0);
+      audio.playbackRate = speed;
+    };
+    const onPlay = () => {
+      notifyAudioPlaying(playerIdRef.current);
+      audio.playbackRate = speed;
+    };
     const onEnded = () => {
       setIsPlaying(false);
       setCurrentTime(0);
     };
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("play", onPlay);
     audio.addEventListener("ended", onEnded);
     return () => {
       audio.removeEventListener("timeupdate", onTime);
       audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("play", onPlay);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [src]);
+  }, [src, speed]);
 
   // `timeupdate` fires as infrequently as 4x/sec (worse on Safari/iOS PWA),
   // which reads as the waveform progress "jumping" between bars instead of
@@ -121,15 +171,16 @@ export function AudioMessagePlayer({
       audio.pause();
       setIsPlaying(false);
     } else {
+      notifyAudioPlaying(playerIdRef.current);
+      audio.playbackRate = speed;
       void audio.play();
       setIsPlaying(true);
     }
   };
 
-  const cycleSpeed = () => {
-    const next = (speedIndex + 1) % SPEEDS.length;
-    setSpeedIndex(next);
-    if (audioRef.current) audioRef.current.playbackRate = SPEEDS[next];
+  const handleCycleSpeed = () => {
+    const nextSpeed = cycleSpeed();
+    if (audioRef.current) audioRef.current.playbackRate = nextSpeed;
   };
 
   const seekToRatio = (ratio: number) => {
@@ -198,8 +249,8 @@ export function AudioMessagePlayer({
       {hasStarted && (
         <button
           type="button"
-          onClick={cycleSpeed}
-          aria-label={SPEED_LABELS[SPEEDS[speedIndex]]}
+          onClick={handleCycleSpeed}
+          aria-label={speedLabel}
           className={cn(
             "flex h-8 min-w-[2.75rem] shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-semibold leading-none text-white",
             isAgent ? "order-2" : "order-3",
@@ -207,7 +258,7 @@ export function AudioMessagePlayer({
             isAgent ? "bg-primary-foreground/20" : "bg-primary/10",
           )}
         >
-          {SPEED_LABELS[SPEEDS[speedIndex]]}
+          {speedLabel}
         </button>
       )}
 

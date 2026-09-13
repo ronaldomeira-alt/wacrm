@@ -24,6 +24,50 @@ import { isQuickTimeVideo } from "./transcode-mov";
 
 export { isQuickTimeVideo };
 
+/**
+ * Determines whether a video file needs transcoding to H.264/AAC MP4 before upload.
+ *
+ * WhatsApp Cloud API video messages strictly require:
+ *  - Video format: MP4 (or 3GP)
+ *  - Video codec: H.264 ('avc')
+ *  - Audio codec: AAC ('aac') or AMR
+ *
+ * Any video encoded with HEVC (H.265 / 'hvc1' / 'hev1'), VP8, VP9, AV1, or non-AAC audio
+ * will be rejected by WhatsApp with a delivery failure.
+ *
+ * Checks:
+ * 1. Synchronous check: `isQuickTimeVideo(file)` (matches .mov, video/quicktime, .3gp, .mkv, .avi)
+ * 2. Codec probe for other videos (.mp4, etc.):
+ *    Uses mediabunny's lightweight container header parser to inspect primary video & audio codecs.
+ *    If video codec !== 'avc' (e.g. 'hevc') or audio codec is not 'aac'/'amr', returns true.
+ */
+export async function shouldTranscodeVideo(file: File): Promise<boolean> {
+  if (isQuickTimeVideo(file)) return true;
+
+  try {
+    const { Input, ALL_FORMATS, BlobSource } = await import("mediabunny");
+    const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (videoTrack) {
+      const codec = await videoTrack.getCodec();
+      if (codec && codec !== "avc") {
+        return true;
+      }
+    }
+    const audioTrack = await input.getPrimaryAudioTrack();
+    if (audioTrack) {
+      const audioCodec = await audioTrack.getCodec();
+      if (audioCodec && audioCodec !== "aac") {
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn("[shouldTranscodeVideo] could not probe video codecs:", err);
+  }
+
+  return false;
+}
+
 // No hard timeout was the actual root cause of the original hang (see
 // module comment) — this wraps the whole conversion so the same class
 // of bug can't recur here. 120s is generous: the slowest real test
@@ -79,67 +123,100 @@ export async function convertMovToMp4ViaWebCodecs(
   file: File,
   onProgress?: (ratio: number) => void,
 ): Promise<File> {
-  const {
-    Input,
-    Output,
-    Conversion,
-    ALL_FORMATS,
-    BlobSource,
-    Mp4OutputFormat,
-    BufferTarget,
-    Quality,
-  } = await import("mediabunny");
-
-  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
-  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
-
-  let conversion: Awaited<ReturnType<typeof Conversion.init>>;
   try {
-    conversion = await Conversion.init({
-      input,
-      output,
-      video: {
-        codec: "avc",
-        // 2 Mbps — a fixed bitrate rather than a named quality preset
-        // (which scales with source resolution and produced ~18 Mbps,
-        // 92.5 MB for a 41s clip in the earlier version) keeps output
-        // size predictable and duration-proportional regardless of
-        // source resolution, without touching width/height/rotation.
-        quality: new Quality({ bitrate: 2_000_000 }),
-        hardwareAcceleration: "prefer-hardware",
-      },
-      audio: { codec: "aac" },
-    });
-  } catch {
-    throw new Error("Could not read this video file. Try a different one.");
+    const {
+      Input,
+      Output,
+      Conversion,
+      ALL_FORMATS,
+      BlobSource,
+      Mp4OutputFormat,
+      BufferTarget,
+      Quality,
+    } = await import("mediabunny");
+
+    const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
+    const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+
+    const hasAudio = await input.getPrimaryAudioTrack().then((t) => !!t).catch(() => false);
+
+    let conversion: Awaited<ReturnType<typeof Conversion.init>> | null = null;
+    try {
+      conversion = await Conversion.init({
+        input,
+        output,
+        video: {
+          codec: "avc",
+          quality: new Quality({ bitrate: 2_000_000 }),
+          hardwareAcceleration: "prefer-hardware",
+          // iPhone portrait recordings (especially HEVC/"High Efficiency")
+          // store orientation as a container-level rotation matrix rather
+          // than physically rotated pixels — mediabunny defaults to
+          // carrying that same matrix into the output MP4
+          // (allowRotationMetadata: true) instead of baking it into the
+          // frames. That's spec-correct, but WhatsApp's own media
+          // ingestion doesn't reliably honor it: WACRM's own preview
+          // (built from the original, untouched file, decoded by the
+          // browser which does respect the matrix) showed correctly
+          // oriented, while the actual delivered video — the transcoded
+          // copy — played back sideways in the real WhatsApp app. Baking
+          // the rotation into the pixels here makes the output correct
+          // for every player, matrix-aware or not.
+          allowRotationMetadata: false,
+        },
+        ...(hasAudio ? { audio: { codec: "aac" } } : {}),
+      });
+    } catch {
+      // Retry without hardware acceleration or bitrate constraints
+      try {
+        conversion = await Conversion.init({
+          input,
+          output,
+          video: { codec: "avc", allowRotationMetadata: false },
+          ...(hasAudio ? { audio: { codec: "aac" } } : {}),
+        });
+      } catch {
+        // Fallback: transcode video and copy/remux audio without re-encoding
+        conversion = await Conversion.init({
+          input,
+          output,
+          video: { codec: "avc", allowRotationMetadata: false },
+        });
+      }
+    }
+
+    if (conversion?.isValid) {
+      if (onProgress) conversion.onProgress = onProgress;
+
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        void conversion?.cancel();
+      }, CONVERSION_TIMEOUT_MS);
+
+      try {
+        await conversion.execute();
+      } catch (execErr) {
+        throw new Error(
+          timedOut
+            ? "Video conversion took too long and was canceled."
+            : `WebCodecs conversion execution error: ${execErr}`,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+
+      const buffer = output.target.buffer;
+      if (buffer && buffer.byteLength > 0) {
+        const mp4Name = file.name.replace(/\.[^.]+$/i, ".mp4") || "video.mp4";
+        return new File([buffer], mp4Name, { type: "video/mp4" });
+      }
+    }
+  } catch (webCodecsErr) {
+    console.warn("WebCodecs transcode failed, trying ffmpeg fallback:", webCodecsErr);
   }
 
-  if (!conversion.isValid) {
-    throw new Error("This browser can't convert this video. Try a different device.");
-  }
-  if (onProgress) conversion.onProgress = onProgress;
-
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    void conversion.cancel();
-  }, CONVERSION_TIMEOUT_MS);
-
-  try {
-    await conversion.execute();
-  } catch {
-    throw new Error(
-      timedOut
-        ? "Video conversion took too long and was canceled."
-        : "Could not convert this video. Try a different file.",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const buffer = output.target.buffer;
-  if (!buffer) throw new Error("Could not convert this video. Try a different file.");
-
-  const mp4Name = file.name.replace(/\.mov$/i, ".mp4") || "video.mp4";
-  return new File([buffer], mp4Name, { type: "video/mp4" });
+  // Fallback to ffmpeg.wasm
+  const { convertMovToMp4 } = await import("./transcode-mov");
+  return await convertMovToMp4(file);
 }

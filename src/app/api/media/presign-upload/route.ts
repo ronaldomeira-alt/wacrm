@@ -16,6 +16,7 @@ import {
   ruleForPurpose,
   validateMediaShape,
 } from "@/lib/storage/media-purpose";
+import { enqueueMediaNormalization } from "@/lib/media/server-media-normalization";
 
 // Short — this URL is only ever used for one PUT, immediately after
 // the response that hands it back.
@@ -91,7 +92,7 @@ export async function POST(request: Request) {
     // (account, content, visibility) is reused as-is, no new R2 traffic.
     const { data: existing, error: existingError } = await supabase
       .from("media_objects")
-      .select("id, object_key, public_url, status")
+      .select("id, object_key, public_url, status, normalized_key, content_type, processing_status, bucket")
       .eq("account_id", accountId)
       .eq("sha256", sha256)
       .eq("visibility", visibility)
@@ -109,6 +110,26 @@ export async function POST(request: Request) {
         console.error("[media/presign-upload] reference bump failed:", bumpError);
       }
 
+      const isHeic =
+        existing.content_type === "image/heic" ||
+        existing.content_type === "image/heif" ||
+        existing.object_key.toLowerCase().endsWith(".heic") ||
+        existing.object_key.toLowerCase().endsWith(".heif");
+
+      let requiresProcessing = false;
+      let processingStatus = (existing.processing_status as string) || "none";
+      let targetSignKey = existing.normalized_key || existing.object_key;
+
+      if (isHeic) {
+        if (!existing.normalized_key) {
+          requiresProcessing = true;
+          processingStatus = "pending";
+          enqueueMediaNormalization({ objectKey: existing.object_key, accountId });
+        } else {
+          targetSignKey = existing.normalized_key;
+        }
+      }
+
       let resolvedUrl: string | undefined;
       let expiresAt: number | undefined;
       if (visibility === "private") {
@@ -117,7 +138,7 @@ export async function POST(request: Request) {
           const bucket = getR2Bucket();
           const command = new GetObjectCommand({
             Bucket: bucket,
-            Key: existing.object_key,
+            Key: targetSignKey,
             ResponseCacheControl: "private, max-age=86400, immutable",
           });
           resolvedUrl = await getSignedUrl(client, command, { expiresIn: RESOLVE_TTL_SECONDS });
@@ -130,16 +151,36 @@ export async function POST(request: Request) {
       return NextResponse.json({
         dedup: true,
         key: existing.object_key,
+        normalizedKey: existing.normalized_key ?? undefined,
         publicUrl: existing.public_url ?? undefined,
         resolvedUrl,
         expiresAt,
+        requiresProcessing,
+        processingStatus,
       });
     }
     if (existing?.status === "pending") {
-      return NextResponse.json(
-        { error: "An upload of this exact file is already in progress — retry shortly" },
-        { status: 409 },
+      // Previous upload attempt was interrupted or is being retried.
+      // Re-issue a fresh presigned upload URL for the existing reservation rather than returning 409.
+      const client = getR2Client();
+      const bucket = existing.bucket || getR2Bucket();
+      const uploadUrl = await getSignedUrl(
+        client,
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: existing.object_key,
+          ContentType: contentType,
+          CacheControl: "private, max-age=31536000, immutable",
+        }),
+        { expiresIn: PRESIGN_TTL_SECONDS },
       );
+
+      return NextResponse.json({
+        dedup: false,
+        key: existing.object_key,
+        uploadUrl,
+        expiresIn: PRESIGN_TTL_SECONDS,
+      });
     }
 
     const objectKey = buildR2MediaKey(accountId, mediaKind, filename);
@@ -159,12 +200,44 @@ export async function POST(request: Request) {
 
     if (insertError) {
       if (insertError.code === "23505") {
-        // Lost a concurrent race for the same (account, sha256, visibility)
-        // slot — someone else's request claimed it a moment ago.
-        return NextResponse.json(
-          { error: "An upload of this exact file is already in progress — retry shortly" },
-          { status: 409 },
-        );
+        // Lost a concurrent race — fetch existing and re-issue upload URL or completed dedup
+        const { data: raced } = await supabase
+          .from("media_objects")
+          .select("id, object_key, public_url, status, normalized_key, content_type, processing_status, bucket")
+          .eq("account_id", accountId)
+          .eq("sha256", sha256)
+          .eq("visibility", visibility)
+          .maybeSingle();
+
+        if (raced?.status === "completed") {
+          return NextResponse.json({
+            dedup: true,
+            key: raced.normalized_key || raced.object_key,
+            normalizedKey: raced.normalized_key ?? undefined,
+            publicUrl: raced.public_url ?? undefined,
+            requiresProcessing: false,
+            processingStatus: raced.processing_status ?? "completed",
+          });
+        }
+        if (raced?.status === "pending") {
+          const client = getR2Client();
+          const uploadUrl = await getSignedUrl(
+            client,
+            new PutObjectCommand({
+              Bucket: raced.bucket || bucket,
+              Key: raced.object_key,
+              ContentType: contentType,
+              CacheControl: "private, max-age=31536000, immutable",
+            }),
+            { expiresIn: PRESIGN_TTL_SECONDS },
+          );
+          return NextResponse.json({
+            dedup: false,
+            key: raced.object_key,
+            uploadUrl,
+            expiresIn: PRESIGN_TTL_SECONDS,
+          });
+        }
       }
       console.error("[media/presign-upload] insert failed:", insertError);
       return NextResponse.json({ error: "Failed to reserve upload slot" }, { status: 500 });

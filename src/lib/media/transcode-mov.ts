@@ -56,14 +56,23 @@ async function getFFmpeg(): Promise<FFmpeg> {
  *  the browser reports no/an unhelpful type (seen on some desktop
  *  Chrome builds without a registered file association). */
 export function isQuickTimeVideo(file: File): boolean {
-  return file.type === "video/quicktime" || /\.mov$/i.test(file.name);
+  return (
+    file.type === "video/quicktime" ||
+    /\.mov$/i.test(file.name) ||
+    file.type.startsWith("video/3gp") ||
+    /\.(3gp|3gpp)$/i.test(file.name) ||
+    file.type === "video/x-matroska" ||
+    /\.mkv$/i.test(file.name) ||
+    file.type === "video/x-msvideo" ||
+    /\.avi$/i.test(file.name)
+  );
 }
 
 /**
- * Transcodes a QuickTime/HEVC (or any codec ffmpeg can decode) .mov
- * file to H.264/AAC .mp4 entirely in the browser. Throws with a
- * user-facing message on failure — callers surface it via a toast,
- * same convention as `uploadAccountMedia`.
+ * Transcodes a QuickTime/HEVC, 3GP, or any non-standard video file to
+ * H.264/AAC .mp4 entirely in the browser. Throws with a user-facing
+ * message on failure — callers surface it via a toast, same convention
+ * as `uploadAccountMedia`.
  */
 export async function convertMovToMp4(file: File): Promise<File> {
   let ffmpeg: FFmpeg;
@@ -76,7 +85,8 @@ export async function convertMovToMp4(file: File): Promise<File> {
   }
 
   const { fetchFile } = await import("@ffmpeg/util");
-  const inputName = "input.mov";
+  const ext = file.name.split(".").pop() || "mov";
+  const inputName = `input.${ext}`;
   const outputName = "output.mp4";
 
   try {
@@ -90,6 +100,8 @@ export async function convertMovToMp4(file: File): Promise<File> {
       "veryfast",
       "-c:a",
       "aac",
+      "-movflags",
+      "+faststart",
       outputName,
     ]);
     const data = await ffmpeg.readFile(outputName);
@@ -97,7 +109,7 @@ export async function convertMovToMp4(file: File): Promise<File> {
     // SharedArrayBuffer-backed); File/Blob require a real ArrayBuffer —
     // re-wrapping copies it into one.
     const bytes = data instanceof Uint8Array ? new Uint8Array(data) : data;
-    const mp4Name = file.name.replace(/\.mov$/i, ".mp4") || "video.mp4";
+    const mp4Name = file.name.replace(/\.[^.]+$/i, ".mp4") || "video.mp4";
     return new File([bytes], mp4Name, { type: "video/mp4" });
   } catch {
     throw new Error("Could not convert this video. Try a different file.");

@@ -57,18 +57,20 @@ export async function POST(request: Request) {
     const invalid: string[] = [];
     const candidates: string[] = [];
     for (const key of requested) {
-      if (isR2MediaKey(key) && key.split("/")[0] === accountId) {
+      const segment = key.split("/")[0];
+      if (isR2MediaKey(key) && (segment === accountId || segment === `account-${accountId}`)) {
         candidates.push(key);
       } else {
         invalid.push(key);
       }
     }
 
-    let ownedKeys = new Set<string>();
+    const ownedKeys = new Set<string>();
+    const keyToTarget = new Map<string, string>();
     if (candidates.length > 0) {
       const { data: rows, error } = await supabase
         .from("media_objects")
-        .select("object_key")
+        .select("object_key, normalized_key")
         .eq("account_id", accountId)
         .eq("visibility", "private")
         .eq("status", "completed")
@@ -77,7 +79,10 @@ export async function POST(request: Request) {
       if (error) {
         return NextResponse.json({ error: "Failed to verify media ownership" }, { status: 500 });
       }
-      ownedKeys = new Set((rows ?? []).map((r) => r.object_key as string));
+      for (const r of rows ?? []) {
+        ownedKeys.add(r.object_key as string);
+        keyToTarget.set(r.object_key as string, (r.normalized_key as string) || (r.object_key as string));
+      }
     }
 
     for (const key of candidates) {
@@ -91,21 +96,24 @@ export async function POST(request: Request) {
     const resolved = await Promise.all(
       candidates
         .filter((key) => ownedKeys.has(key))
-        .map(async (key) => ({
-          key,
-          url: await getSignedUrl(
-            client,
-            new GetObjectCommand({
-              Bucket: bucket,
-              Key: key,
-              ResponseCacheControl: "private, max-age=86400, immutable",
-            }),
-            {
-              expiresIn: RESOLVE_TTL_SECONDS,
-            },
-          ),
-          expiresAt,
-        })),
+        .map(async (key) => {
+          const targetKey = keyToTarget.get(key) || key;
+          return {
+            key,
+            url: await getSignedUrl(
+              client,
+              new GetObjectCommand({
+                Bucket: bucket,
+                Key: targetKey,
+                ResponseCacheControl: "private, max-age=86400, immutable",
+              }),
+              {
+                expiresIn: RESOLVE_TTL_SECONDS,
+              },
+            ),
+            expiresAt,
+          };
+        }),
     );
 
     return NextResponse.json({ resolved, invalid });
