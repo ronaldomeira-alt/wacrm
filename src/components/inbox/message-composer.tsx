@@ -580,6 +580,7 @@ export function MessageComposer({
     if (!el) return;
 
     const wasMultiline = el.hasAttribute("data-multiline");
+    const startHeight = el.offsetHeight;
 
     // Reset height to auto first so scrollHeight accurately measures content
     el.style.height = "auto";
@@ -622,6 +623,16 @@ export function MessageComposer({
     // Cap at exactly 4 visible lines; lines 5+ scroll internally
     const maxHeight = Math.round(lineH * 4 + padV);
     const targetHeight = Math.min(el.scrollHeight, maxHeight);
+
+    // The `height: auto` reset above already forced the box to its new
+    // (unanimated) natural size the instant `el.scrollHeight` was read —
+    // by this point the element has already snapped to targetHeight, so
+    // assigning the same number again is a zero-delta change and the CSS
+    // `height` transition never has anything to animate. Explicitly
+    // restore the pre-measurement height, force a layout flush, and only
+    // then assign the target so the browser sees a real old->new delta.
+    el.style.height = `${startHeight}px`;
+    void el.offsetHeight;
     el.style.height = `${targetHeight}px`;
   }, [fadeCapsuleOnModeSwitch]);
 
