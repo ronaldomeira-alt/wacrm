@@ -649,7 +649,11 @@ html[data-theme="rose"] {
          give buttons and text the whole vertical space with identical baseline. */
       padding: 3px 8px 3px 8px;
       align-items: center;
-      transition: border-radius 300ms ease-out, border-color 150ms ease-out, padding 450ms cubic-bezier(0.25, 1, 0.5, 1);
+      /* opacity 150ms: masks the single-line/multi-line reflow below
+         (flex-wrap/order/width swap on :has([data-multiline]) — not
+         animatable by CSS) with a quick fade, driven from JS in
+         message-composer.tsx's adjustHeight/fadeCapsuleOnModeSwitch. */
+      transition: border-radius 300ms ease-out, border-color 150ms ease-out, padding 450ms cubic-bezier(0.25, 1, 0.5, 1), opacity 150ms ease-out;
     }
 
     [data-composer-capsule]:focus-within {

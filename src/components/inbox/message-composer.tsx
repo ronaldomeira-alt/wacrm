@@ -305,6 +305,12 @@ export function MessageComposer({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Only used to mask the single-line/multi-line layout swap below (see
+  // adjustHeight's crossfade) — `flex-wrap`/`order`/`width: 100%` on
+  // [data-composer-capsule] aren't animatable, so that reflow always
+  // snaps instantly regardless of any height transition. A brief opacity
+  // dip right as it happens reads as an intentional fade instead of a jump.
+  const capsuleRef = useRef<HTMLDivElement>(null);
 
   // Only re-runs when the draft string itself changes — this seeds the
   // field once and never fights with the agent's own typing afterwards.
@@ -552,9 +558,28 @@ export function MessageComposer({
     }
   }, []);
 
+  // `flex-wrap`/`order`/`width: 100%` on [data-composer-capsule] (globals.css,
+  // the iPhone-PWA-only "ChatGPT style" block) aren't animatable — the
+  // single-line <-> multi-line reflow they drive always snaps instantly no
+  // matter what transition is set on height/padding. Masks that snap with a
+  // brief opacity dip on the capsule, timed to the exact moment the reflow
+  // happens, so it reads as a quick fade instead of a jump. No-ops outside
+  // that CSS block (capsuleRef is always attached, but the opacity dip is
+  // invisible when nothing else about the layout is changing).
+  const fadeCapsuleOnModeSwitch = useCallback(() => {
+    const capsule = capsuleRef.current;
+    if (!capsule) return;
+    capsule.style.opacity = "0.55";
+    requestAnimationFrame(() => {
+      capsule.style.opacity = "1";
+    });
+  }, []);
+
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
+
+    const wasMultiline = el.hasAttribute("data-multiline");
 
     // Reset height to auto first so scrollHeight accurately measures content
     el.style.height = "auto";
@@ -565,6 +590,7 @@ export function MessageComposer({
     if (isEmpty) {
       el.removeAttribute("data-multiline");
       el.style.height = "auto";
+      if (wasMultiline) fadeCapsuleOnModeSwitch();
       return;
     }
 
@@ -586,6 +612,8 @@ export function MessageComposer({
       }
     }
 
+    if (el.hasAttribute("data-multiline") !== wasMultiline) fadeCapsuleOnModeSwitch();
+
     // Measure final height under the chosen layout mode
     el.style.height = "auto";
     const csFinal = getComputedStyle(el);
@@ -595,7 +623,7 @@ export function MessageComposer({
     const maxHeight = Math.round(lineH * 4 + padV);
     const targetHeight = Math.min(el.scrollHeight, maxHeight);
     el.style.height = `${targetHeight}px`;
-  }, []);
+  }, [fadeCapsuleOnModeSwitch]);
 
   const handleSend = useCallback(async () => {
     if (isSubmittingRef.current || sending || sessionExpired) return;
@@ -1482,6 +1510,7 @@ export function MessageComposer({
             // block) is untouched — the hook rides alongside it, never
             // replaces it.
             data-composer-capsule
+            ref={capsuleRef}
             className={cn(
               // items-center (was items-end): Attach/Mic are taller
               // (h-[47px]) than Send (h-9) and the textarea's own
