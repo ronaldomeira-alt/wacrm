@@ -1641,7 +1641,7 @@ export function MessageComposer({
                 // The placeholder text also surfaces the read-only state.
                 title={readOnly ? t("readOnlyTitle") : undefined}
                 className={cn(
-                  "w-full resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-base text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
+                  "w-full resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-base text-foreground placeholder-muted-foreground outline-none transition-[height,color,background-color,border-color] duration-[220ms] ease-out focus:border-primary/50",
                   // Scrollbar hidden visually only — scrolling itself
                   // (wheel/touch/keyboard) is untouched, this just drops
                   // the native scrollbar chrome (WebKit + Firefox + legacy
