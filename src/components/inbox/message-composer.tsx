@@ -668,11 +668,19 @@ export function MessageComposer({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const value = e.target.value;
       setText(value);
-      adjustHeight();
+      // adjustHeight() runs once from the [text] effect below — calling it
+      // here too used to race it: this call would kick off the CSS height
+      // transition, then the effect's own adjustHeight() (queued by the
+      // setText above) ran a moment later and opened with
+      // `el.style.height = "auto"`, which instantly kills any in-flight
+      // height transition (height can't animate to/from "auto"). Every
+      // keystroke was starting and immediately aborting its own
+      // transition, which is why the composer never visibly animated in
+      // either direction no matter how the transition itself was tuned.
       setSlashToken(findSlashToken(value, e.target.selectionStart ?? value.length));
       setActiveSuggestion(0);
     },
-    [adjustHeight]
+    []
   );
 
   // Replaces just the "/shortcut" token with the saved content, leaving
