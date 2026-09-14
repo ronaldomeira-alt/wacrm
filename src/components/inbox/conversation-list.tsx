@@ -581,12 +581,12 @@ export function ConversationList({
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                <span className="truncate">
-                  {attendantFilter === "all"
-                    ? t("allAttendants")
-                    : profiles.find((p) => p.user_id === attendantFilter)
-                        ?.full_name ?? t("allAttendants")}
-                </span>
+                {attendantFilter !== "all" && (
+                  <span className="truncate">
+                    {profiles.find((p) => p.user_id === attendantFilter)
+                      ?.full_name ?? t("allAttendants")}
+                  </span>
+                )}
                 <ChevronDown className="h-3 w-3 shrink-0" />
               </DropdownMenuTrigger>
               <DropdownMenuContent
