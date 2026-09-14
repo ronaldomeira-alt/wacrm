@@ -715,7 +715,7 @@ html[data-theme="rose"] {
       padding-top: 7px;
       padding-bottom: 7px;
       line-height: 24px;
-      transition: height 450ms cubic-bezier(0.25, 1, 0.5, 1), padding 450ms cubic-bezier(0.25, 1, 0.5, 1) !important;
+      transition: height 300ms cubic-bezier(0.25, 1, 0.5, 1), padding 300ms cubic-bezier(0.25, 1, 0.5, 1) !important;
     }
     [data-composer-textarea]:focus {
       border-color: transparent;
