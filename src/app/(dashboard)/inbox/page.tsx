@@ -760,6 +760,21 @@ function InboxPageInner() {
     []
   );
 
+  // Local-state mirror after "Marcar como revisada" / "Take over" clears
+  // needs_review (migration 081) — same split as handleAssignChange
+  // below; the realtime UPDATE also arrives and reconciles the exact
+  // last_reviewed_at/by, this just keeps the "Sem supervisão" tab and
+  // counter instant. No active-conversation special case needed: unlike
+  // unread_count, nothing resets needs_review back to true just from
+  // being viewed.
+  const handleReviewedChange = useCallback((conversationId: string) => {
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === conversationId ? { ...c, needs_review: false } : c
+      )
+    );
+  }, []);
+
   const handleAssignChange = useCallback(
     (conversationId: string, assignedAgentId: string | null) => {
       setConversations((prev) =>
@@ -911,6 +926,7 @@ function InboxPageInner() {
             onStatusChange={handleStatusChange}
             onMarkUnread={handleMarkUnread}
             onAssignChange={handleAssignChange}
+            onReviewedChange={handleReviewedChange}
             onBack={handleCloseConversation}
             resyncToken={resyncToken}
             contactPanelOpen={contactPanelOpen}

@@ -13,8 +13,17 @@ type Params = { params: Promise<{ conversationId: string }> }
  * Body: { paused: boolean, assign_to_me?: boolean }
  *   - paused: true  → pause the bot here (a human is taking over). When
  *                     `assign_to_me` is set, also assign the thread to the
- *                     caller (the usual "Take over" flow). Assignment
- *                     fires the `on_conversation_assigned` trigger.
+ *                     caller (the usual "Take over" flow) and — since
+ *                     assuming a conversation is itself an act of human
+ *                     supervision — stamp `last_reviewed_at`/
+ *                     `last_reviewed_by` (migration 081) so the
+ *                     conversation leaves the "Sem supervisão" queue.
+ *                     Assignment also fires the `on_conversation_assigned`
+ *                     trigger. Deliberately scoped to this
+ *                     human-authenticated endpoint only — the AI's own
+ *                     handoff auto-assignment (auto-reply.ts) is a
+ *                     separate, system-triggered code path and must NOT
+ *                     count as human review.
  *   - paused: false → hand the thread back to the bot: clear the pause,
  *                     reset the per-conversation reply count so it gets
  *                     fresh slots, and clear the handoff note. If the
@@ -65,7 +74,14 @@ export async function POST(request: Request, { params }: Params) {
     const update: Record<string, unknown> = { ai_autoreply_disabled: paused }
 
     if (paused) {
-      if (assignToMe) update.assigned_agent_id = userId
+      if (assignToMe) {
+        update.assigned_agent_id = userId
+        // Taking the conversation over counts as human supervision —
+        // see the doc comment above for why this is safe here and not
+        // in auto-reply.ts's own (system-triggered) handoff assignment.
+        update.last_reviewed_at = new Date().toISOString()
+        update.last_reviewed_by = userId
+      }
     } else {
       // Resuming hands the thread *back to the bot*. Clear the pause and
       // the handoff note, and — crucially — release ANY assignment, not

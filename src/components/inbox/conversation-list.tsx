@@ -170,12 +170,18 @@ export function ConversationList({
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
 
-  // WhatsApp-style "Todas / Não lidas" toggle, kept independent of the
-  // Status dropdown above (open/pending/closed/unanswered) — the two
-  // combine via AND like every other filter here, not a replacement for
-  // it. "all" is a no-op; "unread" mirrors the Status dropdown's own
-  // "unread" option so either control gets you there.
-  const [readFilter, setReadFilter] = useState<"all" | "unread">("all");
+  // WhatsApp-style "Todas / Não lidas / Sem supervisão" toggle, kept
+  // independent of the Status dropdown above (open/pending/closed/
+  // unanswered) — the two combine via AND like every other filter here,
+  // not a replacement for it. "all" is a no-op; "unread" mirrors the
+  // Status dropdown's own "unread" option so either control gets you
+  // there. "needs_review" is the "Sem supervisão" queue (migration 081)
+  // — conversations where Clara has replied more recently than any
+  // human has reviewed them; a different axis from read/unread, see
+  // conversations.needs_review's doc comment in @/types.
+  const [readFilter, setReadFilter] = useState<
+    "all" | "unread" | "needs_review"
+  >("all");
   // "Atendente" — filters by the lead's assigned responsible
   // (`assigned_agent_id`), NOT by who last replied (that's the
   // indicator bar's job, a different concept — see AGENTS task).
@@ -328,6 +334,17 @@ export function ConversationList({
     return m;
   }, [tags]);
 
+  // "Sem supervisão" tab counter — counts CONVERSATIONS, not messages,
+  // and independent of the currently-applied filters/search (mirrors how
+  // each row's own unread badge is a standalone signal, not a filtered
+  // count). Closed conversations are excluded, same as the filter above.
+  const needsReviewCount = useMemo(
+    () =>
+      conversations.filter((c) => c.needs_review && c.status !== "closed")
+        .length,
+    [conversations]
+  );
+
   const filtered = useMemo(() => {
     let result = conversations;
 
@@ -351,6 +368,10 @@ export function ConversationList({
 
     if (readFilter === "unread") {
       result = result.filter((c) => c.unread_count > 0);
+    } else if (readFilter === "needs_review") {
+      // Closed conversations never belong in the review queue, same
+      // exclusion "unanswered" already applies (migration 061).
+      result = result.filter((c) => c.needs_review && c.status !== "closed");
     }
 
     if (attendantFilter !== "all") {
@@ -498,6 +519,22 @@ export function ConversationList({
               )}
             >
               {t("filterUnread")}
+            </button>
+            <button
+              onClick={() => setReadFilter("needs_review")}
+              className={cn(
+                "flex h-6 items-center gap-1 rounded px-2 text-xs transition-colors",
+                readFilter === "needs_review"
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {t("filterNeedsReview")}
+              {needsReviewCount > 0 && (
+                <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                  {needsReviewCount}
+                </span>
+              )}
             </button>
           </div>
 

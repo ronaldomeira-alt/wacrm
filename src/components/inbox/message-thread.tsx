@@ -109,6 +109,10 @@ interface MessageThreadProps {
     conversationId: string,
     assignedAgentId: string | null,
   ) => void;
+  /** Local-state mirror after "Marcar como revisada" / "Take over"
+   *  clears `needs_review` (migration 081) — same split as
+   *  onAssignChange above; the DB write happens in AiThreadBanner. */
+  onReviewedChange: (conversationId: string) => void;
   /**
    * On mobile, the thread is shown full-screen with the conversation list
    * hidden. This callback lets the page deselect the active conversation
@@ -200,6 +204,7 @@ export function MessageThread({
   onStatusChange,
   onMarkUnread,
   onAssignChange,
+  onReviewedChange,
   onBack,
   resyncToken = 0,
   contactPanelOpen,
@@ -1430,9 +1435,13 @@ export function MessageThread({
         handoffSummary={conversation.ai_handoff_summary}
         assignedAgentId={assignedAgentId}
         currentUserId={user?.id}
+        needsReview={conversation.needs_review}
         onChange={(patch) => {
           if ("assigned_agent_id" in patch) {
             onAssignChange(conversation.id, patch.assigned_agent_id ?? null);
+          }
+          if (patch.needs_review === false) {
+            onReviewedChange(conversation.id);
           }
         }}
       />

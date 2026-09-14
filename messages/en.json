@@ -371,6 +371,7 @@
       "searchPlaceholder": "Search conversations...",
       "filterAll": "All",
       "filterUnread": "Unread",
+      "filterNeedsReview": "Unsupervised",
       "filterUnanswered": "Unanswered",
       "filterOpen": "Open",
       "filterPending": "Pending",
@@ -582,10 +583,13 @@
     "aiBanner": {
       "pausedTitle": "AI assistant is paused here",
       "activeText": "AI assistant is replying automatically",
+      "needsReviewTitle": "This conversation hasn’t been reviewed by a human yet",
       "takeOver": "Take over",
       "resume": "Resume AI",
+      "markReviewed": "Mark as reviewed",
       "tookOver": "You’ve taken over this chat.",
       "resumed": "AI resumed.",
+      "reviewed": "Conversation marked as reviewed.",
       "updateError": "Couldn’t update the AI assistant.",
       "networkError": "Couldn’t reach the server."
     }

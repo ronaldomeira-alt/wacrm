@@ -371,6 +371,7 @@
       "searchPlaceholder": "Buscar conversas...",
       "filterAll": "Todas",
       "filterUnread": "Não lidas",
+      "filterNeedsReview": "Sem supervisão",
       "filterUnanswered": "Não respondidas",
       "filterOpen": "Abertas",
       "filterPending": "Pendentes",
@@ -582,10 +583,13 @@
     "aiBanner": {
       "pausedTitle": "O assistente de IA está pausado aqui",
       "activeText": "O assistente de IA está respondendo automaticamente",
+      "needsReviewTitle": "Esta conversa ainda não foi revisada por um humano",
       "takeOver": "Assumir",
       "resume": "Retomar IA",
+      "markReviewed": "Marcar como revisada",
       "tookOver": "Você assumiu esta conversa.",
       "resumed": "IA retomada.",
+      "reviewed": "Conversa marcada como revisada.",
       "updateError": "Não foi possível atualizar o assistente de IA.",
       "networkError": "Não foi possível conectar ao servidor."
     }

@@ -310,6 +310,22 @@ export interface Conversation {
   ai_reply_count?: number;
   ai_handoff_summary?: string | null;
   /**
+   * "Sem supervisão" queue (migration 081) — Clara vs. human-review
+   * tracking, independent of `unread_count`:
+   *  - `last_ai_reply_at` — last time Clara (not a Flow/automation
+   *    bot send) replied on this conversation.
+   *  - `last_reviewed_at`/`last_reviewed_by` — last time a human
+   *    engaged with it (sent a message, took it over, or explicitly
+   *    marked it reviewed).
+   *  - `needs_review` — DB-generated: true whenever Clara's last
+   *    reply is newer than the last human review. Read-only from the
+   *    app; never write it directly.
+   */
+  last_ai_reply_at?: string | null;
+  last_reviewed_at?: string | null;
+  last_reviewed_by?: string | null;
+  needs_review?: boolean;
+  /**
    * Click-to-WhatsApp Ad origin (migration 055), captured from the first
    * inbound message's `referral` object and never overwritten afterward —
    * see `captureCtwaReferral` in the webhook route. Null when the lead

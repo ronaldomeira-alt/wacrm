@@ -371,6 +371,7 @@
       "searchPlaceholder": "대화 검색...",
       "filterAll": "전체",
       "filterUnread": "읽지 않음",
+      "filterNeedsReview": "미검토",
       "filterUnanswered": "미응답",
       "filterOpen": "열림",
       "filterPending": "대기 중",
@@ -582,10 +583,13 @@
     "aiBanner": {
       "pausedTitle": "이 대화에서 AI 어시스턴트가 일시 중지됨",
       "activeText": "AI 어시스턴트가 자동으로 응답 중입니다",
+      "needsReviewTitle": "아직 담당자가 이 대화를 검토하지 않았습니다",
       "takeOver": "직접 처리",
       "resume": "AI 재개",
+      "markReviewed": "검토 완료로 표시",
       "tookOver": "이 대화를 직접 처리하기 시작했습니다.",
       "resumed": "AI가 재개되었습니다.",
+      "reviewed": "대화가 검토 완료로 표시되었습니다.",
       "updateError": "AI 어시스턴트를 업데이트하지 못했습니다.",
       "networkError": "서버에 연결할 수 없습니다."
     }

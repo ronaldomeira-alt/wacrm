@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Sparkles, Hand, Undo2, Loader2 } from "lucide-react";
+import { Sparkles, Hand, Undo2, CheckCheck, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 import { useAuth } from "@/hooks/use-auth";
+import { createClient } from "@/lib/supabase/client";
+import { markConversationReviewed } from "@/lib/inbox/conversations";
 
 // ------------------------------------------------------------
 // Account AI status is the same for every conversation, so cache it per
@@ -51,14 +53,21 @@ interface AiThreadBannerProps {
   /** Current assignee; when a human owns the thread the bot won't run,
    *  so the "AI active" banner is suppressed. */
   assignedAgentId?: string | null;
-  /** The acting agent — "Take over" assigns the thread to them. */
+  /** The acting agent — "Take over" assigns the thread to them, and is
+   *  who "Marcar como revisada" records as the reviewer. */
   currentUserId?: string | null;
+  /** `conversations.needs_review` (migration 081) — true whenever Clara
+   *  has replied more recently than any human has reviewed this thread.
+   *  Independent of `disabled`/`assignedAgentId`: a paused or
+   *  human-owned thread can still be unreviewed. */
+  needsReview?: boolean;
   /** Called after a successful toggle so the parent can patch its local
    *  conversation state (the realtime UPDATE also arrives, but this keeps
    *  the banner instant). */
   onChange?: (patch: {
-    ai_autoreply_disabled: boolean;
+    ai_autoreply_disabled?: boolean;
     assigned_agent_id?: string | null;
+    needs_review?: boolean;
   }) => void;
 }
 
@@ -76,12 +85,14 @@ export function AiThreadBanner({
   handoffSummary,
   assignedAgentId,
   currentUserId,
+  needsReview,
   onChange,
 }: AiThreadBannerProps) {
   const t = useTranslations("Inbox.aiBanner");
   const { accountId } = useAuth();
   const [autoReplyOn, setAutoReplyOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
   // Optimistic local mirror of the pause flag so the banner flips
   // instantly on click; re-seeds whenever the thread (or its server
   // state via realtime) changes.
@@ -120,7 +131,13 @@ export function AiThreadBanner({
           // the exact value either way.
           ...(paused
             ? currentUserId
-              ? { assigned_agent_id: currentUserId }
+              ? {
+                  assigned_agent_id: currentUserId,
+                  // Take over counts as human review (route.ts stamps
+                  // last_reviewed_at/by server-side) — mirror it locally
+                  // so the "Sem supervisão" state updates instantly.
+                  needs_review: false,
+                }
               : {}
             : { assigned_agent_id: null }),
         });
@@ -134,8 +151,43 @@ export function AiThreadBanner({
     [conversationId, currentUserId, onChange, t],
   );
 
-  // Account has no auto-reply → nothing to show. (Still loading → nothing.)
-  if (!autoReplyOn) return null;
+  const markReviewed = useCallback(async () => {
+    if (!currentUserId) return;
+    setReviewBusy(true);
+    try {
+      const supabase = createClient();
+      await markConversationReviewed(supabase, conversationId, currentUserId);
+      onChange?.({ needs_review: false });
+      toast.success(t("reviewed"));
+    } catch {
+      toast.error(t("networkError"));
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [conversationId, currentUserId, onChange, t]);
+
+  const reviewButton = needsReview ? (
+    <BannerButton onClick={markReviewed} busy={reviewBusy} icon={CheckCheck}>
+      {t("markReviewed")}
+    </BannerButton>
+  ) : null;
+
+  // Account has no auto-reply configured right now, but this thread can
+  // still carry unreviewed history from when it was on (needs_review is
+  // derived from past sends, not the account's current config) — show a
+  // minimal banner with just the review action. Otherwise, nothing to
+  // show. (Still loading autoReplyOn → treated as off here too.)
+  if (!autoReplyOn) {
+    if (!needsReview) return null;
+    return (
+      <Banner tone="muted">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-foreground">{t("needsReviewTitle")}</p>
+        </div>
+        {reviewButton}
+      </Banner>
+    );
+  }
 
   // Paused here (a human took over, or the model handed off).
   if (paused) {
@@ -149,15 +201,29 @@ export function AiThreadBanner({
             </p>
           )}
         </div>
-        <BannerButton onClick={() => toggle(false)} busy={busy} icon={Undo2}>
-          {t("resume")}
-        </BannerButton>
+        <div className="flex flex-shrink-0 items-center gap-1.5">
+          {reviewButton}
+          <BannerButton onClick={() => toggle(false)} busy={busy} icon={Undo2}>
+            {t("resume")}
+          </BannerButton>
+        </div>
       </Banner>
     );
   }
 
-  // Active, but a human already owns it → the bot won't fire; no banner.
-  if (assignedAgentId) return null;
+  // Active, but a human already owns it → the bot won't fire. Still show
+  // the review action if this thread is unreviewed; otherwise no banner.
+  if (assignedAgentId) {
+    if (!needsReview) return null;
+    return (
+      <Banner tone="muted">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-foreground">{t("needsReviewTitle")}</p>
+        </div>
+        {reviewButton}
+      </Banner>
+    );
+  }
 
   // Active on this thread.
   return (
@@ -168,9 +234,12 @@ export function AiThreadBanner({
           {t("activeText")}
         </span>
       </div>
-      <BannerButton onClick={() => toggle(true)} busy={busy} icon={Hand}>
-        {t("takeOver")}
-      </BannerButton>
+      <div className="flex flex-shrink-0 items-center gap-1.5">
+        {reviewButton}
+        <BannerButton onClick={() => toggle(true)} busy={busy} icon={Hand}>
+          {t("takeOver")}
+        </BannerButton>
+      </div>
     </Banner>
   );
 }
