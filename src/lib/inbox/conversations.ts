@@ -156,6 +156,32 @@ export async function markConversationRead(
 }
 
 /**
+ * Explicit "Marcar como revisada" — the Inbox's human counterpart to
+ * `update_conversation_review_state()` / `mark_ai_transfer_pending_as_
+ * activity()` (migration 20260914141753_conversation_supervision_
+ * queue), which stamp this same pair of columns automatically
+ * whenever the reviewer sends a message or Clara flags a handoff.
+ * Lets a human clear a conversation out of "Sem supervisão" after
+ * just reading it, without needing to reply or take the conversation
+ * over. Clara stays enabled either way — this only touches the review
+ * timestamp, never `ai_autoreply_disabled`/`ai_transfer_status`.
+ */
+export async function markConversationReviewed(
+  db: SupabaseClient,
+  conversationId: string,
+  reviewerUserId: string,
+): Promise<void> {
+  const { error } = await db
+    .from("conversations")
+    .update({
+      last_reviewed_at: new Date().toISOString(),
+      last_reviewed_by: reviewerUserId,
+    })
+    .eq("id", conversationId);
+  if (error) throw error;
+}
+
+/**
  * Toggles the manual "pin to top" flag (migration 060) — shared by the
  * conversation list's swipe and right-click context menu actions.
  */

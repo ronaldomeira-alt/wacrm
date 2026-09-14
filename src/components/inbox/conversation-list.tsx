@@ -5,11 +5,13 @@ import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
   loadUnansweredConversationIds,
+  markConversationReviewed,
   matchesContactFilters,
   normalizeConversations,
   searchConversationIdsByMessageText,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/use-auth";
 import {
   RESPONDER_COLOR_CLASS,
   colorForConversation,
@@ -27,6 +29,7 @@ import {
   Pin,
   PinOff,
   Ban,
+  UserCheck,
 } from "lucide-react";
 import {
   format,
@@ -93,6 +96,12 @@ interface ConversationListProps {
   onMarkRead: (conversationId: string) => void;
   /** Local-state sync after a pin toggle. */
   onTogglePinned: (conversationId: string, pinned: boolean) => void;
+  /** Local-state sync after "Marcar como revisada" clears
+   *  `needs_review` (migration 20260914141753_conversation_
+   *  supervision_queue). Automatic clearing (a human message send, or
+   *  "Take over") reconciles via realtime instead — this callback is
+   *  only for the explicit three-dot-menu action's instant feedback. */
+  onMarkReviewed: (conversationId: string) => void;
 }
 
 const STATUS_COLORS: Record<ConversationStatus, string> = {
@@ -143,8 +152,10 @@ export function ConversationList({
   onMarkUnread,
   onMarkRead,
   onTogglePinned,
+  onMarkReviewed,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
+  const { user } = useAuth();
 
   const [search, setSearch] = useState("");
   // Conversation ids whose message *history* (not just the cached
@@ -175,12 +186,17 @@ export function ConversationList({
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
 
-  // WhatsApp-style "Todas / Não lidas" toggle, kept independent of the
-  // Status dropdown above (open/pending/closed/unanswered) — the two
-  // combine via AND like every other filter here, not a replacement for
-  // it. "all" is a no-op; "unread" mirrors the Status dropdown's own
-  // "unread" option so either control gets you there.
-  const [readFilter, setReadFilter] = useState<"all" | "unread">("all");
+  // WhatsApp-style "Todas / Não lidas / Sem supervisão" toggle, kept
+  // independent of the Status dropdown above (open/pending/closed/
+  // unanswered) — the two combine via AND like every other filter
+  // here, not a replacement for it. "all" is a no-op; "unread" mirrors
+  // the Status dropdown's own "unread" option so either control gets
+  // you there. "needs_review" is the "Sem supervisão" queue
+  // (conversations.needs_review) — a different axis from read/unread,
+  // see its doc comment in @/types.
+  const [readFilter, setReadFilter] = useState<
+    "all" | "unread" | "needs_review"
+  >("all");
   // "Atendente" — filters by the lead's assigned responsible
   // (`assigned_agent_id`), NOT by who last replied (that's the
   // indicator bar's job, a different concept — see AGENTS task).
@@ -333,6 +349,19 @@ export function ConversationList({
     return m;
   }, [tags]);
 
+  // "Sem supervisão" tab counter — counts CONVERSATIONS, not messages,
+  // and independent of the currently-applied filters/search (mirrors
+  // how each row's own unread badge is a standalone signal, not a
+  // filtered count). Closed and blocked conversations are excluded,
+  // same as the filter above and the base blocked-contact exclusion.
+  const needsReviewCount = useMemo(
+    () =>
+      conversations.filter(
+        (c) => c.needs_review && c.status !== "closed" && !c.contact?.blocked_at
+      ).length,
+    [conversations]
+  );
+
   const filtered = useMemo(() => {
     // Blocked contacts never show in the Inbox, regardless of any other
     // filter selection — unconditional, not just the default "all" view.
@@ -358,6 +387,10 @@ export function ConversationList({
 
     if (readFilter === "unread") {
       result = result.filter((c) => c.unread_count > 0);
+    } else if (readFilter === "needs_review") {
+      // Closed conversations never belong in the review queue, same
+      // exclusion "unanswered" already applies above.
+      result = result.filter((c) => c.needs_review && c.status !== "closed");
     }
 
     if (attendantFilter !== "all") {
@@ -450,6 +483,20 @@ export function ConversationList({
     [onMarkRead]
   );
 
+  // Three-dot menu's "Marcar como revisada" — explicit human-review
+  // counterpart to the automatic triggers (a human message send, or
+  // "Take over") that also clear needs_review. Only rendered when
+  // conv.needs_review is true, so `user` is required here in practice.
+  const handleMarkReviewed = useCallback(
+    async (conv: Conversation) => {
+      if (!user?.id) return;
+      const supabase = createClient();
+      await markConversationReviewed(supabase, conv.id, user.id);
+      onMarkReviewed(conv.id);
+    },
+    [user, onMarkReviewed]
+  );
+
   // Shared by the swipe-right action and the right-click context menu.
   const handleTogglePinned = useCallback(
     async (conv: Conversation) => {
@@ -505,6 +552,22 @@ export function ConversationList({
               )}
             >
               {t("filterUnread")}
+            </button>
+            <button
+              onClick={() => setReadFilter("needs_review")}
+              className={cn(
+                "flex h-6 items-center gap-1 rounded px-2 text-xs transition-colors",
+                readFilter === "needs_review"
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {t("filterNeedsReview")}
+              {needsReviewCount > 0 && (
+                <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                  {needsReviewCount}
+                </span>
+              )}
             </button>
           </div>
 
@@ -682,6 +745,7 @@ export function ConversationList({
                 onRequestBlock={onRequestBlock}
                 onMarkUnread={handleMarkUnread}
                 onMarkRead={handleMarkRead}
+                onMarkReviewed={handleMarkReviewed}
                 onTogglePinned={handleTogglePinned}
                 t={t}
                 responderColor={colorForConversation(
@@ -706,6 +770,7 @@ interface ConversationItemProps {
   onRequestBlock: (conversation: Conversation) => void;
   onMarkUnread: (conversation: Conversation) => void;
   onMarkRead: (conversation: Conversation) => void;
+  onMarkReviewed: (conversation: Conversation) => void;
   onTogglePinned: (conversation: Conversation) => void;
   t: ReturnType<typeof useTranslations>;
   responderColor: ResponderColor;
@@ -803,6 +868,7 @@ const ConversationItem = memo(function ConversationItem({
   onRequestBlock,
   onMarkUnread,
   onMarkRead,
+  onMarkReviewed,
   onTogglePinned,
   t,
   responderColor,
@@ -1191,6 +1257,14 @@ const ConversationItem = memo(function ConversationItem({
     [conversation, onMarkRead]
   );
 
+  const handleMarkReviewedAction = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      void onMarkReviewed(conversation);
+    },
+    [conversation, onMarkReviewed]
+  );
+
   const handleTogglePinAction = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -1416,6 +1490,12 @@ const ConversationItem = memo(function ConversationItem({
                   <CheckCheck className="h-4 w-4" />
                   {t("markRead")}
                 </DropdownMenuItem>
+                {conversation.needs_review && (
+                  <DropdownMenuItem onClick={handleMarkReviewedAction}>
+                    <UserCheck className="h-4 w-4" />
+                    {t("markReviewed")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onClick={handleBlockAction}>
                   <Ban className="h-4 w-4" />
                   {t("block")}
@@ -1465,6 +1545,12 @@ const ConversationItem = memo(function ConversationItem({
             <MailOpen className="h-4 w-4" />
             {t("markUnread")}
           </DropdownMenuItem>
+          {conversation.needs_review && (
+            <DropdownMenuItem onClick={handleMarkReviewedAction}>
+              <UserCheck className="h-4 w-4" />
+              {t("markReviewed")}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onClick={handleTogglePinAction}>
             {conversation.pinned ? (
               <PinOff className="h-4 w-4" />

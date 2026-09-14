@@ -417,6 +417,24 @@ export interface Conversation {
   ai_reply_count?: number;
   ai_handoff_summary?: string | null;
   /**
+   * "Sem supervisão" queue — Clara-activity-vs-human-review tracking,
+   * independent of `unread_count` (migration
+   * 20260914141753_conversation_supervision_queue):
+   *  - `last_ai_reply_at` — last time Clara sent a message, or
+   *    flagged `ai_transfer_status = 'pending_human'` (a handoff can
+   *    happen with no accompanying message).
+   *  - `last_reviewed_at`/`last_reviewed_by` — last time a human
+   *    engaged with it (sent a message, took it over, or explicitly
+   *    marked it reviewed).
+   *  - `needs_review` — DB-generated: true whenever Clara's last
+   *    activity is newer than the last human review. Read-only from
+   *    the app; never write it directly.
+   */
+  last_ai_reply_at?: string | null;
+  last_reviewed_at?: string | null;
+  last_reviewed_by?: string | null;
+  needs_review?: boolean;
+  /**
    * Click-to-WhatsApp Ad origin (migration 055), captured from the first
    * inbound message's `referral` object and never overwritten afterward —
    * see `captureCtwaReferral` in the webhook route. Null when the lead

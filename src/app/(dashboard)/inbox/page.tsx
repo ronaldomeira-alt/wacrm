@@ -1103,6 +1103,20 @@ function InboxPageInner() {
     []
   );
 
+  // Local-state mirror after the three-dot menu's "Marcar como
+  // revisada" clears needs_review — same split as handleMarkRead
+  // above; the DB write happens in ConversationList itself (via
+  // markConversationReviewed). Automatic clearing (a human message
+  // send, or "Take over") reconciles via realtime instead, same as
+  // any other field the DB triggers touch.
+  const handleMarkReviewed = useCallback((conversationId: string) => {
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === conversationId ? { ...c, needs_review: false } : c
+      )
+    );
+  }, []);
+
   const handleAssignChange = useCallback(
     (conversationId: string, assignedAgentId: string | null) => {
       setConversations((prev) =>
@@ -1230,6 +1244,7 @@ function InboxPageInner() {
             onRequestBlock={handleRequestBlockConversation}
             onMarkUnread={handleMarkUnread}
             onMarkRead={handleMarkRead}
+            onMarkReviewed={handleMarkReviewed}
             onTogglePinned={handleTogglePinned}
           />
         </div>
