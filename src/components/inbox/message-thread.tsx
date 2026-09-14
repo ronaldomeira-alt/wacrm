@@ -1049,23 +1049,37 @@ export function MessageThread({
   // Monitors both container height changes (e.g. iOS virtual keyboard toggle, orientation)
   // and content height changes (e.g. image/video thumbnails loading, previews expanding).
   // Dynamically re-binds when loading finishes so contentRef is observed immediately!
+  //
+  // Debounced (not rAF-coalesced) on purpose: scrollEl's own box is one of the
+  // observed targets, and the composer's CSS height transition (600ms, see
+  // message-composer.tsx's adjustHeight) makes it resize on every animation
+  // frame — flexbox reflows scrollEl continuously as the composer grows/
+  // shrinks. An rAF-per-frame handler forced scrollTop = scrollHeight ~36
+  // times over that one transition, each a real scroll write fighting the
+  // container's own height mid-animation — on iOS WebKit this showed up as
+  // the bottom-most bubble (most visibly a just-sent PDF/video preview)
+  // visibly flickering for the whole 600ms. Debouncing collapses an entire
+  // continuous resize (composer transition, or any other) into exactly one
+  // scrollTop write after it settles — still invisible-fast for a discrete
+  // resize (a single image finishing load), but no more per-frame fighting
+  // during an animated one.
   useEffect(() => {
     const scrollEl = scrollRef.current;
     const contentEl = contentRef.current;
     if (!scrollEl || typeof ResizeObserver === 'undefined') return;
 
-    let rafId: number | null = null;
+    let debounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
       if (isUserTouchingRef.current || !isPinnedToBottomRef.current) return;
 
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
+      if (debounceId !== null) clearTimeout(debounceId);
+      debounceId = setTimeout(() => {
+        debounceId = null;
         if (!isUserTouchingRef.current && isPinnedToBottomRef.current && scrollRef.current) {
           markProgrammaticScroll();
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-      });
+      }, 80);
     });
 
     ro.observe(scrollEl);
@@ -1075,7 +1089,7 @@ export function MessageThread({
 
     return () => {
       ro.disconnect();
-      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (debounceId !== null) clearTimeout(debounceId);
     };
   }, [conversationId, loading, markProgrammaticScroll]);
 
