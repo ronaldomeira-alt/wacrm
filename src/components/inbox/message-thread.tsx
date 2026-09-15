@@ -1094,6 +1094,21 @@ export function MessageThread({
   //   even a single stale read is fully caught up by the very next
   //   frame (8-16ms later) with nothing left over to visibly settle.
   useEffect(() => {
+    // iOS WKWebView-only compensation loop (see the comment block above) —
+    // it exists solely to counter Safari's ResizeObserver notification
+    // coalescing during the composer's CSS height transition. Chrome/desktop
+    // don't have that coalescing bug (ResizeObserver already fires every
+    // frame there), so running this unconditionally fought normal mouse-
+    // wheel scrolling: a single wheel tick usually moves less than
+    // NEAR_BOTTOM_PX, so isPinnedToBottomRef stayed true, and as soon as the
+    // 150ms wheel-touch window lapsed (common between ticks) this 60fps loop
+    // snapped scrollTop straight back to the bottom before the user's scroll
+    // ever became visible — reading as the thread being frozen/stuck at the
+    // bottom in Chrome. Gating to iOS keeps the original fix intact there
+    // while restoring normal scroll on desktop, where the ResizeObserver-
+    // based effect below already handles pin-to-bottom correctly.
+    if (!isIOSDevice) return;
+
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
 
