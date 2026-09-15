@@ -1045,36 +1045,83 @@ export function MessageThread({
     }
   }, [messages.length, loading, scrollToBottom]);
 
-  // Single unified ResizeObserver:
-  // Monitors both container height changes (e.g. iOS virtual keyboard toggle, orientation)
-  // and content height changes (e.g. image/video thumbnails loading, previews expanding).
-  // Dynamically re-binds when loading finishes so contentRef is observed immediately!
+  // Two different things need two different mechanisms — conflating them
+  // (or driving both off the same async notification queue) is what
+  // caused the conversation to visibly lag behind the composer on every
+  // 1<->2/2<->3/3<->4 line transition:
   //
-  // Debounced (not rAF-coalesced) on purpose: scrollEl's own box is one of the
-  // observed targets, and the composer's CSS height transition (600ms, see
-  // message-composer.tsx's adjustHeight) makes it resize on every animation
-  // frame — flexbox reflows scrollEl continuously as the composer grows/
-  // shrinks. An rAF-per-frame handler forced scrollTop = scrollHeight ~36
-  // times over that one transition, each a real scroll write fighting the
-  // container's own height mid-animation — on iOS WebKit this showed up as
-  // the bottom-most bubble (most visibly a just-sent PDF/video preview)
-  // visibly flickering for the whole 600ms. Debouncing collapses an entire
-  // continuous resize (composer transition, or any other) into exactly one
-  // scrollTop write after it settles — still invisible-fast for a discrete
-  // resize (a single image finishing load), but no more per-frame fighting
-  // during an animated one.
+  //   scrollEl itself (the viewport box) — resizes on *every rendered
+  //   frame* while the composer's approved CSS height transition runs,
+  //   since scrollEl and the composer are flex siblings and scrollEl is
+  //   `flex-1` (see the composer's own render below). scrollEl has
+  //   `[overflow-anchor:none]` (deliberate, see that className), so
+  //   nothing compensates scrollTop automatically as clientHeight
+  //   shrinks/grows. This used to be driven off ResizeObserver — correct
+  //   math (compensate scrollTop by the exact pixel delta), wrong trigger:
+  //   ResizeObserver's callback is queued *after* layout, on its own
+  //   notification queue, and nothing in the spec guarantees one
+  //   invocation per rendered frame — inside an iOS WKWebView PWA a
+  //   single continuous transition can get coalesced into just a couple
+  //   of notifications instead of ~60/s. That's what read as "composer
+  //   grows on top of the message, then it catches up in a lagged slide"
+  //   — not a timing delay we can tune away, a structural one: the
+  //   notification and the frame it describes aren't the same tick.
+  //   Fixed by polling scrollEl's own clientHeight from inside our *own*
+  //   requestAnimationFrame callback and writing scrollTop in that same
+  //   callback — read and write happen in the same frame, before paint,
+  //   every single frame, with no notification queue in between at all.
+  //
+  //   contentEl (the messages themselves) — resizes in discrete steps (a
+  //   new message inserted, an image/video thumbnail finishing load),
+  //   not as a continuous animation — ResizeObserver is the right tool
+  //   here, debounced snap-to-bottom unchanged from before.
+  //
+  //   One refinement on top of that rAF loop: it used to track a
+  //   remembered `lastHeight` and apply only the incremental delta each
+  //   frame (`scrollTop += delta`). That's fragile by construction — if
+  //   any single frame's `clientHeight` read landed a hair before the
+  //   engine had propagated that frame's transition step to layout (the
+  //   ordering between "advance CSS transitions" and "run rAF callbacks"
+  //   isn't identically guaranteed across engines), that frame's delta
+  //   came up short, and being incremental, the shortfall stayed
+  //   accumulated until a later frame closed it — read as the last
+  //   bubble yielding a few px behind the composer before catching up.
+  //   Re-asserting the *absolute* correct position every frame
+  //   (`scrollHeight - clientHeight`, i.e. "scrolled all the way down")
+  //   instead of an incremental delta is self-correcting by
+  //   construction: there's no remembered value that can drift out of
+  //   sync — every frame computes fresh from current real values, so
+  //   even a single stale read is fully caught up by the very next
+  //   frame (8-16ms later) with nothing left over to visibly settle.
   useEffect(() => {
     const scrollEl = scrollRef.current;
-    const contentEl = contentRef.current;
-    if (!scrollEl || typeof ResizeObserver === 'undefined') return;
+    if (!scrollEl) return;
 
-    let debounceId: ReturnType<typeof setTimeout> | null = null;
+    let rafId = requestAnimationFrame(function tick() {
+      const el = scrollRef.current;
+      if (el && !isUserTouchingRef.current && isPinnedToBottomRef.current) {
+        const target = el.scrollHeight - el.clientHeight;
+        if (el.scrollTop !== target) {
+          markProgrammaticScroll();
+          el.scrollTop = target;
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    });
+
+    return () => cancelAnimationFrame(rafId);
+  }, [conversationId, markProgrammaticScroll]);
+
+  useEffect(() => {
+    const contentEl = contentRef.current;
+    if (!contentEl || typeof ResizeObserver === 'undefined') return;
+
+    let contentDebounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
       if (isUserTouchingRef.current || !isPinnedToBottomRef.current) return;
-
-      if (debounceId !== null) clearTimeout(debounceId);
-      debounceId = setTimeout(() => {
-        debounceId = null;
+      if (contentDebounceId !== null) clearTimeout(contentDebounceId);
+      contentDebounceId = setTimeout(() => {
+        contentDebounceId = null;
         if (!isUserTouchingRef.current && isPinnedToBottomRef.current && scrollRef.current) {
           markProgrammaticScroll();
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -1082,14 +1129,11 @@ export function MessageThread({
       }, 80);
     });
 
-    ro.observe(scrollEl);
-    if (contentEl) {
-      ro.observe(contentEl);
-    }
+    ro.observe(contentEl);
 
     return () => {
       ro.disconnect();
-      if (debounceId !== null) clearTimeout(debounceId);
+      if (contentDebounceId !== null) clearTimeout(contentDebounceId);
     };
   }, [conversationId, loading, markProgrammaticScroll]);
 

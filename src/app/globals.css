@@ -653,9 +653,9 @@ html[data-theme="rose"] {
          (flex-wrap/order/width swap on :has([data-multiline]) — not
          animatable by CSS) with a quick fade, driven from JS in
          message-composer.tsx's adjustHeight/fadeCapsuleOnModeSwitch.
-         padding matches the textarea's own 600ms below so the capsule's
+         padding matches the textarea's own 1200ms below so the capsule's
          own vertical growth and the textarea's height stay in sync. */
-      transition: border-radius 300ms ease-out, border-color 150ms ease-out, padding 600ms cubic-bezier(0.25, 1, 0.5, 1), opacity 300ms ease-out;
+      transition: border-radius 300ms ease-out, border-color 150ms ease-out, padding 1200ms cubic-bezier(0.25, 1, 0.5, 1), opacity 300ms ease-out;
     }
 
     [data-composer-capsule]:focus-within {
@@ -721,7 +721,7 @@ html[data-theme="rose"] {
       padding-top: 7px;
       padding-bottom: 7px;
       line-height: 24px;
-      transition: height 600ms cubic-bezier(0.25, 1, 0.5, 1), padding 600ms cubic-bezier(0.25, 1, 0.5, 1) !important;
+      transition: height 1200ms cubic-bezier(0.25, 1, 0.5, 1), padding 1200ms cubic-bezier(0.25, 1, 0.5, 1) !important;
     }
     [data-composer-textarea]:focus {
       border-color: transparent;

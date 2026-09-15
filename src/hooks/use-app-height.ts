@@ -98,8 +98,83 @@ export function useAppHeight() {
       if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
     }
 
+    // Spring-driven `--app-height` follow for the keyboard's *opening*
+    // move only (setResting()/closing stays a plain instant set, as it
+    // always has been — untouched on purpose).
+    //
+    // A plain CSS `transition` on --app-height was tried here before
+    // (parte 33/34, see doc comment above) and reverted for "fighting"
+    // the keyboard. The real reason a transition can't work: iOS fires
+    // `visualViewport`'s "resize" event several times over the course of
+    // one keyboard opening, not once — each firing used to call
+    // setProperty with a new value immediately, so a fixed-duration CSS
+    // transition would restart from wherever it currently sat every
+    // single time, producing a staircase of independently-timed
+    // mini-transitions instead of one continuous motion — which is
+    // exactly why the shell looked like it "jumped"/"got shoved" up
+    // rather than being smoothly carried.
+    //
+    // A spring sidesteps this structurally instead of just re-tuning a
+    // duration: it has one job every frame — keep closing the gap to
+    // whatever `target` currently is — so a mid-flight retarget (the
+    // next resize event) just bends the existing trajectory instead of
+    // restarting a new animation. Semi-implicit Euler integration of a
+    // damped harmonic oscillator (Hooke's law + linear drag), `dt`
+    // measured via performance.now() rather than assumed, so it settles
+    // in the same real time on a 60Hz and a 120Hz (ProMotion) iPhone
+    // alike. Tuned to a damping ratio just under 1 (slightly
+    // underdamped) — enough to read as "carried along" with a touch of
+    // inertia, not so little that it visibly overshoots/bounces back.
+    const SPRING_STIFFNESS = 210;
+    const SPRING_DAMPING = 26;
+    const SPRING_REST_EPSILON = 0.5;
+    let springRaf: number | null = null;
+    let springLastT: number | null = null;
+    let springCurrent = window.outerHeight;
+    let springVelocity = 0;
+    let springTarget = window.outerHeight;
+
+    function stopSpring() {
+      if (springRaf !== null) {
+        cancelAnimationFrame(springRaf);
+        springRaf = null;
+      }
+      springLastT = null;
+    }
+
+    function springTick(t: number) {
+      const dt = springLastT === null ? 1 / 60 : Math.min((t - springLastT) / 1000, 1 / 30);
+      springLastT = t;
+
+      const displacement = springCurrent - springTarget;
+      const acceleration = -SPRING_STIFFNESS * displacement - SPRING_DAMPING * springVelocity;
+      springVelocity += acceleration * dt;
+      springCurrent += springVelocity * dt;
+
+      if (
+        Math.abs(springCurrent - springTarget) < SPRING_REST_EPSILON &&
+        Math.abs(springVelocity) < SPRING_REST_EPSILON
+      ) {
+        springCurrent = springTarget;
+        root.style.setProperty("--app-height", `${springCurrent}px`);
+        stopSpring();
+        return;
+      }
+      root.style.setProperty("--app-height", `${springCurrent}px`);
+      springRaf = requestAnimationFrame(springTick);
+    }
+
+    function springTo(h: number) {
+      springTarget = h;
+      if (springRaf === null) springRaf = requestAnimationFrame(springTick);
+    }
+
     function setResting() {
-      root.style.setProperty("--app-height", `${window.outerHeight}px`);
+      stopSpring();
+      springCurrent = window.outerHeight;
+      springTarget = springCurrent;
+      springVelocity = 0;
+      root.style.setProperty("--app-height", `${springCurrent}px`);
       // Removed (not set to the resting inset) so the composer's own
       // `var(--composer-safe-bottom, env(safe-area-inset-bottom))`
       // falls through to its fallback — see the doc comment above.
@@ -110,7 +185,7 @@ export function useAppHeight() {
     function setLive() {
       resetScroll();
       const h = window.visualViewport?.height ?? window.innerHeight;
-      root.style.setProperty("--app-height", `${h}px`);
+      springTo(h);
     }
 
     function onVvResize() {
@@ -147,6 +222,7 @@ export function useAppHeight() {
       document.removeEventListener("focusout", onFocusOut);
       window.removeEventListener("orientationchange", setResting);
       window.visualViewport?.removeEventListener("resize", onVvResize);
+      stopSpring();
     };
   }, []);
 }
