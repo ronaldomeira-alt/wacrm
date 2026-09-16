@@ -918,6 +918,99 @@ export function MessageThread({
   // Track last measured scrollTop to detect manual upward drag in real-time
   const lastScrollTopRef = useRef(0);
 
+  // ── INSTRUMENTAÇÃO DIAGNÓSTICA FORENSE (FASE 3) ──
+  const lastContainerElementRef = useRef<HTMLDivElement | null>(null);
+
+  const logDiagnosticEvent = useCallback(
+    (
+      type: 'PROGRAMMATIC_SCROLL' | 'NATIVE_SCROLL' | 'CONTAINER_REPLACED' | 'PIN_CHANGE' | 'LIFECYCLE',
+      data: Record<string, unknown>
+    ) => {
+      const el = scrollRef.current;
+      const entry = {
+        type,
+        timestamp: new Date().toISOString(),
+        conversationId: conversation?.id,
+        messageCount: messages.length,
+        isPinnedToBottom: isPinnedToBottomRef.current,
+        isUserTouching: isUserTouchingRef.current,
+        isProgrammaticScroll: isProgrammaticScrollRef.current,
+        scrollTop: el?.scrollTop ?? null,
+        scrollHeight: el?.scrollHeight ?? null,
+        clientHeight: el?.clientHeight ?? null,
+        distanceFromBottom:
+          el ? el.scrollHeight - el.scrollTop - el.clientHeight : null,
+        ...data,
+      };
+
+      if (typeof window !== 'undefined') {
+        const w = window as unknown as {
+          __WACRM_SCROLL_DIAGNOSTICS__?: unknown[];
+          copyScrollDiagnostics?: () => Promise<string>;
+        };
+        if (!w.__WACRM_SCROLL_DIAGNOSTICS__) w.__WACRM_SCROLL_DIAGNOSTICS__ = [];
+        w.__WACRM_SCROLL_DIAGNOSTICS__.push(entry);
+        if (w.__WACRM_SCROLL_DIAGNOSTICS__.length > 500) {
+          w.__WACRM_SCROLL_DIAGNOSTICS__.shift();
+        }
+        w.copyScrollDiagnostics = async () => {
+          const logs = JSON.stringify(w.__WACRM_SCROLL_DIAGNOSTICS__ || [], null, 2);
+          try {
+            await navigator.clipboard.writeText(logs);
+            toast.success(`Copiados ${w.__WACRM_SCROLL_DIAGNOSTICS__?.length || 0} registros de scroll!`);
+          } catch {
+            // fallback
+          }
+          return logs;
+        };
+      }
+
+      console.log(`[SCROLL_FORENSIC:${type}]`, entry);
+    },
+    [conversation?.id, messages.length]
+  );
+
+  // Monitora se o elemento DOM de scrollRef é substituído/remontado
+  useEffect(() => {
+    if (scrollRef.current && scrollRef.current !== lastContainerElementRef.current) {
+      logDiagnosticEvent('CONTAINER_REPLACED', {
+        previousElement: lastContainerElementRef.current?.tagName,
+        newElement: scrollRef.current.tagName,
+      });
+      lastContainerElementRef.current = scrollRef.current;
+    }
+  });
+
+  // Monitora ciclo de vida de montagem e desmontagem
+  useEffect(() => {
+    logDiagnosticEvent('LIFECYCLE', { event: 'MOUNT' });
+    return () => {
+      logDiagnosticEvent('LIFECYCLE', { event: 'UNMOUNT' });
+    };
+  }, [conversationId, logDiagnosticEvent]);
+
+  const writeProgrammaticScrollTop = useCallback(
+    (el: HTMLElement, targetTop: number, source: string, force?: boolean) => {
+      const prev = el.scrollTop;
+      const stack = new Error().stack
+        ?.split('\n')
+        .slice(2, 5)
+        .map((s) => s.trim())
+        .join(' -> ');
+      el.scrollTop = targetTop;
+      const newTop = el.scrollTop;
+      logDiagnosticEvent('PROGRAMMATIC_SCROLL', {
+        source,
+        previousScrollTop: prev,
+        newScrollTop: newTop,
+        targetTop,
+        force,
+        callerStack: stack,
+      });
+    },
+    [logDiagnosticEvent]
+  );
+
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
     if (programmaticTimerRef.current) {
@@ -946,15 +1039,20 @@ export function MessageThread({
     if (!isPinnedToBottomRef.current && !force) return;
 
     markProgrammaticScroll();
-    el.scrollTop = el.scrollHeight;
+    writeProgrammaticScrollTop(el, el.scrollHeight, 'scrollToBottom:immediate', force);
 
     requestAnimationFrame(() => {
       if (scrollRef.current && (isPinnedToBottomRef.current || force)) {
         markProgrammaticScroll();
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        writeProgrammaticScrollTop(
+          scrollRef.current,
+          scrollRef.current.scrollHeight,
+          'scrollToBottom:rAF',
+          force
+        );
       }
     });
-  }, [markProgrammaticScroll]);
+  }, [markProgrammaticScroll, writeProgrammaticScrollTop]);
 
   // All messages of the conversation are rendered stably to prevent layout shifts/jumps
   const visibleMessages = messages;
@@ -1023,6 +1121,17 @@ export function MessageThread({
       const currentScrollTop = el.scrollTop;
       const distanceFromBottom =
         el.scrollHeight - currentScrollTop - el.clientHeight;
+      const delta = currentScrollTop - lastScrollTopRef.current;
+      const prevPinned = isPinnedToBottomRef.current;
+
+      if (Math.abs(delta) > 200 && !isProgrammaticScrollRef.current) {
+        logDiagnosticEvent('NATIVE_SCROLL', {
+          largeJump: true,
+          delta,
+          previousScrollTop: lastScrollTopRef.current,
+          currentScrollTop,
+        });
+      }
 
       // ── INVARIANTE 1, 3 & 7: PREVALÊNCIA ABSOLUTA DO GESTO MANUAL DO USUÁRIO ──
       // Se o usuário está ativamente tocando ou arrastando, o gesto manual sempre
@@ -1041,6 +1150,15 @@ export function MessageThread({
         ) {
           // Rearme MANUAL legítimo: o usuário arrastou ativamente para baixo e encostou no fundo real
           isPinnedToBottomRef.current = true;
+        }
+
+        if (prevPinned !== isPinnedToBottomRef.current) {
+          logDiagnosticEvent('PIN_CHANGE', {
+            from: prevPinned,
+            to: isPinnedToBottomRef.current,
+            reason: 'touch_drag',
+            delta,
+          });
         }
 
         lastScrollTopRef.current = currentScrollTop;
@@ -1065,6 +1183,12 @@ export function MessageThread({
       } else {
         if (distanceFromBottom > 24) {
           isPinnedToBottomRef.current = false;
+          logDiagnosticEvent('PIN_CHANGE', {
+            from: true,
+            to: false,
+            reason: 'passive_drift_away',
+            distanceFromBottom,
+          });
         }
       }
 
@@ -1073,7 +1197,7 @@ export function MessageThread({
 
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, []);
+  }, [logDiagnosticEvent]);
 
   // Reset flags when switching conversation
   useEffect(() => {
@@ -1087,6 +1211,7 @@ export function MessageThread({
   useEffect(() => {
     if (loading || messages.length === 0) return;
     if (isInitialLoadRef.current) {
+      logDiagnosticEvent('LIFECYCLE', { event: 'initialLoad_trigger', messagesCount: messages.length });
       scrollToBottom(true);
       const r1 = requestAnimationFrame(() => {
         if (!isUserTouchingRef.current && isPinnedToBottomRef.current) {
@@ -1097,20 +1222,24 @@ export function MessageThread({
             scrollToBottom(true);
           }
           isInitialLoadRef.current = false;
+          logDiagnosticEvent('LIFECYCLE', { event: 'initialLoad_complete' });
         });
         return () => cancelAnimationFrame(r2);
       });
       return () => cancelAnimationFrame(r1);
     }
-  }, [conversationId, loading, messages.length, scrollToBottom]);
+  }, [conversationId, loading, messages.length, scrollToBottom, logDiagnosticEvent]);
 
   // Realtime/subsequent new messages: scroll to bottom if user is pinned
   useEffect(() => {
     if (loading || isInitialLoadRef.current) return;
     if (isPinnedToBottomRef.current) {
+      logDiagnosticEvent('LIFECYCLE', { event: 'new_messages_scroll_to_bottom', messagesCount: messages.length });
       scrollToBottom();
+    } else {
+      logDiagnosticEvent('LIFECYCLE', { event: 'new_messages_ignored_unpinned', messagesCount: messages.length });
     }
-  }, [messages.length, loading, scrollToBottom]);
+  }, [messages.length, loading, scrollToBottom, logDiagnosticEvent]);
 
   // Two different things need two different mechanisms — conflating them
   // (or driving both off the same async notification queue) is what
@@ -1196,7 +1325,7 @@ export function MessageThread({
         ) {
           const target = el.scrollHeight - currentClientHeight;
           if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
-            el.scrollTop = target;
+            writeProgrammaticScrollTop(el, target, 'iOS_compensation_loop');
           }
         }
       }
@@ -1204,7 +1333,7 @@ export function MessageThread({
     });
 
     return () => cancelAnimationFrame(rafId);
-  }, [conversationId]);
+  }, [conversationId, writeProgrammaticScrollTop]);
 
   useEffect(() => {
     const contentEl = contentRef.current;
@@ -1234,7 +1363,11 @@ export function MessageThread({
           scrollRef.current
         ) {
           markProgrammaticScroll();
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          writeProgrammaticScrollTop(
+            scrollRef.current,
+            scrollRef.current.scrollHeight,
+            'ResizeObserver:debounced'
+          );
         }
       }, 80);
     });
@@ -1245,7 +1378,7 @@ export function MessageThread({
       ro.disconnect();
       if (contentDebounceId !== null) clearTimeout(contentDebounceId);
     };
-  }, [conversationId, loading, markProgrammaticScroll]);
+  }, [conversationId, loading, markProgrammaticScroll, writeProgrammaticScrollTop]);
 
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
@@ -2785,11 +2918,11 @@ export function MessageThread({
       const elapsed = now - startTime;
       const progress = Math.min(1, elapsed / duration);
       const eased = 1 - Math.pow(1 - progress, 3); // ease-out-cubic
-      container.scrollTop = startTop + delta * eased;
+      writeProgrammaticScrollTop(container, startTop + delta * eased, 'animateScrollTop');
       if (progress < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
-  }, []);
+  }, [writeProgrammaticScrollTop]);
 
   // Reply-quote "jump to original message". Every message is always
   // mounted (no virtualization — see `visibleMessages` above), so a plain
@@ -3345,6 +3478,29 @@ export function MessageThread({
                 className="text-primary text-sm"
               >
                 {t('markAsUnread')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="bg-border" />
+              <DropdownMenuItem
+                onClick={async () => {
+                  const w = window as unknown as {
+                    __WACRM_SCROLL_DIAGNOSTICS__?: unknown[];
+                    copyScrollDiagnostics?: () => Promise<string>;
+                  };
+                  if (w.copyScrollDiagnostics) {
+                    await w.copyScrollDiagnostics();
+                  } else {
+                    const logs = JSON.stringify(w.__WACRM_SCROLL_DIAGNOSTICS__ || [], null, 2);
+                    try {
+                      await navigator.clipboard.writeText(logs);
+                      toast.success(`Copiados ${w.__WACRM_SCROLL_DIAGNOSTICS__?.length || 0} registros!`);
+                    } catch {
+                      // fallback
+                    }
+                  }
+                }}
+                className="text-xs text-muted-foreground font-mono"
+              >
+                📋 Copiar Diagnóstico Scroll
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
