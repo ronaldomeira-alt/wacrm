@@ -917,6 +917,18 @@ export function MessageThread({
   const isInitialLoadRef = useRef(true);
   // Track last measured scrollTop to detect manual upward drag in real-time
   const lastScrollTopRef = useRef(0);
+  // Timestamp the conversation was (re)opened. Avatars and media thumbnails
+  // keep loading asynchronously for a bit after the first paint, growing
+  // contentEl and re-triggering the pinned-to-bottom ResizeObserver/rAF
+  // loops below. If the user's very first touch on the list lands in that
+  // window, a light drag may be too small for the scrollTop-delta unpin
+  // check to catch before one of those loops re-asserts scrollTop — read
+  // as a flicker back to the last bubble on the first scroll only (once
+  // settled, nothing races it again). Any touch during this window is
+  // unambiguously scroll intent (this listener is on the list itself),
+  // so unpin unconditionally rather than waiting on a measurable delta.
+  const conversationOpenedAtRef = useRef(0);
+  const INITIAL_SETTLE_MS = 2000;
 
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
@@ -967,6 +979,9 @@ export function MessageThread({
     const onTouchStart = () => {
       isUserTouchingRef.current = true;
       lastScrollTopRef.current = el.scrollTop;
+      if (Date.now() - conversationOpenedAtRef.current < INITIAL_SETTLE_MS) {
+        isPinnedToBottomRef.current = false;
+      }
     };
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
@@ -976,6 +991,9 @@ export function MessageThread({
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
         isUserTouchingRef.current = true;
         lastScrollTopRef.current = el.scrollTop;
+        if (Date.now() - conversationOpenedAtRef.current < INITIAL_SETTLE_MS) {
+          isPinnedToBottomRef.current = false;
+        }
       }
     };
     const onPointerUp = () => {
@@ -1080,6 +1098,7 @@ export function MessageThread({
     isPinnedToBottomRef.current = true;
     isInitialLoadRef.current = true;
     lastScrollTopRef.current = 0;
+    conversationOpenedAtRef.current = Date.now();
   }, [conversationId]);
 
   // Initial load auto-positioning:
