@@ -15,7 +15,11 @@ import { generateAnthropic } from './providers/anthropic';
 import { retrievePropertyKnowledge } from './knowledge';
 import { latestUserMessage } from './query';
 import { getLeadContext, type FormattedLeadContext } from './lead-context';
-import { getBusinessHoursContext, type BusinessHoursContext } from './business-hours';
+import {
+  getBusinessHoursContext,
+  sanitizeOffHoursHandoffResponse,
+  type BusinessHoursContext,
+} from './business-hours';
 import { buildConversationalSystemPrompt } from './prompt-builder';
 import {
   getAvailablePropertyMedia,
@@ -582,6 +586,20 @@ export async function executeConversationalTurn(
     if (stripped.length > 0) {
       decision.response_text = stripped.charAt(0).toUpperCase() + stripped.slice(1);
     }
+  }
+
+  // 8a-2. Off-Hours Handoff Architectural Guard (HARD BLOCK against immediate promises at night)
+  if (
+    !businessHours.isBusinessHours &&
+    decision.transfer_required &&
+    decision.response_text
+  ) {
+    const nextPeriodFormatted =
+      businessHours.nextBusinessHourFormatted || 'no próximo horário comercial';
+    decision.response_text = sanitizeOffHoursHandoffResponse(
+      decision.response_text,
+      nextPeriodFormatted,
+    );
   }
 
   // 8b. Media Authorization Architectural Guard (HARD BLOCK)

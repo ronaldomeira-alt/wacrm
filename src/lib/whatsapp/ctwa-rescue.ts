@@ -31,75 +31,9 @@ import type { AiConfig, AiUsage } from '@/lib/ai/types'
 import { engineSendText } from '@/lib/flows/meta-send'
 
 const SERVICE_WINDOW_HOURS = 24
-const BUSINESS_START_HOUR = 8
-const BUSINESS_END_HOUR = 20
-// Brazil abolished DST in 2019 — America/Sao_Paulo is a fixed UTC-3
-// offset today. Computed via Intl (not a hardcoded -3h) so this stays
-// correct if that ever changes again, matching the app's Portuguese/
-// Brazilian-real-estate context (no app-wide timezone setting exists
-// to reuse — see AGENTS task investigation).
-const TIMEZONE = 'America/Sao_Paulo'
+import { isBusinessHours, nextBusinessHourStart } from '@/lib/ai/business-hours'
 
-// ============================================================
-// Business-hours math
-// ============================================================
-
-interface WallClockParts {
-  y: number
-  mo: number
-  d: number
-  h: number
-  mi: number
-  s: number
-}
-
-function wallClockParts(date: Date, timeZone: string): WallClockParts {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-  const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]))
-  return {
-    y: Number(parts.year),
-    mo: Number(parts.month),
-    d: Number(parts.day),
-    // Some ICU builds report midnight as "24" with hour12:false.
-    h: Number(parts.hour) % 24,
-    mi: Number(parts.minute),
-    s: Number(parts.second),
-  }
-}
-
-/** Milliseconds to ADD to a UTC instant's epoch-ms-as-if-UTC reading of
- *  the target timezone's wall clock to get back the real UTC instant —
- *  i.e. `date.getTime() - offset` is `date`'s wall clock in `timeZone`
- *  reinterpreted as UTC. Recomputed from `date` itself (not hardcoded)
- *  so a future DST/offset change is handled correctly. */
-function tzOffsetMs(date: Date, timeZone: string): number {
-  const p = wallClockParts(date, timeZone)
-  const asUtc = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s)
-  return asUtc - date.getTime()
-}
-
-export function isBusinessHours(date: Date): boolean {
-  const { h } = wallClockParts(date, TIMEZONE)
-  return h >= BUSINESS_START_HOUR && h < BUSINESS_END_HOUR
-}
-
-/** Next instant at or after `date` that is 08:00 local time in TIMEZONE. */
-export function nextBusinessHourStart(date: Date): Date {
-  const offset = tzOffsetMs(date, TIMEZONE)
-  const p = wallClockParts(date, TIMEZONE)
-  const todayAt8Utc = new Date(Date.UTC(p.y, p.mo - 1, p.d, BUSINESS_START_HOUR, 0, 0) - offset)
-  if (todayAt8Utc.getTime() >= date.getTime()) return todayAt8Utc
-  return new Date(todayAt8Utc.getTime() + 24 * 60 * 60 * 1000)
-}
+export { isBusinessHours, nextBusinessHourStart }
 
 // ============================================================
 // Candidate discovery
