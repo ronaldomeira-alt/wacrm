@@ -930,6 +930,21 @@ export function MessageThread({
   // delta.
   const lastContentResizeAtRef = useRef(0);
   const CONTENT_SETTLING_GRACE_MS = 800;
+  // Whether the list is actively moving — dragging OR still coasting on
+  // iOS momentum after the finger lifted. touchend/pointerup is NOT the
+  // end of a gesture on iOS: releasing mid-flick leaves the view coasting
+  // under WebKit's own physics for a while longer. Forcing scrollTop
+  // during that coast (from the content ResizeObserver or the iOS
+  // compensation loop below) abruptly cancels the native momentum
+  // animation — which reads exactly like "I let go, it kept scrolling,
+  // and the moment it stopped it jumped back to the last bubble": the
+  // "stop" the user sees IS our own forced write hijacking the coast, not
+  // momentum settling on its own. True stop is detected by silence on the
+  // 'scroll' event, not by touchend, since only 'scroll' events cover the
+  // whole coast.
+  const isScrollInMotionRef = useRef(false);
+  const scrollMotionEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const SCROLL_MOTION_IDLE_MS = 180;
 
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
@@ -977,33 +992,14 @@ export function MessageThread({
     const el = scrollRef.current;
     if (!el) return;
 
-    // Decide the pin/unpin state synchronously from the live DOM position
-    // right when a gesture ends, instead of waiting for a 'scroll' event to
-    // report it. On iOS WKWebView the 'scroll' event that reflects a
-    // gesture's final rest position can be dispatched slightly *after*
-    // touchend/pointerup fire — by then isUserTouchingRef is already false,
-    // so that late event lands in the non-touching branch of onScroll
-    // instead of the touching one, and can get misread as a stale
-    // programmatic scroll (still inside its 120ms window from an earlier
-    // scrollToBottom call) and re-pinned. That read exactly as: scroll all
-    // the way, release, and — as soon as it settles — it jumps back to the
-    // last bubble, regardless of where it stopped. Reading the real
-    // scrollTop here, at the moment the gesture ends, sidesteps that
-    // event-ordering race entirely.
-    const settlePinFromLivePosition = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      isProgrammaticScrollRef.current = false;
-      if (programmaticTimerRef.current) {
-        clearTimeout(programmaticTimerRef.current);
-        programmaticTimerRef.current = null;
-      }
-      isPinnedToBottomRef.current = distanceFromBottom <= 2;
-      lastScrollTopRef.current = el.scrollTop;
-    };
-
     const onTouchStart = () => {
       isUserTouchingRef.current = true;
       lastScrollTopRef.current = el.scrollTop;
+      isScrollInMotionRef.current = true;
+      if (scrollMotionEndTimerRef.current) {
+        clearTimeout(scrollMotionEndTimerRef.current);
+        scrollMotionEndTimerRef.current = null;
+      }
       if (Date.now() - lastContentResizeAtRef.current < CONTENT_SETTLING_GRACE_MS) {
         isPinnedToBottomRef.current = false;
       }
@@ -1011,12 +1007,16 @@ export function MessageThread({
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
       lastInteractionEndRef.current = Date.now();
-      settlePinFromLivePosition();
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
         isUserTouchingRef.current = true;
         lastScrollTopRef.current = el.scrollTop;
+        isScrollInMotionRef.current = true;
+        if (scrollMotionEndTimerRef.current) {
+          clearTimeout(scrollMotionEndTimerRef.current);
+          scrollMotionEndTimerRef.current = null;
+        }
         if (Date.now() - lastContentResizeAtRef.current < CONTENT_SETTLING_GRACE_MS) {
           isPinnedToBottomRef.current = false;
         }
@@ -1025,7 +1025,6 @@ export function MessageThread({
     const onPointerUp = () => {
       isUserTouchingRef.current = false;
       lastInteractionEndRef.current = Date.now();
-      settlePinFromLivePosition();
     };
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = () => {
@@ -1035,7 +1034,6 @@ export function MessageThread({
       wheelTimer = setTimeout(() => {
         isUserTouchingRef.current = false;
         lastInteractionEndRef.current = Date.now();
-        settlePinFromLivePosition();
       }, 150);
     };
 
@@ -1066,6 +1064,16 @@ export function MessageThread({
     if (!el) return;
 
     const onScroll = () => {
+      // Every 'scroll' event — dragging or coasting — means the list is
+      // still in motion. Only genuine silence on this event means it has
+      // actually stopped; touchend/pointerup does not (see
+      // isScrollInMotionRef's declaration for why).
+      isScrollInMotionRef.current = true;
+      if (scrollMotionEndTimerRef.current) clearTimeout(scrollMotionEndTimerRef.current);
+      scrollMotionEndTimerRef.current = setTimeout(() => {
+        isScrollInMotionRef.current = false;
+      }, SCROLL_MOTION_IDLE_MS);
+
       const currentScrollTop = el.scrollTop;
       const distanceFromBottom =
         el.scrollHeight - currentScrollTop - el.clientHeight;
@@ -1238,6 +1246,7 @@ export function MessageThread({
         if (
           Math.abs(heightDelta) > 0.5 &&
           !isUserTouchingRef.current &&
+          !isScrollInMotionRef.current &&
           !withinGrace &&
           isPinnedToBottomRef.current
         ) {
@@ -1271,13 +1280,14 @@ export function MessageThread({
       }
 
       const withinGrace = Date.now() - lastInteractionEndRef.current < 250;
-      if (isUserTouchingRef.current || withinGrace) return;
+      if (isUserTouchingRef.current || isScrollInMotionRef.current || withinGrace) return;
       if (contentDebounceId !== null) clearTimeout(contentDebounceId);
       contentDebounceId = setTimeout(() => {
         contentDebounceId = null;
         const withinGraceDebounced = Date.now() - lastInteractionEndRef.current < 250;
         if (
           !isUserTouchingRef.current &&
+          !isScrollInMotionRef.current &&
           !withinGraceDebounced &&
           isPinnedToBottomRef.current &&
           scrollRef.current
