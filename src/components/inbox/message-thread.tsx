@@ -917,18 +917,19 @@ export function MessageThread({
   const isInitialLoadRef = useRef(true);
   // Track last measured scrollTop to detect manual upward drag in real-time
   const lastScrollTopRef = useRef(0);
-  // Timestamp the conversation was (re)opened. Avatars and media thumbnails
-  // keep loading asynchronously for a bit after the first paint, growing
-  // contentEl and re-triggering the pinned-to-bottom ResizeObserver/rAF
-  // loops below. If the user's very first touch on the list lands in that
-  // window, a light drag may be too small for the scrollTop-delta unpin
-  // check to catch before one of those loops re-asserts scrollTop — read
-  // as a flicker back to the last bubble on the first scroll only (once
-  // settled, nothing races it again). Any touch during this window is
-  // unambiguously scroll intent (this listener is on the list itself),
-  // so unpin unconditionally rather than waiting on a measurable delta.
-  const conversationOpenedAtRef = useRef(0);
-  const INITIAL_SETTLE_MS = 2000;
+  // Timestamp of the last contentEl resize (an avatar or media thumbnail
+  // finishing load and growing the list). In long/media-heavy
+  // conversations this keeps firing for well longer than a fixed
+  // "just opened" window. If the user's first touch lands while a resize
+  // just happened, a light drag can be too small for the scrollTop-delta
+  // unpin check below to win the race before the pinned-to-bottom
+  // ResizeObserver/rAF loops re-assert scrollTop — read as the scroll
+  // flickering back to the last bubble. Any touch on the list itself is
+  // unambiguously scroll intent, so while content is still actively
+  // settling we unpin unconditionally instead of waiting on a measurable
+  // delta.
+  const lastContentResizeAtRef = useRef(0);
+  const CONTENT_SETTLING_GRACE_MS = 800;
 
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
@@ -979,7 +980,7 @@ export function MessageThread({
     const onTouchStart = () => {
       isUserTouchingRef.current = true;
       lastScrollTopRef.current = el.scrollTop;
-      if (Date.now() - conversationOpenedAtRef.current < INITIAL_SETTLE_MS) {
+      if (Date.now() - lastContentResizeAtRef.current < CONTENT_SETTLING_GRACE_MS) {
         isPinnedToBottomRef.current = false;
       }
     };
@@ -991,7 +992,7 @@ export function MessageThread({
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
         isUserTouchingRef.current = true;
         lastScrollTopRef.current = el.scrollTop;
-        if (Date.now() - conversationOpenedAtRef.current < INITIAL_SETTLE_MS) {
+        if (Date.now() - lastContentResizeAtRef.current < CONTENT_SETTLING_GRACE_MS) {
           isPinnedToBottomRef.current = false;
         }
       }
@@ -1098,7 +1099,7 @@ export function MessageThread({
     isPinnedToBottomRef.current = true;
     isInitialLoadRef.current = true;
     lastScrollTopRef.current = 0;
-    conversationOpenedAtRef.current = Date.now();
+    lastContentResizeAtRef.current = Date.now();
   }, [conversationId]);
 
   // Initial load auto-positioning:
@@ -1231,6 +1232,8 @@ export function MessageThread({
 
     let contentDebounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
+      lastContentResizeAtRef.current = Date.now();
+
       // INVARIANTE 8: Se o usuário estiver navegando/despinado, cancela qualquer agendamento e aborta
       if (!isPinnedToBottomRef.current) {
         if (contentDebounceId !== null) {
