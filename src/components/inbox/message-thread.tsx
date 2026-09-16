@@ -3435,7 +3435,14 @@ export function MessageThread({
       <div ref={messagesAreaRef} className="relative flex-1 overflow-hidden">
         <div
           ref={scrollRef}
-          className="h-full overflow-y-auto [overflow-anchor:none] px-4 py-4"
+          // -webkit-overflow-scrolling: touch — hands momentum scrolling
+          // off to WebKit's compositor thread on iOS/WKWebView (the PWA
+          // shell). Without it, a long drag gesture can fall back to
+          // main-thread scrolling, which stutters far more easily
+          // whenever the thread is even briefly busy (a message re-render,
+          // a ResizeObserver callback, a new realtime message landing).
+          // No-op on every other browser (unknown vendor property).
+          className="h-full overflow-y-auto [overflow-anchor:none] [-webkit-overflow-scrolling:touch] px-4 py-4"
           onPointerDown={() => {
             if (
               document.activeElement instanceof HTMLElement &&
