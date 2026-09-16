@@ -706,7 +706,7 @@ function MessageActionsComponent({
        *  body, on both desktop (drag + Ctrl/Cmd-C) and mobile (long-
        *  press → native handles + callout). This menu stays reachable
        *  via desktop right-click and the corner chevron either way. */}
-      <div className="relative min-w-0 max-w-[75%]">
+      <div className="relative min-w-0 max-w-[75%]" data-message-id={message.id}>
         {/* Swipe-to-reply indicator — fades/scales in as the bubble is
             dragged right; purely cosmetic, driven imperatively by the
             touch handlers above (opacity/transform only, never a

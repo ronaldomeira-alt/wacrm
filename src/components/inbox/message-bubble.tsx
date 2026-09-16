@@ -27,7 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { format } from "date-fns";
-import { ReplyQuote } from "./reply-quote";
+import { ReplyQuote, type ReplyQuoteMedia } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
 import { MediaLightbox } from "./media-lightbox";
 import { LinkPreviewCard } from "./link-preview-card";
@@ -42,8 +42,14 @@ import { useTranslations } from "next-intl";
 
 interface MessageBubbleProps {
   message: Message;
-  /** Pre-computed quote info for messages that reply to another. */
-  reply?: { authorLabel: string; preview: string } | null;
+  /** Pre-computed quote info for messages that reply to another. `onClick`
+   *  jumps to and highlights the original message in the thread. */
+  reply?: {
+    authorLabel: string;
+    preview: string;
+    media?: ReplyQuoteMedia | null;
+    onClick?: () => void;
+  } | null;
   reactions?: MessageReaction[];
   currentUserId?: string;
   /**
@@ -1097,6 +1103,8 @@ function MessageBubbleComponent({
             <ReplyQuote
               authorLabel={reply.authorLabel}
               preview={reply.preview}
+              media={reply.media}
+              onClick={reply.onClick}
               onPrimary={isAgent}
             />
           </div>

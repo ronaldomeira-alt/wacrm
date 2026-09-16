@@ -1034,3 +1034,31 @@ html[data-theme="rose"] {
     -webkit-transform: translate3d(0, 0, 0);
   }
 }
+
+/* Reply-quote "jump to message" flash — WhatsApp-style temporary highlight
+ * applied imperatively (classList.add) by message-thread.tsx's
+ * scrollToMessage, never via React state, so jumping to a message never
+ * re-renders the list. box-shadow (not outline) so the ring follows
+ * whatever border-radius the target element already has — a bubble, an
+ * album container, or a single grid tile. Self-removes via `animationend`
+ * in JS; the animation itself never loops. */
+@keyframes message-highlight-flash {
+  0%,
+  65% {
+    box-shadow: 0 0 0 3px var(--primary);
+    background-color: color-mix(in oklch, var(--primary) 16%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0px transparent;
+    background-color: transparent;
+  }
+}
+
+.message-highlight-flash {
+  animation: message-highlight-flash 1600ms ease-out;
+  /* Matches the bubble/tile `rounded-2xl` used throughout the inbox
+   * (album containers, tiles, message bubbles) — `inherit` doesn't work
+   * here since the flash targets a plain wrapper div, not the rounded
+   * element itself. */
+  border-radius: 1rem;
+}

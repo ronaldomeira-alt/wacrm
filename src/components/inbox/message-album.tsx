@@ -590,6 +590,26 @@ function MessageAlbumComponent({
     [selected, isVideoAlbum],
   );
 
+  // Reply-quote "jump to message" landing here: message-thread.tsx can
+  // locate this album's own container (data-album-anchor-id) and scroll to
+  // it directly, but it has no way to reach into this component's own
+  // lightbox/video-dialog state — especially for an item past visibleCount,
+  // which has no clickable tile of its own to target. A custom event
+  // decouples the two: any album listens, and only the one actually
+  // holding the target message id acts on it.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const messageId = (e as CustomEvent<{ messageId: string }>).detail?.messageId;
+      if (!messageId) return;
+      const index = messages.findIndex((m) => m.id === messageId);
+      if (index === -1) return;
+      if (isVideoAlbum) setVideoDialogIndex(index);
+      else setLightboxIndex(index);
+    };
+    window.addEventListener("wacrm:jump-to-album-item", handler);
+    return () => window.removeEventListener("wacrm:jump-to-album-item", handler);
+  }, [messages, isVideoAlbum]);
+
   const handleDeleteAlbum = useCallback(async () => {
     setDeleting(true);
     try {
@@ -667,6 +687,7 @@ function MessageAlbumComponent({
             )}
 
             <div
+              data-album-anchor-id={first.id}
               className={cn(
                 "relative overflow-hidden rounded-2xl border-0 transition-[outline-color]",
                 isAgent ? "rounded-br-md" : "rounded-bl-md",
@@ -683,6 +704,7 @@ function MessageAlbumComponent({
                 <button
                   key={m.id}
                   type="button"
+                  data-message-id={m.id}
                   onClick={() => openAt(i)}
                   aria-label={isVideoAlbum ? t("video") : t("photo")}
                   className={cn(

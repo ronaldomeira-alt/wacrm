@@ -92,7 +92,7 @@ import { TemplatePicker, type TemplateSendValues } from './template-picker';
 import { AiThreadBanner } from './ai-thread-banner';
 import { CtwaOrigin } from './ctwa-origin';
 import { getCtwaFepStatus } from '@/lib/whatsapp/ctwa-fep';
-import { buildReplyPreview } from './reply-quote';
+import { buildReplyPreview, buildReplyMedia, type ReplyQuoteMedia } from './reply-quote';
 import { toast } from 'sonner';
 import {
   consumeFollowupDraft,
@@ -117,6 +117,7 @@ interface ReplyDraft {
   id: string;
   authorLabel: string;
   preview: string;
+  media?: ReplyQuoteMedia | null;
 }
 
 // iPhone/iPad only — WebKit's hardware video decoder + per-tab memory
@@ -265,7 +266,12 @@ function renderTemplateBody(body: string, params: string[]): string {
 
 interface MessageRowProps {
   message: Message;
-  reply: { authorLabel: string; preview: string } | null;
+  reply: {
+    authorLabel: string;
+    preview: string;
+    media: ReplyQuoteMedia | null;
+    onClick: () => void;
+  } | null;
   reactions: MessageReaction[] | undefined;
   currentUserId: string | undefined;
   currentContactId?: string;
@@ -896,6 +902,14 @@ export function MessageThread({
   const isPinnedToBottomRef = useRef(true);
   // Track whether the user is actively touching or dragging the scroll container
   const isUserTouchingRef = useRef(false);
+  // Timestamp of the last touchend/pointerup/wheel-idle — gives iOS's
+  // post-lift momentum/kinetic scroll a grace window before the WKWebView
+  // compensation loop below is allowed to resume forcing scrollTop back to
+  // bottom. Without it, `isUserTouchingRef` flips to false the instant the
+  // finger lifts while momentum scrolling is still carrying the view away
+  // from the bottom — the loop would snap it straight back on the very next
+  // frame, reading as the thread being frozen on the last message.
+  const lastInteractionEndRef = useRef(0);
   // Track whether the current scroll movement was triggered programmatically
   const isProgrammaticScrollRef = useRef(false);
   const programmaticTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -953,6 +967,7 @@ export function MessageThread({
     };
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
+      lastInteractionEndRef.current = Date.now();
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
@@ -961,6 +976,7 @@ export function MessageThread({
     };
     const onPointerUp = () => {
       isUserTouchingRef.current = false;
+      lastInteractionEndRef.current = Date.now();
     };
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = () => {
@@ -968,6 +984,7 @@ export function MessageThread({
       if (wheelTimer) clearTimeout(wheelTimer);
       wheelTimer = setTimeout(() => {
         isUserTouchingRef.current = false;
+        lastInteractionEndRef.current = Date.now();
       }, 150);
     };
 
@@ -1112,12 +1129,36 @@ export function MessageThread({
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
 
+    // 250ms grace window after the finger/wheel lifts, before this loop is
+    // allowed to resume forcing scrollTop back to bottom. Without it,
+    // `isUserTouchingRef` going false the instant touchend fires let this
+    // loop snap the view back on the very next frame — cancelling iOS's own
+    // post-lift momentum/kinetic scroll before it ever became visible,
+    // which read as the thread being permanently frozen on the last
+    // message (unable to scroll up at all) in the iPhone PWA.
+    const TOUCH_END_GRACE_MS = 250;
+    // Sub-pixel tolerance — Retina devicePixelRatio scaling means a
+    // browser-settled scrollTop frequently never exactly equals the
+    // computed integer target, which made the strict `!==` check below
+    // "correct" (and re-arm markProgrammaticScroll) on literally every
+    // frame forever, independent of any real drift.
+    const SCROLL_EPSILON_PX = 1;
+
     let rafId = requestAnimationFrame(function tick() {
       const el = scrollRef.current;
-      if (el && !isUserTouchingRef.current && isPinnedToBottomRef.current) {
+      const withinGrace = Date.now() - lastInteractionEndRef.current < TOUCH_END_GRACE_MS;
+      if (el && !isUserTouchingRef.current && !withinGrace && isPinnedToBottomRef.current) {
         const target = el.scrollHeight - el.clientHeight;
-        if (el.scrollTop !== target) {
-          markProgrammaticScroll();
+        if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
+          // Deliberately NOT markProgrammaticScroll() here: writing
+          // scrollTop to exactly `target` (the bottom) already makes the
+          // natural distanceFromBottom recalculation in the onScroll
+          // listener below conclude isPinnedToBottomRef=true on its own —
+          // forcing it added nothing but a ~120ms window where any real,
+          // concurrent user scroll event got misread as "still pinned"
+          // regardless of actual position. That reinforcing loop between
+          // this correction and isPinnedToBottomRef is the other half of
+          // the "stuck" bug: once pinned, it could never let go.
           el.scrollTop = target;
         }
       }
@@ -1125,7 +1166,7 @@ export function MessageThread({
     });
 
     return () => cancelAnimationFrame(rafId);
-  }, [conversationId, markProgrammaticScroll]);
+  }, [conversationId]);
 
   useEffect(() => {
     const contentEl = contentRef.current;
@@ -2656,6 +2697,100 @@ export function MessageThread({
     [visibleMessages]
   );
 
+  // Imperative "flash" highlight for reply-quote navigation — a plain
+  // classList toggle, never React state, so jumping to a message never
+  // re-renders the (memoized, per-row) message list. The animation itself
+  // is CSS-driven (globals.css `.message-highlight-flash`) and removes
+  // its own class on `animationend`; `classList.remove` + a synchronous
+  // reflow read first lets two clicks in a row restart the flash instead
+  // of no-oping because the class was already present.
+  const flashHighlight = useCallback((el: HTMLElement) => {
+    el.classList.remove('message-highlight-flash');
+    void el.offsetWidth;
+    el.classList.add('message-highlight-flash');
+    const clear = () => el.classList.remove('message-highlight-flash');
+    el.addEventListener('animationend', clear, { once: true });
+  }, []);
+
+  // Same easing-driven scrollTop animation style as scrollToBottom above
+  // (direct `scrollTop` writes, no `scrollIntoView`/native smooth-scroll —
+  // see that function's own comment on why: Safari iOS ancestor shifts).
+  // Deliberately does NOT go through markProgrammaticScroll/
+  // isProgrammaticScrollRef — that pair exists to keep "pinned to bottom"
+  // state sticky across a bottom-anchored scroll, which is the opposite of
+  // what a mid-thread jump wants: the scroll listener's own
+  // distanceFromBottom recalculation (message-thread.tsx's onScroll effect)
+  // is exactly what should decide isPinnedToBottomRef once we land.
+  const animateScrollTop = useCallback((container: HTMLDivElement, targetTop: number) => {
+    const startTop = container.scrollTop;
+    const delta = targetTop - startTop;
+    if (Math.abs(delta) < 1) return;
+    const duration = 350;
+    const startTime = performance.now();
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - progress, 3); // ease-out-cubic
+      container.scrollTop = startTop + delta * eased;
+      if (progress < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, []);
+
+  // Reply-quote "jump to original message". Every message is always
+  // mounted (no virtualization — see `visibleMessages` above), so a plain
+  // DOM lookup by `data-message-id` always succeeds *except* for an album
+  // item beyond the 4 visible tiles (message-album.tsx's `visibleCount`),
+  // which has no clickable node of its own — that case lands on the
+  // album's container (`data-album-anchor-id`) and asks the album itself
+  // (via a DOM CustomEvent, since it owns its own lightbox/video-dialog
+  // state) to open the exact photo/video instead of flashing a tile that
+  // isn't rendered.
+  const scrollToMessage = useCallback(
+    (messageId: string) => {
+      const container = scrollRef.current;
+      if (!container) return;
+
+      const escaped = messageId.replace(/"/g, '\\"');
+      let target = container.querySelector<HTMLElement>(`[data-message-id="${escaped}"]`);
+      let albumOverflowIndex: number | null = null;
+
+      if (!target) {
+        const group = albumGroups.get(messageId);
+        if (group) {
+          const index = group.messages.findIndex((m) => m.id === messageId);
+          if (index !== -1) {
+            const anchorId = group.messages[0].id.replace(/"/g, '\\"');
+            target = container.querySelector<HTMLElement>(`[data-album-anchor-id="${anchorId}"]`);
+            albumOverflowIndex = index;
+          }
+        }
+      }
+
+      if (!target) {
+        console.warn('[reply-quote] original message not found in thread:', messageId);
+        return;
+      }
+
+      isPinnedToBottomRef.current = false;
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const currentOffset = targetRect.top - containerRect.top;
+      const targetScrollTop =
+        container.scrollTop + currentOffset - container.clientHeight / 2 + targetRect.height / 2;
+      animateScrollTop(container, Math.max(0, targetScrollTop));
+
+      if (albumOverflowIndex !== null) {
+        window.dispatchEvent(
+          new CustomEvent('wacrm:jump-to-album-item', { detail: { messageId } })
+        );
+      }
+
+      flashHighlight(target);
+    },
+    [albumGroups, animateScrollTop, flashHighlight]
+  );
+
   // Pre-computed reply-quote info per message, keyed by message id — moved
   // out of the render loop below so a message's `reply` prop keeps the
   // same object reference across renders where `messages`/`contact`
@@ -2663,22 +2798,28 @@ export function MessageThread({
   // Same authorLabel/preview logic as before, just computed once here
   // instead of inline per message on every render.
   const replyPreviewByMessageId = useMemo(() => {
-    const map = new Map<string, { authorLabel: string; preview: string }>();
+    const map = new Map<
+      string,
+      { authorLabel: string; preview: string; media: ReplyQuoteMedia | null; onClick: () => void }
+    >();
     for (const m of messages) {
       if (!m.reply_to_message_id) continue;
       const parent = messagesById.get(m.reply_to_message_id);
       if (!parent) continue;
+      const parentId = parent.id;
       map.set(m.id, {
         authorLabel:
           parent.sender_type === 'agent' || parent.sender_type === 'bot'
             ? t('me')
             : contact?.name || contact?.phone || 'Unknown',
         preview: buildReplyPreview(parent, tQuote),
+        media: buildReplyMedia(parent),
+        onClick: () => scrollToMessage(parentId),
       });
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, messagesById, contact, tQuote]);
+  }, [messages, messagesById, contact, tQuote, scrollToMessage]);
 
   const contactDisplayName = contact?.name || contact?.phone || 'Customer';
 
@@ -2698,6 +2839,7 @@ export function MessageThread({
         id: msg.id,
         authorLabel: authorLabelFor(msg),
         preview: buildReplyPreview(msg, tQuote),
+        media: buildReplyMedia(msg),
       });
     },
     [authorLabelFor, tQuote]

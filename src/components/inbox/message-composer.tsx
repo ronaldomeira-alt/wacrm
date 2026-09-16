@@ -40,7 +40,7 @@ import {
   convertMovToMp4ViaWebCodecs,
 } from "@/lib/media/transcode-mov-webcodecs";
 import { isHeicFile, normalizeImageForUpload } from "@/lib/media/image-compat";
-import { ReplyQuote } from "./reply-quote";
+import { ReplyQuote, type ReplyQuoteMedia } from "./reply-quote";
 import { DocumentFullscreenPreview } from "./document-fullscreen-preview";
 import { useTranslations } from "next-intl";
 import type { QuickReply } from "@/types";
@@ -111,6 +111,7 @@ interface ReplyDraft {
   id: string;
   authorLabel: string;
   preview: string;
+  media?: ReplyQuoteMedia | null;
 }
 
 // Mirrors the chat-media bucket's allowed_mime_types (migration 023) for
@@ -1481,6 +1482,7 @@ export function MessageComposer({
           <ReplyQuote
             authorLabel={replyTo.authorLabel}
             preview={replyTo.preview}
+            media={replyTo.media}
             onDismiss={onClearReply}
           />
         </div>
