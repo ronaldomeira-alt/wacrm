@@ -441,6 +441,7 @@
       "recordingTooLong": "Recording is too long (over 16 MB).",
       "discardRecording": "Discard recording",
       "stopRecording": "Stop recording",
+      "send": "Send",
       "sendRecording": "Send voice message",
       "recordingFailed": "Failed to send voice note",
       "retryRecording": "Retry",

@@ -441,6 +441,7 @@
       "recordingTooLong": "녹음이 너무 깁니다 (16MB 초과).",
       "discardRecording": "녹음 삭제",
       "stopRecording": "녹음 중지",
+      "send": "보내기",
       "sendRecording": "음성 메시지 보내기",
       "recordingFailed": "음성 메모 전송 실패",
       "retryRecording": "다시 시도",

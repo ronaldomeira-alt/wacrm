@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
-import { createPortal } from 'react-dom';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { usePresence } from '@/hooks/use-presence';
@@ -940,44 +939,27 @@ export function MessageThread({
   // animation — which reads exactly like "I let go, it kept scrolling,
   // and the moment it stopped it jumped back to the last bubble": the
   // "stop" the user sees IS our own forced write hijacking the coast, not
-  // momentum settling on its own. True stop is detected by silence on the
-  // 'scroll' event, not by touchend, since only 'scroll' events cover the
-  // whole coast.
+  // momentum settling on its own.
+  //
+  // Previously detected via silence on the 'scroll' event (a fixed idle
+  // timer after the last dispatch). REPLACED 2026-09-16, live-tested:
+  // that event is dispatched from the main thread, while
+  // `-webkit-overflow-scrolling: touch` drives the actual visual scroll
+  // from WebKit's compositor thread — a main-thread stall (e.g. decoding/
+  // laying out the very image whose ResizeObserver notification is being
+  // evaluated at that exact moment) can delay 'scroll' dispatch past the
+  // idle threshold even while the compositor is still visibly moving the
+  // list, misreading that gap as "stopped" right when a forced
+  // snap-to-bottom check consults it. Reproduced even after widening the
+  // idle window to 400ms, and widening it also delayed the *legitimate*
+  // composer-follow compensation enough to visibly show the composer
+  // covering the last bubble — net regression, reverted. Now driven by a
+  // separate rAF loop (below) that samples `scrollTop` directly every
+  // frame instead: whenever that callback next runs — however delayed by
+  // a stall — it reads whatever the compositor has *actually* put the
+  // scroll position at by then, not a stale value from before the stall.
   const isScrollInMotionRef = useRef(false);
   const scrollMotionEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const SCROLL_MOTION_IDLE_MS = 180;
-
-  // TEMPORARY on-screen diagnostic overlay for the "scroll snaps back to
-  // the last bubble" investigation. Enabled by appending ?scrolldebug=1 to
-  // the URL — invisible otherwise, zero cost for every normal user. Lets
-  // the reporter (iPhone-only, no Mac/Web Inspector available) screenshot
-  // the exact sequence of events around the failure instead of us
-  // continuing to guess. Remove this whole block (search
-  // SCROLL_DEBUG_BUILD_TAG) once the bug is confirmed fixed.
-  const SCROLL_DEBUG_BUILD_TAG = 'e4e194d+scrolldebug';
-  const scrollDebugEnabled =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('scrolldebug') === '1';
-  const scrollDebugPanelRef = useRef<HTMLPreElement>(null);
-  const scrollDebugLogRef = useRef<string[]>([]);
-  const scrollDebugStartRef = useRef(
-    typeof performance !== 'undefined' ? performance.now() : 0
-  );
-  const logScrollDebug = useCallback(
-    (msg: string) => {
-      if (!scrollDebugEnabled) return;
-      const t = (
-        (typeof performance !== 'undefined' ? performance.now() : 0) -
-        scrollDebugStartRef.current
-      ).toFixed(0);
-      scrollDebugLogRef.current.push(`${t}ms ${msg}`);
-      if (scrollDebugLogRef.current.length > 60) scrollDebugLogRef.current.shift();
-      if (scrollDebugPanelRef.current) {
-        scrollDebugPanelRef.current.textContent = scrollDebugLogRef.current.join('\n');
-      }
-    },
-    [scrollDebugEnabled]
-  );
 
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
@@ -1006,18 +988,16 @@ export function MessageThread({
     }
     if (!isPinnedToBottomRef.current && !force) return;
 
-    logScrollDebug(`scrollToBottom(force=${force}) scrollTop->${el.scrollHeight}`);
     markProgrammaticScroll();
     el.scrollTop = el.scrollHeight;
 
     requestAnimationFrame(() => {
       if (scrollRef.current && (isPinnedToBottomRef.current || force)) {
-        logScrollDebug(`scrollToBottom rAF re-assert scrollTop->${scrollRef.current.scrollHeight}`);
         markProgrammaticScroll();
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }
     });
-  }, [markProgrammaticScroll, logScrollDebug]);
+  }, [markProgrammaticScroll]);
 
   // All messages of the conversation are rendered stably to prevent layout shifts/jumps
   const visibleMessages = messages;
@@ -1038,12 +1018,10 @@ export function MessageThread({
       if (Date.now() - lastContentResizeAtRef.current < CONTENT_SETTLING_GRACE_MS) {
         isPinnedToBottomRef.current = false;
       }
-      logScrollDebug(`touchstart scrollTop=${el.scrollTop} pinned=${isPinnedToBottomRef.current}`);
     };
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
       lastInteractionEndRef.current = Date.now();
-      logScrollDebug(`touchend scrollTop=${el.scrollTop} pinned=${isPinnedToBottomRef.current} inMotion=${isScrollInMotionRef.current}`);
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
@@ -1101,23 +1079,13 @@ export function MessageThread({
     if (!el) return;
 
     const onScroll = () => {
-      // Every 'scroll' event — dragging or coasting — means the list is
-      // still in motion. Only genuine silence on this event means it has
-      // actually stopped; touchend/pointerup does not (see
-      // isScrollInMotionRef's declaration for why).
-      isScrollInMotionRef.current = true;
-      if (scrollMotionEndTimerRef.current) clearTimeout(scrollMotionEndTimerRef.current);
-      scrollMotionEndTimerRef.current = setTimeout(() => {
-        isScrollInMotionRef.current = false;
-        logScrollDebug(`motion-end scrollTop=${el.scrollTop} pinned=${isPinnedToBottomRef.current}`);
-      }, SCROLL_MOTION_IDLE_MS);
-
+      // isScrollInMotionRef itself is now driven by a separate rAF loop
+      // (below) that samples scrollTop directly instead of trusting
+      // 'scroll' event silence — see that effect's doc comment for why.
+      // This handler no longer sets/clears it.
       const currentScrollTop = el.scrollTop;
       const distanceFromBottom =
         el.scrollHeight - currentScrollTop - el.clientHeight;
-      logScrollDebug(
-        `scroll top=${currentScrollTop} dist=${distanceFromBottom} touching=${isUserTouchingRef.current} pinned=${isPinnedToBottomRef.current} programmatic=${isProgrammaticScrollRef.current}`
-      );
 
       // ── INVARIANTE 1, 3 & 7: PREVALÊNCIA ABSOLUTA DO GESTO MANUAL DO USUÁRIO ──
       // Se o usuário está ativamente tocando ou arrastando, o gesto manual sempre
@@ -1169,6 +1137,54 @@ export function MessageThread({
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
+
+  // rAF-driven motion detection for isScrollInMotionRef, replacing an
+  // earlier 'scroll'-event idle timer (see HANDOFF-SCROLL-BUG.md,
+  // 2026-09-16 live capture). The old approach declared "motion stopped"
+  // after SCROLL_MOTION_IDLE_MS of silence on the 'scroll' event — but
+  // that event is dispatched from the main thread, while
+  // `-webkit-overflow-scrolling: touch` drives the actual visual scroll
+  // from WebKit's compositor thread. A main-thread stall (e.g. decoding/
+  // laying out the very image whose ResizeObserver notification is being
+  // evaluated at that exact moment) can delay 'scroll' dispatch past the
+  // idle threshold even while the compositor is still visibly moving the
+  // list — misreading that gap as "stopped" right when a forced
+  // snap-to-bottom check consults it. Live-tested: reproduced even after
+  // widening that threshold to 400ms, and widening it also delayed the
+  // *legitimate* composer-follow compensation enough to visibly show the
+  // composer covering the last bubble — net regression, reverted.
+  // Sampling `scrollTop` directly every animation frame sidesteps the
+  // event-dispatch-timing question entirely: whenever this callback next
+  // gets to run — however delayed by a stall — it reads whatever the
+  // compositor has *actually* put the scroll position at by then, not a
+  // stale value from before the stall. Only real stillness (the sampled
+  // value matching the previous frame's, for a few consecutive frames)
+  // reads as settled.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let lastSampledTop = el.scrollTop;
+    let stableFrames = 0;
+    const STABLE_FRAMES_NEEDED = 3;
+    let rafId = requestAnimationFrame(function sample() {
+      const current = scrollRef.current;
+      if (current) {
+        const top = current.scrollTop;
+        if (Math.abs(top - lastSampledTop) > 0.5) {
+          stableFrames = 0;
+          isScrollInMotionRef.current = true;
+        } else {
+          stableFrames += 1;
+          if (stableFrames >= STABLE_FRAMES_NEEDED) {
+            isScrollInMotionRef.current = false;
+          }
+        }
+        lastSampledTop = top;
+      }
+      rafId = requestAnimationFrame(sample);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [conversationId]);
 
   // Reset flags when switching conversation
   useEffect(() => {
@@ -1293,7 +1309,6 @@ export function MessageThread({
         ) {
           const target = el.scrollHeight - currentClientHeight;
           if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
-            logScrollDebug(`!!! FORCED by iOS clientHeight-compensation loop, heightDelta=${heightDelta.toFixed(1)} scrollTop ${el.scrollTop}->${target}`);
             el.scrollTop = target;
           }
         }
@@ -1311,7 +1326,6 @@ export function MessageThread({
     let contentDebounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
       lastContentResizeAtRef.current = Date.now();
-      logScrollDebug(`contentResize pinned=${isPinnedToBottomRef.current} touching=${isUserTouchingRef.current} inMotion=${isScrollInMotionRef.current}`);
 
       // INVARIANTE 8: Se o usuário estiver navegando/despinado, cancela qualquer agendamento e aborta
       if (!isPinnedToBottomRef.current) {
@@ -1335,7 +1349,6 @@ export function MessageThread({
           isPinnedToBottomRef.current &&
           scrollRef.current
         ) {
-          logScrollDebug(`!!! FORCED by contentResizeObserver debounce, scrollTop->${scrollRef.current.scrollHeight}`);
           markProgrammaticScroll();
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
@@ -3530,37 +3543,6 @@ export function MessageThread({
           mobile/PWA discovery point ContactSidebar (desktop-only,
           lg:block) can never be. Renders nothing without a referral. */}
       <CtwaOrigin referral={conversation.ctwa_referral} />
-
-      {/* TEMPORARY diagnostic overlay — see SCROLL_DEBUG_BUILD_TAG above. */}
-      {scrollDebugEnabled &&
-        typeof document !== 'undefined' &&
-        createPortal(
-          <div
-            style={{
-              position: 'fixed',
-              left: 0,
-              right: 0,
-              bottom: 0,
-              maxHeight: '45vh',
-              overflow: 'auto',
-              background: 'rgba(0,0,0,0.9)',
-              color: '#7CFC00',
-              fontSize: 9,
-              lineHeight: 1.3,
-              fontFamily: 'monospace',
-              padding: '6px 8px',
-              zIndex: 999999,
-              pointerEvents: 'none',
-              whiteSpace: 'pre-wrap',
-            }}
-          >
-            <div style={{ color: '#fff', marginBottom: 4 }}>
-              build: {SCROLL_DEBUG_BUILD_TAG}
-            </div>
-            <pre ref={scrollDebugPanelRef} style={{ margin: 0 }} />
-          </div>,
-          document.body
-        )}
 
       {/* Messages Area. The outer wrapper (messagesAreaRef) is the
           confinement target for the pre-send PDF preview — see

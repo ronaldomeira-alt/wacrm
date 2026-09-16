@@ -441,6 +441,7 @@
       "recordingTooLong": "Gravação muito longa (acima de 16 MB).",
       "discardRecording": "Excluir gravação",
       "stopRecording": "Parar gravação",
+      "send": "Enviar",
       "sendRecording": "Enviar áudio",
       "recordingFailed": "Falha ao enviar áudio",
       "retryRecording": "Tentar novamente",
