@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { usePresence } from '@/hooks/use-presence';
@@ -946,6 +947,38 @@ export function MessageThread({
   const scrollMotionEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const SCROLL_MOTION_IDLE_MS = 180;
 
+  // TEMPORARY on-screen diagnostic overlay for the "scroll snaps back to
+  // the last bubble" investigation. Enabled by appending ?scrolldebug=1 to
+  // the URL — invisible otherwise, zero cost for every normal user. Lets
+  // the reporter (iPhone-only, no Mac/Web Inspector available) screenshot
+  // the exact sequence of events around the failure instead of us
+  // continuing to guess. Remove this whole block (search
+  // SCROLL_DEBUG_BUILD_TAG) once the bug is confirmed fixed.
+  const SCROLL_DEBUG_BUILD_TAG = 'e4e194d+scrolldebug';
+  const scrollDebugEnabled =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('scrolldebug') === '1';
+  const scrollDebugPanelRef = useRef<HTMLPreElement>(null);
+  const scrollDebugLogRef = useRef<string[]>([]);
+  const scrollDebugStartRef = useRef(
+    typeof performance !== 'undefined' ? performance.now() : 0
+  );
+  const logScrollDebug = useCallback(
+    (msg: string) => {
+      if (!scrollDebugEnabled) return;
+      const t = (
+        (typeof performance !== 'undefined' ? performance.now() : 0) -
+        scrollDebugStartRef.current
+      ).toFixed(0);
+      scrollDebugLogRef.current.push(`${t}ms ${msg}`);
+      if (scrollDebugLogRef.current.length > 60) scrollDebugLogRef.current.shift();
+      if (scrollDebugPanelRef.current) {
+        scrollDebugPanelRef.current.textContent = scrollDebugLogRef.current.join('\n');
+      }
+    },
+    [scrollDebugEnabled]
+  );
+
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
     if (programmaticTimerRef.current) {
@@ -973,16 +1006,18 @@ export function MessageThread({
     }
     if (!isPinnedToBottomRef.current && !force) return;
 
+    logScrollDebug(`scrollToBottom(force=${force}) scrollTop->${el.scrollHeight}`);
     markProgrammaticScroll();
     el.scrollTop = el.scrollHeight;
 
     requestAnimationFrame(() => {
       if (scrollRef.current && (isPinnedToBottomRef.current || force)) {
+        logScrollDebug(`scrollToBottom rAF re-assert scrollTop->${scrollRef.current.scrollHeight}`);
         markProgrammaticScroll();
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }
     });
-  }, [markProgrammaticScroll]);
+  }, [markProgrammaticScroll, logScrollDebug]);
 
   // All messages of the conversation are rendered stably to prevent layout shifts/jumps
   const visibleMessages = messages;
@@ -1003,10 +1038,12 @@ export function MessageThread({
       if (Date.now() - lastContentResizeAtRef.current < CONTENT_SETTLING_GRACE_MS) {
         isPinnedToBottomRef.current = false;
       }
+      logScrollDebug(`touchstart scrollTop=${el.scrollTop} pinned=${isPinnedToBottomRef.current}`);
     };
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
       lastInteractionEndRef.current = Date.now();
+      logScrollDebug(`touchend scrollTop=${el.scrollTop} pinned=${isPinnedToBottomRef.current} inMotion=${isScrollInMotionRef.current}`);
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
@@ -1072,11 +1109,15 @@ export function MessageThread({
       if (scrollMotionEndTimerRef.current) clearTimeout(scrollMotionEndTimerRef.current);
       scrollMotionEndTimerRef.current = setTimeout(() => {
         isScrollInMotionRef.current = false;
+        logScrollDebug(`motion-end scrollTop=${el.scrollTop} pinned=${isPinnedToBottomRef.current}`);
       }, SCROLL_MOTION_IDLE_MS);
 
       const currentScrollTop = el.scrollTop;
       const distanceFromBottom =
         el.scrollHeight - currentScrollTop - el.clientHeight;
+      logScrollDebug(
+        `scroll top=${currentScrollTop} dist=${distanceFromBottom} touching=${isUserTouchingRef.current} pinned=${isPinnedToBottomRef.current} programmatic=${isProgrammaticScrollRef.current}`
+      );
 
       // ── INVARIANTE 1, 3 & 7: PREVALÊNCIA ABSOLUTA DO GESTO MANUAL DO USUÁRIO ──
       // Se o usuário está ativamente tocando ou arrastando, o gesto manual sempre
@@ -1252,6 +1293,7 @@ export function MessageThread({
         ) {
           const target = el.scrollHeight - currentClientHeight;
           if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
+            logScrollDebug(`!!! FORCED by iOS clientHeight-compensation loop, heightDelta=${heightDelta.toFixed(1)} scrollTop ${el.scrollTop}->${target}`);
             el.scrollTop = target;
           }
         }
@@ -1269,6 +1311,7 @@ export function MessageThread({
     let contentDebounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
       lastContentResizeAtRef.current = Date.now();
+      logScrollDebug(`contentResize pinned=${isPinnedToBottomRef.current} touching=${isUserTouchingRef.current} inMotion=${isScrollInMotionRef.current}`);
 
       // INVARIANTE 8: Se o usuário estiver navegando/despinado, cancela qualquer agendamento e aborta
       if (!isPinnedToBottomRef.current) {
@@ -1292,6 +1335,7 @@ export function MessageThread({
           isPinnedToBottomRef.current &&
           scrollRef.current
         ) {
+          logScrollDebug(`!!! FORCED by contentResizeObserver debounce, scrollTop->${scrollRef.current.scrollHeight}`);
           markProgrammaticScroll();
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
@@ -3486,6 +3530,37 @@ export function MessageThread({
           mobile/PWA discovery point ContactSidebar (desktop-only,
           lg:block) can never be. Renders nothing without a referral. */}
       <CtwaOrigin referral={conversation.ctwa_referral} />
+
+      {/* TEMPORARY diagnostic overlay — see SCROLL_DEBUG_BUILD_TAG above. */}
+      {scrollDebugEnabled &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              maxHeight: '45vh',
+              overflow: 'auto',
+              background: 'rgba(0,0,0,0.9)',
+              color: '#7CFC00',
+              fontSize: 9,
+              lineHeight: 1.3,
+              fontFamily: 'monospace',
+              padding: '6px 8px',
+              zIndex: 999999,
+              pointerEvents: 'none',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            <div style={{ color: '#fff', marginBottom: 4 }}>
+              build: {SCROLL_DEBUG_BUILD_TAG}
+            </div>
+            <pre ref={scrollDebugPanelRef} style={{ margin: 0 }} />
+          </div>,
+          document.body
+        )}
 
       {/* Messages Area. The outer wrapper (messagesAreaRef) is the
           confinement target for the pre-send PDF preview — see
