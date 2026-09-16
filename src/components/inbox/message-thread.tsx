@@ -977,6 +977,30 @@ export function MessageThread({
     const el = scrollRef.current;
     if (!el) return;
 
+    // Decide the pin/unpin state synchronously from the live DOM position
+    // right when a gesture ends, instead of waiting for a 'scroll' event to
+    // report it. On iOS WKWebView the 'scroll' event that reflects a
+    // gesture's final rest position can be dispatched slightly *after*
+    // touchend/pointerup fire — by then isUserTouchingRef is already false,
+    // so that late event lands in the non-touching branch of onScroll
+    // instead of the touching one, and can get misread as a stale
+    // programmatic scroll (still inside its 120ms window from an earlier
+    // scrollToBottom call) and re-pinned. That read exactly as: scroll all
+    // the way, release, and — as soon as it settles — it jumps back to the
+    // last bubble, regardless of where it stopped. Reading the real
+    // scrollTop here, at the moment the gesture ends, sidesteps that
+    // event-ordering race entirely.
+    const settlePinFromLivePosition = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      isProgrammaticScrollRef.current = false;
+      if (programmaticTimerRef.current) {
+        clearTimeout(programmaticTimerRef.current);
+        programmaticTimerRef.current = null;
+      }
+      isPinnedToBottomRef.current = distanceFromBottom <= 2;
+      lastScrollTopRef.current = el.scrollTop;
+    };
+
     const onTouchStart = () => {
       isUserTouchingRef.current = true;
       lastScrollTopRef.current = el.scrollTop;
@@ -987,6 +1011,7 @@ export function MessageThread({
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
       lastInteractionEndRef.current = Date.now();
+      settlePinFromLivePosition();
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
@@ -1000,6 +1025,7 @@ export function MessageThread({
     const onPointerUp = () => {
       isUserTouchingRef.current = false;
       lastInteractionEndRef.current = Date.now();
+      settlePinFromLivePosition();
     };
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = () => {
@@ -1009,6 +1035,7 @@ export function MessageThread({
       wheelTimer = setTimeout(() => {
         isUserTouchingRef.current = false;
         lastInteractionEndRef.current = Date.now();
+        settlePinFromLivePosition();
       }, 150);
     };
 
