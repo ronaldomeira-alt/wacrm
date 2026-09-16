@@ -3442,7 +3442,17 @@ export function MessageThread({
           // whenever the thread is even briefly busy (a message re-render,
           // a ResizeObserver callback, a new realtime message landing).
           // No-op on every other browser (unknown vendor property).
-          className="h-full overflow-y-auto [overflow-anchor:none] [-webkit-overflow-scrolling:touch] px-4 py-4"
+          //
+          // overscroll-behavior-y: contain — that same momentum engine
+          // also turns on WebKit's native elastic bounce at the scroll
+          // boundaries. Pinned to the last bubble (already at the bottom
+          // edge) is exactly where a light pull sits inside that bounce
+          // region: WebKit stretches and springs it back on its own,
+          // outside our pin/unpin logic entirely — read as the thread
+          // flickering and snapping back to the last message. `contain`
+          // stops that local rubber-band while leaving momentum scrolling
+          // for real drags untouched.
+          className="h-full overflow-y-auto [overflow-anchor:none] [-webkit-overflow-scrolling:touch] [overscroll-behavior-y:contain] px-4 py-4"
           onPointerDown={() => {
             if (
               document.activeElement instanceof HTMLElement &&
