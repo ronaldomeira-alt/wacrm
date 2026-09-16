@@ -966,6 +966,7 @@ export function MessageThread({
 
     const onTouchStart = () => {
       isUserTouchingRef.current = true;
+      lastScrollTopRef.current = el.scrollTop;
     };
     const onTouchEnd = () => {
       isUserTouchingRef.current = false;
@@ -974,6 +975,7 @@ export function MessageThread({
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen') {
         isUserTouchingRef.current = true;
+        lastScrollTopRef.current = el.scrollTop;
       }
     };
     const onPointerUp = () => {
@@ -983,6 +985,7 @@ export function MessageThread({
     let wheelTimer: ReturnType<typeof setTimeout> | null = null;
     const onWheel = () => {
       isUserTouchingRef.current = true;
+      lastScrollTopRef.current = el.scrollTop;
       if (wheelTimer) clearTimeout(wheelTimer);
       wheelTimer = setTimeout(() => {
         isUserTouchingRef.current = false;
@@ -1011,41 +1014,58 @@ export function MessageThread({
   }, []);
 
   // Track whether user scrolled up to read history vs stayed at bottom.
-  // Immediately unpins on any manual upward movement without waiting for an arbitrary 160px threshold.
+  // Implements strict hysteresis: once unpinned, NEVER passively re-pins.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const AT_BOTTOM_TOLERANCE_PX = 24;
 
     const onScroll = () => {
-      // If triggered by programmatic pin, keep pinned state
-      if (isProgrammaticScrollRef.current) {
-        isPinnedToBottomRef.current = true;
-        lastScrollTopRef.current = el.scrollTop;
-        return;
-      }
-
       const currentScrollTop = el.scrollTop;
       const distanceFromBottom =
         el.scrollHeight - currentScrollTop - el.clientHeight;
 
-      // When the user is manually touching or dragging:
-      // Any upward movement (scrollTop moving towards 0 / older messages) or
-      // moving outside the bottom tolerance immediately unpins the thread.
+      // ── INVARIANTE 1, 3 & 7: PREVALÊNCIA ABSOLUTA DO GESTO MANUAL DO USUÁRIO ──
+      // Se o usuário está ativamente tocando ou arrastando, o gesto manual sempre
+      // vence qualquer lock programático residual (inclusive o primeiro gesto após abrir a conversa).
       if (isUserTouchingRef.current) {
         if (
           currentScrollTop < lastScrollTopRef.current ||
-          distanceFromBottom > AT_BOTTOM_TOLERANCE_PX
+          distanceFromBottom > 8
         ) {
+          // Despina imediatamente e cancela qualquer bloqueio programático
           isPinnedToBottomRef.current = false;
-        } else if (distanceFromBottom <= AT_BOTTOM_TOLERANCE_PX) {
-          // Re-pin only when user manually scrolls all the way back down to bottom
+          isProgrammaticScrollRef.current = false;
+        } else if (
+          currentScrollTop > lastScrollTopRef.current &&
+          distanceFromBottom <= 2
+        ) {
+          // Rearme MANUAL legítimo: o usuário arrastou ativamente para baixo e encostou no fundo real
           isPinnedToBottomRef.current = true;
         }
+
+        lastScrollTopRef.current = currentScrollTop;
+        return;
+      }
+
+      // ── SE NÃO HÁ TOQUE MANUAL ATIVO: ──
+
+      // Rolagem programática legítima autorizada (ex: scrollToBottom forçado, envio de mensagem)
+      if (isProgrammaticScrollRef.current) {
+        isPinnedToBottomRef.current = true;
+        lastScrollTopRef.current = currentScrollTop;
+        return;
+      }
+
+      // ── INVARIANTE 2 & 5: HISTERESE ESTRITA (NENHUM REARME PASSIVO) ──
+      // Durante momentum do Safari iOS, repouso, inércia ou redimensionamento:
+      // - Se já estava despinado, PERMANECE despinado. Proximidade passiva não é intenção.
+      // - Se estava pinned, só desmarca se o scroll natural se afastou do fundo.
+      if (!isPinnedToBottomRef.current) {
+        // Mantém despinado com trava de saída. Não religa o pin.
       } else {
-        // Natural momentum or passive scroll:
-        // Only consider pinned if landed within the physical bottom tolerance
-        isPinnedToBottomRef.current = distanceFromBottom <= AT_BOTTOM_TOLERANCE_PX;
+        if (distanceFromBottom > 24) {
+          isPinnedToBottomRef.current = false;
+        }
       }
 
       lastScrollTopRef.current = currentScrollTop;
@@ -1069,9 +1089,13 @@ export function MessageThread({
     if (isInitialLoadRef.current) {
       scrollToBottom(true);
       const r1 = requestAnimationFrame(() => {
-        scrollToBottom(true);
-        const r2 = requestAnimationFrame(() => {
+        if (!isUserTouchingRef.current && isPinnedToBottomRef.current) {
           scrollToBottom(true);
+        }
+        const r2 = requestAnimationFrame(() => {
+          if (!isUserTouchingRef.current && isPinnedToBottomRef.current) {
+            scrollToBottom(true);
+          }
           isInitialLoadRef.current = false;
         });
         return () => cancelAnimationFrame(r2);
@@ -1188,8 +1212,17 @@ export function MessageThread({
 
     let contentDebounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
+      // INVARIANTE 8: Se o usuário estiver navegando/despinado, cancela qualquer agendamento e aborta
+      if (!isPinnedToBottomRef.current) {
+        if (contentDebounceId !== null) {
+          clearTimeout(contentDebounceId);
+          contentDebounceId = null;
+        }
+        return;
+      }
+
       const withinGrace = Date.now() - lastInteractionEndRef.current < 250;
-      if (isUserTouchingRef.current || withinGrace || !isPinnedToBottomRef.current) return;
+      if (isUserTouchingRef.current || withinGrace) return;
       if (contentDebounceId !== null) clearTimeout(contentDebounceId);
       contentDebounceId = setTimeout(() => {
         contentDebounceId = null;
