@@ -915,6 +915,8 @@ export function MessageThread({
   const programmaticTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track initial conversation load to ensure we land at the bottom once rendered
   const isInitialLoadRef = useRef(true);
+  // Track last measured scrollTop to detect manual upward drag in real-time
+  const lastScrollTopRef = useRef(0);
 
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
@@ -1008,22 +1010,45 @@ export function MessageThread({
     };
   }, []);
 
-  // Track whether user scrolled up to read history vs stayed at bottom
+  // Track whether user scrolled up to read history vs stayed at bottom.
+  // Immediately unpins on any manual upward movement without waiting for an arbitrary 160px threshold.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const NEAR_BOTTOM_PX = 160;
+    const AT_BOTTOM_TOLERANCE_PX = 24;
 
     const onScroll = () => {
       // If triggered by programmatic pin, keep pinned state
       if (isProgrammaticScrollRef.current) {
         isPinnedToBottomRef.current = true;
+        lastScrollTopRef.current = el.scrollTop;
         return;
       }
 
+      const currentScrollTop = el.scrollTop;
       const distanceFromBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight;
-      isPinnedToBottomRef.current = distanceFromBottom < NEAR_BOTTOM_PX;
+        el.scrollHeight - currentScrollTop - el.clientHeight;
+
+      // When the user is manually touching or dragging:
+      // Any upward movement (scrollTop moving towards 0 / older messages) or
+      // moving outside the bottom tolerance immediately unpins the thread.
+      if (isUserTouchingRef.current) {
+        if (
+          currentScrollTop < lastScrollTopRef.current ||
+          distanceFromBottom > AT_BOTTOM_TOLERANCE_PX
+        ) {
+          isPinnedToBottomRef.current = false;
+        } else if (distanceFromBottom <= AT_BOTTOM_TOLERANCE_PX) {
+          // Re-pin only when user manually scrolls all the way back down to bottom
+          isPinnedToBottomRef.current = true;
+        }
+      } else {
+        // Natural momentum or passive scroll:
+        // Only consider pinned if landed within the physical bottom tolerance
+        isPinnedToBottomRef.current = distanceFromBottom <= AT_BOTTOM_TOLERANCE_PX;
+      }
+
+      lastScrollTopRef.current = currentScrollTop;
     };
 
     el.addEventListener('scroll', onScroll, { passive: true });
@@ -1034,6 +1059,7 @@ export function MessageThread({
   useEffect(() => {
     isPinnedToBottomRef.current = true;
     isInitialLoadRef.current = true;
+    lastScrollTopRef.current = 0;
   }, [conversationId]);
 
   // Initial load auto-positioning:
@@ -1111,55 +1137,43 @@ export function MessageThread({
   //   even a single stale read is fully caught up by the very next
   //   frame (8-16ms later) with nothing left over to visibly settle.
   useEffect(() => {
-    // iOS WKWebView-only compensation loop (see the comment block above) —
-    // it exists solely to counter Safari's ResizeObserver notification
-    // coalescing during the composer's CSS height transition. Chrome/desktop
-    // don't have that coalescing bug (ResizeObserver already fires every
-    // frame there), so running this unconditionally fought normal mouse-
-    // wheel scrolling: a single wheel tick usually moves less than
-    // NEAR_BOTTOM_PX, so isPinnedToBottomRef stayed true, and as soon as the
-    // 150ms wheel-touch window lapsed (common between ticks) this 60fps loop
-    // snapped scrollTop straight back to the bottom before the user's scroll
-    // ever became visible — reading as the thread being frozen/stuck at the
-    // bottom in Chrome. Gating to iOS keeps the original fix intact there
-    // while restoring normal scroll on desktop, where the ResizeObserver-
-    // based effect below already handles pin-to-bottom correctly.
+    // iOS WKWebView-only compensation loop —
+    // It exists solely to counter Safari's ResizeObserver notification
+    // coalescing during the composer's CSS height transition.
+    // Strictly conditioned to actual clientHeight changes (composer resizing).
+    // If clientHeight is stable, this loop NEVER touches scrollTop!
     if (!isIOSDevice) return;
 
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
 
-    // 250ms grace window after the finger/wheel lifts, before this loop is
-    // allowed to resume forcing scrollTop back to bottom. Without it,
-    // `isUserTouchingRef` going false the instant touchend fires let this
-    // loop snap the view back on the very next frame — cancelling iOS's own
-    // post-lift momentum/kinetic scroll before it ever became visible,
-    // which read as the thread being permanently frozen on the last
-    // message (unable to scroll up at all) in the iPhone PWA.
+    let lastClientHeight = scrollEl.clientHeight;
     const TOUCH_END_GRACE_MS = 250;
-    // Sub-pixel tolerance — Retina devicePixelRatio scaling means a
-    // browser-settled scrollTop frequently never exactly equals the
-    // computed integer target, which made the strict `!==` check below
-    // "correct" (and re-arm markProgrammaticScroll) on literally every
-    // frame forever, independent of any real drift.
     const SCROLL_EPSILON_PX = 1;
 
     let rafId = requestAnimationFrame(function tick() {
       const el = scrollRef.current;
-      const withinGrace = Date.now() - lastInteractionEndRef.current < TOUCH_END_GRACE_MS;
-      if (el && !isUserTouchingRef.current && !withinGrace && isPinnedToBottomRef.current) {
-        const target = el.scrollHeight - el.clientHeight;
-        if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
-          // Deliberately NOT markProgrammaticScroll() here: writing
-          // scrollTop to exactly `target` (the bottom) already makes the
-          // natural distanceFromBottom recalculation in the onScroll
-          // listener below conclude isPinnedToBottomRef=true on its own —
-          // forcing it added nothing but a ~120ms window where any real,
-          // concurrent user scroll event got misread as "still pinned"
-          // regardless of actual position. That reinforcing loop between
-          // this correction and isPinnedToBottomRef is the other half of
-          // the "stuck" bug: once pinned, it could never let go.
-          el.scrollTop = target;
+      if (el) {
+        const currentClientHeight = el.clientHeight;
+        const heightDelta = currentClientHeight - lastClientHeight;
+        lastClientHeight = currentClientHeight;
+
+        const withinGrace = Date.now() - lastInteractionEndRef.current < TOUCH_END_GRACE_MS;
+
+        // CRITICAL: Only compensate when clientHeight has actually changed (active layout transition,
+        // e.g. composer expanding/shrinking between 1-4 lines), AND the user is not touching,
+        // AND the user is legitimately pinned to bottom.
+        // If clientHeight is stable, this loop NEVER mutates scrollTop!
+        if (
+          Math.abs(heightDelta) > 0.5 &&
+          !isUserTouchingRef.current &&
+          !withinGrace &&
+          isPinnedToBottomRef.current
+        ) {
+          const target = el.scrollHeight - currentClientHeight;
+          if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
+            el.scrollTop = target;
+          }
         }
       }
       rafId = requestAnimationFrame(tick);
@@ -1174,11 +1188,18 @@ export function MessageThread({
 
     let contentDebounceId: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver(() => {
-      if (isUserTouchingRef.current || !isPinnedToBottomRef.current) return;
+      const withinGrace = Date.now() - lastInteractionEndRef.current < 250;
+      if (isUserTouchingRef.current || withinGrace || !isPinnedToBottomRef.current) return;
       if (contentDebounceId !== null) clearTimeout(contentDebounceId);
       contentDebounceId = setTimeout(() => {
         contentDebounceId = null;
-        if (!isUserTouchingRef.current && isPinnedToBottomRef.current && scrollRef.current) {
+        const withinGraceDebounced = Date.now() - lastInteractionEndRef.current < 250;
+        if (
+          !isUserTouchingRef.current &&
+          !withinGraceDebounced &&
+          isPinnedToBottomRef.current &&
+          scrollRef.current
+        ) {
           markProgrammaticScroll();
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
