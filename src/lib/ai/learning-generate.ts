@@ -25,10 +25,6 @@ import {
 } from './property-identity'
 import type { ChatMessage, AiConfig } from './types'
 
-/** Conversations considered for scanning, biased toward the most
- *  recently active ones — relevance over completeness for a
- *  periodic background job. */
-const MAX_CONVERSATIONS_SCANNED = 500
 /** Prompt stays bounded regardless of how big the KB/pending queue gets. */
 const MAX_KNOWN_TITLES = 100
 const TITLE_MAX_LENGTH = 200
@@ -61,23 +57,16 @@ export async function generateLearningSuggestions(
     (configRow?.learning_last_scanned_at as string | null) ??
     new Date(Date.now() - LEARNING_INITIAL_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
 
-  const { data: convRows, error: convError } = await db
-    .from('conversations')
-    .select('id')
-    .eq('account_id', accountId)
-    .order('last_message_at', { ascending: false })
-    .limit(MAX_CONVERSATIONS_SCANNED)
-  if (convError) {
-    console.error('[learning generate] failed to load conversations:', convError)
-    return { created: 0, touched: 0 }
-  }
-  const conversationIds = (convRows ?? []).map((c) => c.id as string)
-  if (conversationIds.length === 0) return { created: 0, touched: 0 }
-
+  // Scoped to the account via an inner join on conversations rather than
+  // prefetching conversation ids into an `.in()` list: with hundreds of
+  // conversations, that list alone pushed the request URL past PostgREST's
+  // ~16KB header limit (HeadersOverflowError), silently breaking this scan.
   const { data: msgRows, error: msgError } = await db
     .from('messages')
-    .select('conversation_id, sender_type, content_type, content_text, transcript_text, created_at')
-    .in('conversation_id', conversationIds)
+    .select(
+      'conversation_id, sender_type, content_type, content_text, transcript_text, created_at, conversations!inner(account_id)',
+    )
+    .eq('conversations.account_id', accountId)
     .in('content_type', ['text', 'audio'])
     .gt('created_at', since)
     .order('created_at', { ascending: true })

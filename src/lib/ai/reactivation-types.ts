@@ -42,7 +42,6 @@ export interface ReactivationCandidate {
   property?: {
     id: string
     name: string
-    stage?: string | null
   } | null
 }
 

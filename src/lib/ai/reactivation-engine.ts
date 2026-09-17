@@ -148,7 +148,7 @@ export async function findReactivationCandidates(
       ai_transfer_status,
       status,
       contact:contacts(id, name, phone),
-      property:properties(id, name, stage)
+      property:properties(id, name)
     `)
     .eq('account_id', accountId)
     .neq('status', 'closed')
@@ -177,7 +177,7 @@ interface CandidateQueryRow {
   ai_reactivation_count: number | null
   ai_transfer_status: string | null
   contact: { id: string; name: string | null; phone: string | null } | null
-  property?: { id: string; name: string; stage?: string | null } | null
+  property?: { id: string; name: string } | null
 }
 
   const results: ReactivationCandidate[] = []
@@ -270,7 +270,7 @@ export async function evaluateAndExecuteReactivation(
       ai_transfer_status,
       status,
       contact:contacts(id, name, phone),
-      property:properties(id, name, stage)
+      property:properties(id, name)
     `)
     .eq('id', conversationId)
     .maybeSingle()
@@ -294,7 +294,7 @@ interface ConversationLookupRow {
   last_message_at: string
   status: string
   contact?: { id: string; name: string | null; phone: string | null } | null
-  property?: { id: string; name: string; stage?: string | null } | null
+  property?: { id: string; name: string } | null
 }
 
   const conv = convData as unknown as ConversationLookupRow
@@ -421,13 +421,11 @@ interface ConversationLookupRow {
   const messages = await buildConversationContext(db, conversationId, 10)
   const contactName = conv.contact?.name ?? null
   const propertyName = conv.property?.name ?? null
-  const propertyStage = conv.property?.stage ?? null
 
   const systemPrompt = buildReactivationSystemPrompt({ identityName: config.identityName })
   const userPrompt = buildReactivationUserPrompt({
     contactName,
     propertyName,
-    propertyStage,
     identityName: config.identityName,
     messages,
   })
