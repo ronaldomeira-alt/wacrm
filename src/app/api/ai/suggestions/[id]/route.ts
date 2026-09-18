@@ -6,6 +6,8 @@ import { AI_SUGGESTION_STATUSES } from '@/lib/ai-suggestion-status'
 import { loadAiConfig, loadEmbeddingsKey } from '@/lib/ai/config'
 import { ingestDocument, replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge'
 import { applyPropertySubjectiveLearning } from '@/lib/ai/property-learning-apply'
+import { resolvePropertyIdentity } from '@/lib/ai/property-identity'
+import { saveMemory, setMemoryStatus, inferScopeFromKnowledgeType, type MemoryKnowledgeType } from '@/lib/ai/memory'
 import type { AiSuggestionStatus } from '@/types'
 
 function bad(message: string, status = 400) {
@@ -30,6 +32,13 @@ interface LearningPayload {
   previous_never_rules?: unknown
   previous_team_presentation?: unknown
   knowledge_document_id?: unknown
+  scope?: unknown
+  ad_id?: unknown
+  conversation_id?: unknown
+  contact_id?: unknown
+  agent_id?: unknown
+  origin_includes_audio?: unknown
+  applied_memory_id?: unknown
   [key: string]: unknown
 }
 
@@ -129,6 +138,12 @@ export async function PATCH(
             updated_at: new Date().toISOString(),
           })
           .eq('account_id', accountId)
+      } else if (typeof appliedTarget === 'string' && appliedTarget.startsWith('memory:') && payload.applied_memory_id) {
+        try {
+          await setMemoryStatus(supabase, accountId, payload.applied_memory_id as string, 'archived')
+        } catch (err) {
+          console.error('[ai/suggestions PATCH] scoped memory revert error:', err)
+        }
       } else if (appliedTarget === 'global_knowledge' && payload.knowledge_document_id) {
         await supabase
           .from('ai_knowledge_chunks')
@@ -315,8 +330,78 @@ export async function PATCH(
           ...payload,
           applied_target: 'process_note',
         }
+      } else if (inferScopeFromKnowledgeType(learningType) !== null) {
+        // ============================================================
+        // SCOPED MEMORY (GLOBAL style/business/company/sales beyond
+        // never_rule, PROPERTY beyond property_subjective, AD,
+        // CONVERSATION) — routed to ai_memories, never to
+        // team_presentation or an un-scoped ai_knowledge_documents row.
+        // APPROVED ≠ APPLIED: if the scope's required target can't be
+        // resolved with confidence, this fails the approval outright
+        // (400) instead of marking it approved with nothing behind it.
+        // ============================================================
+        const scope = inferScopeFromKnowledgeType(learningType)!
+        const propertyName = typeof payload.property_name === 'string' ? payload.property_name : null
+        let propertyId = typeof payload.property_id === 'string' ? payload.property_id : null
+        const adId = typeof payload.ad_id === 'string' ? payload.ad_id : null
+        const conversationId = typeof payload.conversation_id === 'string' ? payload.conversation_id : null
+        const contactId = typeof payload.contact_id === 'string' ? payload.contact_id : null
+        const agentId = typeof payload.agent_id === 'string' ? payload.agent_id : null
+
+        if (scope === 'property' && !propertyId && propertyName) {
+          const resolution = await resolvePropertyIdentity(supabase, accountId, propertyName)
+          if (resolution.kind === 'safe_match') propertyId = resolution.propertyId
+        }
+
+        if (scope === 'property' && !propertyId) {
+          return bad(
+            'Não foi possível identificar com segurança a qual empreendimento este aprendizado se refere. Edite o aprendizado com o nome exato do empreendimento antes de aprovar.',
+          )
+        }
+        if (scope === 'ad' && !adId) {
+          return bad('Este aprendizado não está associado a um anúncio (ad_id) válido — não é possível aprovar.')
+        }
+        if (scope === 'conversation' && !conversationId) {
+          return bad('Este aprendizado não está associado a uma conversa válida — não é possível aprovar.')
+        }
+
+        try {
+          const memory = await saveMemory(supabase, {
+            accountId,
+            scope,
+            knowledgeType: learningType as MemoryKnowledgeType,
+            title: existing.title,
+            content: info,
+            propertyId,
+            adId,
+            conversationId,
+            contactId,
+            agentId,
+            // Audio provenance is tracked as the primary source_type when
+            // this batch drew on a transcribed voice note — full
+            // traceability (which suggestion, whether audio-derived)
+            // still lives in metadata regardless.
+            sourceType: payload.origin_includes_audio ? 'audio_transcript' : 'suggestion_approved',
+            confidence: (typeof payload.confidence === 'string' ? payload.confidence : 'medium') as
+              | 'low'
+              | 'medium'
+              | 'high',
+            occurrenceCount: typeof payload.occurrence_count === 'number' ? payload.occurrence_count : 1,
+            metadata: { suggestion_id: id, learning_origin: 'suggestion_approved' },
+          })
+
+          payload = {
+            ...payload,
+            applied_target: `memory:${scope}`,
+            applied_memory_id: memory.id,
+            property_id: propertyId,
+          }
+        } catch (err) {
+          console.error('[ai/suggestions PATCH] scoped memory save error:', err)
+          return bad('Failed to save this learning as a scoped memory', 500)
+        }
       } else {
-        // Default / global_knowledge
+        // Default / global_knowledge (legacy, pre-scoped-memory type)
         const contextSummary = typeof payload.context_summary === 'string' ? payload.context_summary : null
         const application = typeof payload.application === 'string' ? payload.application : null
         const content = [

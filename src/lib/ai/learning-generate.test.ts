@@ -43,10 +43,52 @@ const CONFIG = {
   embeddingsApiKey: null,
 };
 
+const RONALDO_ID = 'agent-ronaldo';
+const TATIANNA_ID = 'agent-tatianna';
+const DEFAULT_PROFILES = [
+  { user_id: RONALDO_ID, full_name: 'Ronaldo Meira' },
+  { user_id: TATIANNA_ID, full_name: 'Thatianna Oliveira' },
+];
+
+interface FixtureMessage {
+  id?: string;
+  conversation_id: string;
+  sender_type: 'customer' | 'agent' | 'bot';
+  sender_id?: string | null;
+  content_type?: 'text' | 'audio';
+  content_text?: string | null;
+  transcript_text?: string | null;
+  created_at: string;
+  property_id?: string | null;
+  property_name?: string | null;
+  ad_source_id?: string | null;
+  contact_id?: string | null;
+}
+
+function withDefaults(m: FixtureMessage, i: number) {
+  return {
+    id: m.id ?? `msg-${i}`,
+    conversation_id: m.conversation_id,
+    sender_type: m.sender_type,
+    sender_id: m.sender_id ?? null,
+    content_type: m.content_type ?? 'text',
+    content_text: m.content_text ?? null,
+    transcript_text: m.transcript_text ?? null,
+    created_at: m.created_at,
+    conversations: {
+      account_id: 'account-1',
+      property_id: m.property_id ?? null,
+      contact_id: m.contact_id ?? null,
+      ctwa_referral: m.ad_source_id ? { source_id: m.ad_source_id } : null,
+      properties: m.property_name ? { name: m.property_name } : null,
+    },
+  };
+}
+
 interface DbOpts {
   learningLastScannedAt?: string | null;
-  conversationIds?: string[];
-  messages?: { sender_type: 'customer' | 'agent' | 'bot'; content_text: string | null; created_at: string }[];
+  messages?: FixtureMessage[];
+  profiles?: { user_id: string; full_name: string }[];
   knownDocTitles?: string[];
   pendingLearnings?: { id: string; title: string; payload: Record<string, unknown> }[];
   ownerUserId?: string | null;
@@ -84,6 +126,7 @@ function thenable<T>(data: T) {
 function fakeDb(opts: DbOpts) {
   const inserted: Record<string, unknown>[] = [];
   const updated: { table: string; patch: Record<string, unknown> }[] = [];
+  const messageRows = (opts.messages ?? []).map(withDefaults);
 
   const from = (table: string) => {
     if (table === 'ai_configs') {
@@ -95,11 +138,11 @@ function fakeDb(opts: DbOpts) {
         },
       };
     }
-    if (table === 'conversations') {
-      return { select: () => thenable((opts.conversationIds ?? []).map((id) => ({ id }))) };
-    }
     if (table === 'messages') {
-      return { select: () => thenable(opts.messages ?? []) };
+      return { select: () => thenable(messageRows) };
+    }
+    if (table === 'profiles') {
+      return { select: () => thenable(opts.profiles ?? DEFAULT_PROFILES) };
     }
     if (table === 'ai_knowledge_documents') {
       return { select: () => thenable((opts.knownDocTitles ?? []).map((title) => ({ title }))) };
@@ -141,9 +184,20 @@ beforeEach(() => {
   mocks.recordPropertyLearningEvidence.mockReset().mockResolvedValue(undefined);
 });
 
-const BASE_MESSAGES = [
-  { sender_type: 'customer' as const, content_text: 'Vocês aceitam 20% de entrada?', created_at: '2026-01-01T10:00:00Z' },
-  { sender_type: 'agent' as const, content_text: 'Sim, aceitamos entrada de 20% em lançamentos.', created_at: '2026-01-01T10:01:00Z' },
+const BASE_MESSAGES: FixtureMessage[] = [
+  {
+    conversation_id: 'conv-1',
+    sender_type: 'customer',
+    content_text: 'Vocês aceitam 20% de entrada?',
+    created_at: '2026-01-01T10:00:00Z',
+  },
+  {
+    conversation_id: 'conv-1',
+    sender_type: 'agent',
+    sender_id: RONALDO_ID,
+    content_text: 'Sim, aceitamos entrada de 20% em lançamentos.',
+    created_at: '2026-01-01T10:01:00Z',
+  },
 ];
 
 describe('generateLearningSuggestions', () => {
@@ -154,13 +208,8 @@ describe('generateLearningSuggestions', () => {
     expect(mocks.generateOpenAi).not.toHaveBeenCalled();
   });
 
-  it('does nothing when the account has no conversations', async () => {
-    const { db } = fakeDb({ conversationIds: [] });
-    expect(await generateLearningSuggestions(db, 'account-1')).toEqual({ created: 0, touched: 0 });
-  });
-
-  it('advances the cursor and stops when there is nothing new to read', async () => {
-    const { db, updated } = fakeDb({ conversationIds: ['c1'], messages: [] });
+  it('does nothing when there are no new messages, and advances the cursor to "now" (nothing to skip)', async () => {
+    const { db, updated } = fakeDb({ messages: [] });
     const result = await generateLearningSuggestions(db, 'account-1');
     expect(result).toEqual({ created: 0, touched: 0 });
     expect(updated.some((u) => u.table === 'ai_configs')).toBe(true);
@@ -168,7 +217,7 @@ describe('generateLearningSuggestions', () => {
   });
 
   it('creates a suggestion for a recurring, non-isolated, confident pattern', async () => {
-    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -195,7 +244,7 @@ describe('generateLearningSuggestions', () => {
   });
 
   it('skips an isolated observation', async () => {
-    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([{ info: 'Cliente pediu para ligar às 18h.', confidence: 'high', is_isolated: true }]),
     );
@@ -204,7 +253,7 @@ describe('generateLearningSuggestions', () => {
   });
 
   it('skips a low-confidence candidate', async () => {
-    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([{ info: 'Talvez um padrão.', confidence: 'low', is_isolated: false }]),
     );
@@ -214,7 +263,6 @@ describe('generateLearningSuggestions', () => {
 
   it('increments occurrence_count on an existing pending suggestion instead of duplicating', async () => {
     const { db, inserted, updated } = fakeDb({
-      conversationIds: ['c1'],
       messages: BASE_MESSAGES,
       pendingLearnings: [
         { id: 'sugg-1', title: 'Entrada de 20% é aceita para lançamentos.', payload: { occurrence_count: 2 } },
@@ -240,7 +288,7 @@ describe('generateLearningSuggestions', () => {
 
   it('auto-applies a high-confidence, non-isolated, recurring property_subjective learning (Parte 4)', async () => {
     mocks.applyPropertySubjectiveLearning.mockResolvedValue({ propertyId: 'prop-x', previousKnowledge: null });
-    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -274,7 +322,7 @@ describe('generateLearningSuggestions', () => {
   });
 
   it('keeps a property_subjective learning pending when occurrence_count is below the auto-apply threshold', async () => {
-    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -297,7 +345,6 @@ describe('generateLearningSuggestions', () => {
   it('auto-applies once an existing pending property_subjective suggestion crosses the threshold across scans', async () => {
     mocks.applyPropertySubjectiveLearning.mockResolvedValue({ propertyId: 'prop-y', previousKnowledge: 'Texto antigo.' });
     const { db, updated } = fakeDb({
-      conversationIds: ['c1'],
       messages: BASE_MESSAGES,
       pendingLearnings: [
         {
@@ -342,7 +389,7 @@ describe('generateLearningSuggestions', () => {
       mentioned: new Set(['conv-a']),
       withContext: new Set(['conv-a']),
     });
-    const { db } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -375,7 +422,7 @@ describe('generateLearningSuggestions', () => {
         { propertyId: 'prop-home', score: 0.68 },
       ],
     });
-    const { db } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -396,7 +443,7 @@ describe('generateLearningSuggestions', () => {
 
   it('never records evidence for a property_subjective candidate whose name already resolves to an existing property', async () => {
     mocks.resolvePropertyIdentity.mockResolvedValue({ kind: 'safe_match', propertyId: 'prop-1', score: 0.95 });
-    const { db } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -416,7 +463,7 @@ describe('generateLearningSuggestions', () => {
   });
 
   it('never auto-applies a non-property_subjective learning, no matter how recurring', async () => {
-    const { db, inserted } = fakeDb({ conversationIds: ['c1'], messages: BASE_MESSAGES });
+    const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
         {
@@ -437,7 +484,6 @@ describe('generateLearningSuggestions', () => {
 
   it('does not re-suggest something already in the knowledge base', async () => {
     const { db, inserted } = fakeDb({
-      conversationIds: ['c1'],
       messages: BASE_MESSAGES,
       knownDocTitles: ['Entrada de 20% é aceita para lançamentos.'],
     });
@@ -448,5 +494,274 @@ describe('generateLearningSuggestions', () => {
     );
     await generateLearningSuggestions(db, 'account-1');
     expect(inserted).toHaveLength(0);
+  });
+
+  // ============================================================
+  // Scoped-memory context preservation and routing (2026-09-18 evolution)
+  // ============================================================
+
+  describe('context preservation in the scan prompt', () => {
+    it('groups messages back into their real conversations and labels each speaker by name/role, never a flat anonymous timeline', async () => {
+      const { db } = fakeDb({
+        messages: [
+          {
+            conversation_id: 'conv-1',
+            sender_type: 'customer',
+            content_text: 'Oi, quero saber do Live Park.',
+            created_at: '2026-01-01T10:00:00Z',
+            property_name: 'Live Park',
+          },
+          {
+            conversation_id: 'conv-1',
+            sender_type: 'agent',
+            sender_id: RONALDO_ID,
+            content_text: 'Joiaaaa! Sou o Ronaldo, vou te ajudar.',
+            created_at: '2026-01-01T10:01:00Z',
+            property_name: 'Live Park',
+          },
+          {
+            conversation_id: 'conv-2',
+            sender_type: 'bot',
+            content_text: 'Olá! Sou a Clara, assistente do Ronaldo Meira.',
+            created_at: '2026-01-01T11:00:00Z',
+          },
+        ],
+      });
+      mocks.generateOpenAi.mockResolvedValue(scanResponse([]));
+
+      await generateLearningSuggestions(db, 'account-1');
+
+      const userPrompt = mocks.generateOpenAi.mock.calls[0][0].messages[0].content as string;
+      expect(userPrompt).toContain('Conversa conv-1');
+      expect(userPrompt).toContain('Empreendimento: Live Park');
+      expect(userPrompt).toContain('[Ronaldo] Joiaaaa! Sou o Ronaldo, vou te ajudar.');
+      expect(userPrompt).toContain('[Cliente] Oi, quero saber do Live Park.');
+      expect(userPrompt).toContain('Conversa conv-2');
+      expect(userPrompt).toContain('[Clara] Olá! Sou a Clara, assistente do Ronaldo Meira.');
+    });
+
+    it('never labels an unidentified agent (unknown sender_id) as a named corretor', async () => {
+      const { db } = fakeDb({
+        messages: [
+          {
+            conversation_id: 'conv-1',
+            sender_type: 'agent',
+            sender_id: 'someone-else',
+            content_text: 'Mensagem de um atendente não cadastrado.',
+            created_at: '2026-01-01T10:00:00Z',
+          },
+        ],
+      });
+      mocks.generateOpenAi.mockResolvedValue(scanResponse([]));
+      await generateLearningSuggestions(db, 'account-1');
+      const userPrompt = mocks.generateOpenAi.mock.calls[0][0].messages[0].content as string;
+      expect(userPrompt).toContain('[Atendente] Mensagem de um atendente não cadastrado.');
+      expect(userPrompt).not.toContain('[Ronaldo]');
+      expect(userPrompt).not.toContain('[Thatianna]');
+    });
+
+    it('requests a larger output token budget and structured JSON for the learning scan', async () => {
+      const { db } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(scanResponse([]));
+      await generateLearningSuggestions(db, 'account-1');
+      const callArgs = mocks.generateOpenAi.mock.calls[0][0];
+      expect(callArgs.maxOutputTokens).toBeGreaterThan(1024);
+      expect(callArgs.structuredOutputRequired).toBe(true);
+    });
+  });
+
+  describe('scope routing for the new knowledge types', () => {
+    it('tags a GLOBAL type (business_rule) with scope "global" and no target id', async () => {
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'business_rule', info: 'Não trabalhamos com terrenos.', confidence: 'high', is_isolated: false },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      const payload = inserted[0].payload as Record<string, unknown>;
+      expect(payload.scope).toBe('global');
+      expect(payload.property_id).toBeNull();
+    });
+
+    it('resolves a PROPERTY type (property_fact) to a real property_id via resolvePropertyIdentity, when it safely matches', async () => {
+      mocks.resolvePropertyIdentity.mockResolvedValue({ kind: 'safe_match', propertyId: 'prop-live-park', score: 0.99 });
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'property_fact',
+            info: 'Tem piscina na cobertura.',
+            confidence: 'high',
+            is_isolated: false,
+            property_name: 'Live Park',
+          },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      const payload = inserted[0].payload as Record<string, unknown>;
+      expect(payload.scope).toBe('property');
+      expect(payload.property_id).toBe('prop-live-park');
+    });
+
+    it('leaves property_id null for a PROPERTY type when identity resolution is ambiguous — never guesses', async () => {
+      mocks.resolvePropertyIdentity.mockResolvedValue({
+        kind: 'ambiguous',
+        candidates: [{ propertyId: 'a', score: 0.7 }, { propertyId: 'b', score: 0.68 }],
+      });
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'property_fact', info: 'Tem piscina.', confidence: 'high', is_isolated: false, property_name: 'Live' },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      const payload = inserted[0].payload as Record<string, unknown>;
+      expect(payload.property_id).toBeNull();
+    });
+
+    it('trusts an AD type only when the ad_id actually appeared in this batch (anti-hallucination guard)', async () => {
+      const { db, inserted } = fakeDb({
+        messages: [
+          { ...BASE_MESSAGES[0], ad_source_id: 'ad-real-123' },
+          BASE_MESSAGES[1],
+        ],
+      });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'ad_fact',
+            info: 'Este anúncio divulga unidade de 21m².',
+            confidence: 'high',
+            is_isolated: false,
+            ad_id: 'ad-real-123',
+          },
+          {
+            type: 'ad_fact',
+            info: 'Fato de um anúncio inventado.',
+            confidence: 'high',
+            is_isolated: false,
+            ad_id: 'ad-fabricado-999',
+          },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      expect(inserted).toHaveLength(2);
+      const real = inserted.find((r) => r.title === 'Este anúncio divulga unidade de 21m².');
+      const fabricated = inserted.find((r) => r.title === 'Fato de um anúncio inventado.');
+      expect((real?.payload as Record<string, unknown>).ad_id).toBe('ad-real-123');
+      expect((fabricated?.payload as Record<string, unknown>).ad_id).toBeNull();
+    });
+
+    it('trusts a CONVERSATION type only when the conversation_id actually appeared in this batch, and carries its contact_id', async () => {
+      const { db, inserted } = fakeDb({
+        messages: [
+          { ...BASE_MESSAGES[0], contact_id: 'contact-42' },
+          { ...BASE_MESSAGES[1], contact_id: 'contact-42' },
+        ],
+      });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'client_preference',
+            info: 'Cliente quer para Airbnb.',
+            confidence: 'high',
+            is_isolated: false,
+            conversation_id: 'conv-1',
+          },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      const payload = inserted[0].payload as Record<string, unknown>;
+      expect(payload.conversation_id).toBe('conv-1');
+      expect(payload.contact_id).toBe('contact-42');
+    });
+
+    it('resolves agent_name to the matching profile — Ronaldo is never confused with Thatianna', async () => {
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'language_style',
+            info: 'Abre a conversa com "Joiaaaa".',
+            confidence: 'high',
+            is_isolated: false,
+            agent_name: 'Ronaldo',
+          },
+          {
+            type: 'communication_pattern',
+            info: 'Usa "perfeito" para confirmar.',
+            confidence: 'high',
+            is_isolated: false,
+            agent_name: 'Thatianna',
+          },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      const ronaldoRow = inserted.find((r) => r.title === 'Abre a conversa com "Joiaaaa".');
+      const tatiannaRow = inserted.find((r) => r.title === 'Usa "perfeito" para confirmar.');
+      expect((ronaldoRow?.payload as Record<string, unknown>).agent_id).toBe(RONALDO_ID);
+      expect((tatiannaRow?.payload as Record<string, unknown>).agent_id).toBe(TATIANNA_ID);
+    });
+
+    it('leaves agent_id null (team-wide) when agent_name is absent or does not match exactly one profile', async () => {
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'language_style', info: 'Tom leve e informal do time.', confidence: 'high', is_isolated: false },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      expect((inserted[0].payload as Record<string, unknown>).agent_id).toBeNull();
+    });
+
+    it('tags a batch that included a transcribed audio message so approval can attribute the memory to audio_transcript', async () => {
+      const { db, inserted } = fakeDb({
+        messages: [
+          {
+            conversation_id: 'conv-1',
+            sender_type: 'agent',
+            sender_id: RONALDO_ID,
+            content_type: 'audio',
+            transcript_text: 'Esse aqui tem vaga de garagem dupla, viu.',
+            created_at: '2026-01-01T10:00:00Z',
+          },
+        ],
+      });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'business_rule', info: 'Vagas duplas são um diferencial mencionado.', confidence: 'high', is_isolated: false },
+        ]),
+      );
+      await generateLearningSuggestions(db, 'account-1');
+      expect((inserted[0].payload as Record<string, unknown>).origin_includes_audio).toBe(true);
+    });
+  });
+
+  describe('idempotent, backlog-safe cursor advancement (root-cause fix, 2026-09-18)', () => {
+    it('advances the cursor to the LAST message actually read, never to "now" — so an overflow beyond the batch limit is read next run instead of skipped', async () => {
+      const { db, updated } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(scanResponse([]));
+      await generateLearningSuggestions(db, 'account-1');
+      const cursorUpdate = updated.find((u) => u.table === 'ai_configs');
+      expect(cursorUpdate?.patch.learning_last_scanned_at).toBe('2026-01-01T10:01:00Z');
+    });
+
+    it('still advances the cursor when the model output fails to parse — never retries the same deterministically-failing window forever', async () => {
+      const { db, updated } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue({ text: 'not valid json at all', usage: null });
+      const result = await generateLearningSuggestions(db, 'account-1');
+      expect(result).toEqual({ created: 0, touched: 0 });
+      const cursorUpdate = updated.find((u) => u.table === 'ai_configs');
+      expect(cursorUpdate?.patch.learning_last_scanned_at).toBe('2026-01-01T10:01:00Z');
+    });
+
+    it('does NOT advance the cursor when the provider call itself fails (transient error worth retrying against the same window)', async () => {
+      const { db, updated } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockRejectedValue(new Error('network timeout'));
+      const result = await generateLearningSuggestions(db, 'account-1');
+      expect(result).toEqual({ created: 0, touched: 0 });
+      expect(updated.some((u) => u.table === 'ai_configs')).toBe(false);
+    });
   });
 });

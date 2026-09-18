@@ -19,6 +19,18 @@ export const LEARNING_INITIAL_WINDOW_DAYS = 14;
  *  spec, enforced as a single threshold instead of scattered checks. */
 export const LEARNING_MIN_CONFIDENCE: LearningConfidence = 'medium';
 
+/**
+ * Output token budget for the learning scan specifically — deliberately
+ * larger than the shared conversational MAX_OUTPUT_TOKENS (defaults.ts,
+ * sized for a short WhatsApp reply). A batch of LEARNING_SCAN_MESSAGE_LIMIT
+ * messages can legitimately surface a dozen-plus candidate learnings; at
+ * 1024 tokens the model's JSON was being truncated mid-object on every
+ * such batch, which (combined with the cursor never advancing on a parse
+ * failure) is what silently stalled the learning cron for days on the
+ * account's real message volume (root-caused 2026-09-18).
+ */
+export const LEARNING_SCAN_MAX_OUTPUT_TOKENS = 4096;
+
 const CONFIDENCE_RANK: Record<LearningConfidence, number> = { low: 0, medium: 1, high: 2 };
 
 export function meetsLearningConfidenceThreshold(confidence: LearningConfidence): boolean {

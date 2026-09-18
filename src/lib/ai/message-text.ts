@@ -11,9 +11,10 @@
  * a future content_type gaining its own text-equivalent only needs to be
  * taught here once.
  *
- * `transcript_text` is only ever populated for inbound (customer) audio
- * — see the migration adding the column — so this never needs to check
- * sender_type itself to keep the agent's own voice notes out of it.
+ * `transcript_text` is populated for both inbound (customer) and outbound
+ * (agent) audio (see transcribe-audio.ts) — this deliberately never checks
+ * sender_type itself, since every consumer (learning scan included) wants
+ * the transcript whoever spoke it.
  */
 export function effectiveMessageText(message: {
   content_type: string

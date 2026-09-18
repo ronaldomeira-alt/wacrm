@@ -5,11 +5,12 @@ import { logAiUsage } from './usage'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
 import { aiRequestTimeoutMs } from './defaults'
-import { buildLearningScanSystemPrompt, buildLearningScanUserPrompt } from './learning-prompt'
+import { buildLearningScanSystemPrompt, buildLearningScanUserPrompt, type LearningScanMessage } from './learning-prompt'
 import { parseLearningScanResult, type LearningCandidate, type LearningConfidence } from './learning-types'
 import {
   LEARNING_INITIAL_WINDOW_DAYS,
   LEARNING_SCAN_MESSAGE_LIMIT,
+  LEARNING_SCAN_MAX_OUTPUT_TOKENS,
   meetsLearningConfidenceThreshold,
 } from './learning-config'
 import { effectiveMessageText } from './message-text'
@@ -23,7 +24,8 @@ import {
   recordPropertyLearningEvidence,
   resolvePropertyIdentity,
 } from './property-identity'
-import type { ChatMessage, AiConfig } from './types'
+import { inferScopeFromKnowledgeType, type MemoryScope } from './memory'
+import type { AiConfig } from './types'
 
 /** Prompt stays bounded regardless of how big the KB/pending queue gets. */
 const MAX_KNOWN_TITLES = 100
@@ -33,13 +35,66 @@ function normalizeTitle(s: string): string {
   return s.trim().toLowerCase()
 }
 
+interface MessageRow {
+  id: string
+  conversation_id: string
+  sender_type: 'customer' | 'agent' | 'bot'
+  sender_id: string | null
+  content_type: string
+  content_text: string | null
+  transcript_text: string | null
+  created_at: string
+  conversations: {
+    account_id: string
+    property_id: string | null
+    contact_id: string | null
+    ctwa_referral: { source_id?: string } | null
+    properties: { name: string } | null
+  }
+}
+
+/** First name only ("Ronaldo Meira" → "Ronaldo") — matches how the scan
+ *  prompt's own examples refer to corretores, and keeps transcript lines
+ *  short. */
+function firstName(fullName: string): string {
+  return fullName.trim().split(/\s+/)[0] || fullName
+}
+
+/** Resolves a model-reported `agent_name` ("Ronaldo", "Thatianna Oliveira"...)
+ *  back to the account's real profile — case-insensitive match against
+ *  either the first name or the full name. Returns null (never a guess)
+ *  when it doesn't clearly match exactly one profile: an unattributed
+ *  style memory (agent_id: null, "the team in general") is always safer
+ *  than misattributing Thatianna's phrasing to Ronaldo. */
+function resolveAgentIdByName(
+  agentName: string | null | undefined,
+  profiles: { user_id: string; full_name: string }[],
+): string | null {
+  if (!agentName) return null
+  const needle = agentName.trim().toLowerCase()
+  if (!needle) return null
+  const matches = profiles.filter(
+    (p) => p.full_name.toLowerCase() === needle || firstName(p.full_name).toLowerCase() === needle,
+  )
+  return matches.length === 1 ? matches[0].user_id : null
+}
+
 /**
  * Scans one account's recent messages (since the last scan) for
  * recurring, consistent patterns worth remembering, and writes each
  * as a `pending` `ai_suggestions` row (category `learning`) — never
  * applied automatically; a human always approves/edits/rejects (see
- * PATCH /api/ai/suggestions/[id]). Never throws: a failing account
- * must not stop the cron from moving on to the next one.
+ * PATCH /api/ai/suggestions/[id]), except the narrow, pre-existing
+ * property_subjective auto-apply path below. Never throws: a failing
+ * account must not stop the cron from moving on to the next one.
+ *
+ * Idempotent, backlog-safe cursor: `learning_last_scanned_at` only ever
+ * advances to the `created_at` of the LAST message actually read in this
+ * run — never to "now" — so a batch capped by LEARNING_SCAN_MESSAGE_LIMIT
+ * never silently skips the overflow (it's read on the next run instead),
+ * and a batch whose model output fails to parse still moves forward
+ * instead of retrying the exact same (deterministically failing) window
+ * forever.
  */
 export async function generateLearningSuggestions(
   db: SupabaseClient,
@@ -64,7 +119,7 @@ export async function generateLearningSuggestions(
   const { data: msgRows, error: msgError } = await db
     .from('messages')
     .select(
-      'conversation_id, sender_type, content_type, content_text, transcript_text, created_at, conversations!inner(account_id)',
+      'id, conversation_id, sender_type, sender_id, content_type, content_text, transcript_text, created_at, conversations!inner(account_id, property_id, contact_id, ctwa_referral, properties(name))',
     )
     .eq('conversations.account_id', accountId)
     .in('content_type', ['text', 'audio'])
@@ -76,27 +131,64 @@ export async function generateLearningSuggestions(
     return { created: 0, touched: 0 }
   }
 
-  const rows = (msgRows ?? []) as {
-    conversation_id: string
-    sender_type: 'customer' | 'agent' | 'bot'
-    content_type: string
-    content_text: string | null
-    transcript_text: string | null
-    created_at: string
-  }[]
+  const rows = (msgRows ?? []) as unknown as MessageRow[]
   const textRows = rows
     .map((m) => ({ m, text: effectiveMessageText(m) }))
-    .filter((r): r is { m: (typeof rows)[number]; text: string } => r.text !== null)
+    .filter((r): r is { m: MessageRow; text: string } => r.text !== null)
   if (textRows.length === 0) {
     // Nothing to learn from, but the window itself was fully checked —
     // advance the cursor so the next run doesn't re-scan empty history.
+    // Safe to jump to "now" here specifically: an empty read means there
+    // was nothing between `since` and now to begin with, so there's
+    // nothing to skip.
     await db.from('ai_configs').update({ learning_last_scanned_at: new Date().toISOString() }).eq('account_id', accountId)
     return { created: 0, touched: 0 }
   }
-  const messages: ChatMessage[] = textRows.map((r) => ({
-    role: r.m.sender_type === 'customer' ? 'user' : 'assistant',
-    content: r.text,
-  }))
+
+  // The cursor for THIS run, regardless of what happens below (parse
+  // failure included) — the exact created_at of the last message actually
+  // read. Messages past LEARNING_SCAN_MESSAGE_LIMIT stay > this cursor and
+  // get picked up next run; nothing already read here is ever re-read.
+  const nextCursor = textRows[textRows.length - 1].m.created_at
+
+  const { data: profileRows } = await db.from('profiles').select('user_id, full_name').eq('account_id', accountId)
+  const profiles = (profileRows ?? []) as { user_id: string; full_name: string }[]
+  const profileByUserId = new Map(profiles.map((p) => [p.user_id, p.full_name]))
+
+  function speakerFor(m: MessageRow): { role: LearningScanMessage['speakerRole']; label: string } {
+    if (m.sender_type === 'customer') return { role: 'cliente', label: 'Cliente' }
+    if (m.sender_type === 'bot') return { role: 'clara', label: 'Clara' }
+    const name = m.sender_id ? profileByUserId.get(m.sender_id) : null
+    return name ? { role: 'ronaldo_ou_tatianna', label: firstName(name) } : { role: 'outro_atendente', label: 'Atendente' }
+  }
+
+  const scanMessages: LearningScanMessage[] = textRows.map(({ m, text }) => {
+    const speaker = speakerFor(m)
+    return {
+      conversationId: m.conversation_id,
+      propertyName: m.conversations.properties?.name ?? null,
+      adId: m.conversations.ctwa_referral?.source_id ?? null,
+      speakerRole: speaker.role,
+      speakerLabel: speaker.label,
+      text,
+    }
+  })
+
+  // Anti-hallucination guards: an ad_id/conversation_id the model reports
+  // must be one it actually saw in this batch — never trusted blindly,
+  // since a fabricated id would otherwise let a candidate through
+  // resolveScope below with a syntactically valid but meaningless target.
+  const knownAdIds = new Set(scanMessages.map((m) => m.adId).filter((v): v is string => Boolean(v)))
+  const knownConversationIds = new Set(scanMessages.map((m) => m.conversationId))
+  const contactIdByConversation = new Map(
+    textRows.map((r) => [r.m.conversation_id, r.m.conversations.contact_id] as const),
+  )
+
+  // Whether ANY message informing this batch came from a transcribed
+  // voice note (customer or agent) — tags every memory this run produces
+  // as (partly) audio-derived. A per-candidate attribution isn't possible:
+  // the model reasons over the whole batch, not one message at a time.
+  const hasAudioEvidence = textRows.some((r) => r.m.content_type === 'audio')
 
   const [{ data: docRows }, { data: pendingRows }] = await Promise.all([
     db.from('ai_knowledge_documents').select('title').eq('account_id', accountId).limit(MAX_KNOWN_TITLES),
@@ -120,13 +212,24 @@ export async function generateLearningSuggestions(
   ].slice(0, MAX_KNOWN_TITLES)
 
   const systemPrompt = buildLearningScanSystemPrompt()
-  const userPrompt = buildLearningScanUserPrompt({ messages, knownTitles })
+  const userPrompt = buildLearningScanUserPrompt({ messages: scanMessages, knownTitles })
   const providerArgs = {
     apiKey: config.apiKey,
     model: config.model,
     systemPrompt,
     messages: [{ role: 'user' as const, content: userPrompt }],
     timeoutMs: aiRequestTimeoutMs(),
+    // The learning scan can legitimately produce many candidates in one
+    // batch — the shared conversational MAX_OUTPUT_TOKENS (1024, sized for
+    // a short WhatsApp reply) was silently truncating this response
+    // mid-JSON on any batch with more than a handful of learnings,
+    // permanently stalling the cursor (every retry re-read the exact same
+    // over-limit batch and got cut off the same way). See defaults.ts.
+    maxOutputTokens: LEARNING_SCAN_MAX_OUTPUT_TOKENS,
+    // Also forces syntactically valid JSON (OpenAI json_object mode /
+    // Anthropic "{" prefill) instead of relying on the model to
+    // spontaneously avoid prose or markdown fences.
+    structuredOutputRequired: true,
   }
 
   let candidates: LearningCandidate[] | null = null
@@ -142,13 +245,18 @@ export async function generateLearningSuggestions(
       usage,
     })
     candidates = parseLearningScanResult(text)
+    if (candidates === null) {
+      console.warn(
+        '[learning generate] model output was not valid JSON — advancing cursor anyway (idempotent backlog recovery), snippet:',
+        text.slice(0, 300),
+      )
+    }
   } catch (err) {
-    console.error('[learning generate] provider call failed:', err)
-    return { created: 0, touched: 0 } // don't advance the cursor — retry this window next run
-  }
-
-  if (candidates === null) {
-    console.warn('[learning generate] model output was not valid JSON — skipping this run')
+    console.error('[learning generate] provider call failed — will retry this exact window next run:', err)
+    // A transient provider error (timeout, rate limit, network) is worth
+    // retrying against the SAME window — unlike a parse failure, nothing
+    // was actually read from the model, so there's no risk of an
+    // infinite, deterministic re-failure on the same content.
     return { created: 0, touched: 0 }
   }
 
@@ -209,9 +317,9 @@ export async function generateLearningSuggestions(
   }
 
   // Raw scanned messages, grouped by conversation — feeds the
-  // conversation-evidence ledger below. Kept separate from `messages`
-  // (which only has role/content, no conversation_id, for the model
-  // prompt) since evidence must be counted per distinct conversation.
+  // conversation-evidence ledger below. Kept separate from `scanMessages`
+  // since evidence must be counted per distinct conversation using the
+  // raw text, not the speaker-labeled transcript line.
   const evidenceRows = textRows.map((r) => ({ conversationId: r.m.conversation_id, text: r.text }))
 
   /**
@@ -239,9 +347,47 @@ export async function generateLearningSuggestions(
     }
   }
 
+  /**
+   * For a scoped candidate (everything routed to ai_memories once
+   * approved — see suggestions/[id]/route.ts), resolves and validates the
+   * target id the candidate's scope requires, or returns null when it
+   * can't be trusted — in which case the caller must still create the
+   * suggestion (a human can fix the target during review) but never with
+   * a fabricated id.
+   */
+  async function resolveScopeTarget(
+    scope: MemoryScope,
+    c: LearningCandidate,
+  ): Promise<{ propertyId: string | null; adId: string | null; conversationId: string | null; contactId: string | null }> {
+    if (scope === 'property') {
+      if (!c.property_name) return { propertyId: null, adId: null, conversationId: null, contactId: null }
+      const resolution = await resolvePropertyIdentity(db, accountId, c.property_name)
+      return {
+        propertyId: resolution.kind === 'safe_match' ? resolution.propertyId : null,
+        adId: null,
+        conversationId: null,
+        contactId: null,
+      }
+    }
+    if (scope === 'ad') {
+      const adId = c.ad_id && knownAdIds.has(c.ad_id) ? c.ad_id : null
+      return { propertyId: null, adId, conversationId: null, contactId: null }
+    }
+    if (scope === 'conversation') {
+      const conversationId = c.conversation_id && knownConversationIds.has(c.conversation_id) ? c.conversation_id : null
+      return {
+        propertyId: null,
+        adId: null,
+        conversationId,
+        contactId: conversationId ? contactIdByConversation.get(conversationId) ?? null : null,
+      }
+    }
+    return { propertyId: null, adId: null, conversationId: null, contactId: null }
+  }
+
   let created = 0
   let touched = 0
-  for (const c of candidates) {
+  for (const c of candidates ?? []) {
     await maybeRecordPropertyEvidence(c)
 
     if (c.is_isolated) continue
@@ -250,6 +396,13 @@ export async function generateLearningSuggestions(
     const title = c.info.slice(0, TITLE_MAX_LENGTH)
     const normalized = normalizeTitle(title)
     if (knownDocTitles.has(normalized)) continue // already in the KB — nothing to suggest
+
+    const scope = inferScopeFromKnowledgeType(c.type)
+    const isNewScopedType = scope !== null && c.type !== 'property_subjective'
+    const target = isNewScopedType
+      ? await resolveScopeTarget(scope as MemoryScope, c)
+      : { propertyId: null, adId: null, conversationId: null, contactId: null }
+    const agentId = isNewScopedType ? resolveAgentIdByName(c.agent_name, profiles) : null
 
     const existingPending = pendingByTitle.get(normalized)
     if (existingPending) {
@@ -276,12 +429,20 @@ export async function generateLearningSuggestions(
 
     const basePayload = {
       type: c.type,
+      scope,
       info: c.info,
       context_summary: c.context_summary,
       application: c.application,
       occurrence_count: c.occurrence_count,
       confidence: c.confidence,
       property_name: c.property_name ?? null,
+      property_id: target.propertyId,
+      ad_id: target.adId,
+      conversation_id: target.conversationId,
+      contact_id: target.contactId,
+      agent_name: c.agent_name ?? null,
+      agent_id: agentId,
+      origin_includes_audio: hasAudioEvidence,
       origin: 'Detectado automaticamente em conversas recentes',
     }
     const { approved, extra } = await tryAutoApply(basePayload)
@@ -302,10 +463,7 @@ export async function generateLearningSuggestions(
     created++
   }
 
-  await db
-    .from('ai_configs')
-    .update({ learning_last_scanned_at: new Date().toISOString() })
-    .eq('account_id', accountId)
+  await db.from('ai_configs').update({ learning_last_scanned_at: nextCursor }).eq('account_id', accountId)
 
   return { created, touched }
 }

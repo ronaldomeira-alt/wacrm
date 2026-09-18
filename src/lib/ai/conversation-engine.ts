@@ -26,6 +26,7 @@ import {
   validateAndResolveMediaToSend,
   type ResolvedMediaToSend,
 } from './property-media-service';
+import { retrieveScopedMemories, formatMemoriesForPrompt, loadAgentNames } from './memory';
 import { STAGE_LABELS, type PropertyStage } from '@/types';
 
 export interface ConversationalTurnArgs {
@@ -412,6 +413,7 @@ export async function executeConversationalTurn(
     db,
     accountId,
     config,
+    conversationId,
     contactId,
     propertyId,
     messages,
@@ -501,6 +503,54 @@ export async function executeConversationalTurn(
     }
   }
 
+  // 2b. Resolve the ad this conversation came from (Meta CTWA referral)
+  // and scoped memories (GLOBAL/STYLE/PROPERTY/AD/CONVERSATION) — each
+  // group fetched pre-filtered by its own scope+id (see memory.ts), never
+  // a single "fetch everything" query, so a bug in one branch can only
+  // ever return zero rows for that branch, never someone else's data.
+  let adId: string | null = null;
+  let adContext: { headline?: string | null; body?: string | null; campaignName?: string | null } | null = null;
+  if (conversationId) {
+    try {
+      const { data: convRow } = await db
+        .from('conversations')
+        .select('ctwa_referral')
+        .eq('id', conversationId)
+        .maybeSingle();
+      adId = (convRow?.ctwa_referral as { source_id?: string } | null)?.source_id ?? null;
+      if (adId) {
+        const { data: mapping } = await db
+          .from('property_ad_mappings')
+          .select('creative_headline, creative_body, campaign_name')
+          .eq('account_id', accountId)
+          .eq('ad_source_id', adId)
+          .maybeSingle();
+        if (mapping) {
+          adContext = {
+            headline: mapping.creative_headline ?? null,
+            body: mapping.creative_body ?? null,
+            campaignName: mapping.campaign_name ?? null,
+          };
+        }
+      }
+    } catch (err) {
+      console.error('[conversation engine] error loading ad context:', err);
+    }
+  }
+
+  const scopedMemories = await retrieveScopedMemories(db, accountId, {
+    propertyId,
+    adId,
+    conversationId,
+  }).catch((err) => {
+    console.error('[conversation engine] error loading scoped memories:', err);
+    return { global: [], style: [], property: [], ad: [], conversation: [] };
+  });
+  const agentIds = [...scopedMemories.style, ...scopedMemories.global, ...scopedMemories.property]
+    .map((m) => m.agentId)
+    .filter((v): v is string => Boolean(v));
+  const agentNameById = await loadAgentNames(db, agentIds);
+
   // 3. Load pre-extracted Lead Context (simulated or real DB)
   let leadContext: FormattedLeadContext | null = simulatedLeadContext;
   if (!leadContext && contactId) {
@@ -552,6 +602,12 @@ export async function executeConversationalTurn(
     propertyMedia: availableMedia,
     propertyStyleInstructions: propertyId ? propertyStyleInstructions : [],
     globalKnowledge: knowledgeResult.globalChunks,
+    styleMemories: formatMemoriesForPrompt(scopedMemories.style, agentNameById),
+    globalMemories: formatMemoriesForPrompt(scopedMemories.global, agentNameById),
+    propertyMemories: propertyId ? formatMemoriesForPrompt(scopedMemories.property) : [],
+    adContext,
+    adMemories: formatMemoriesForPrompt(scopedMemories.ad),
+    conversationMemories: formatMemoriesForPrompt(scopedMemories.conversation),
     leadContext,
     businessHours,
     structuredOutputRequired: true,

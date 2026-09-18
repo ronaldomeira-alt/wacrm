@@ -429,12 +429,15 @@ function MessageActionsComponent({
   const canCopy = message.content_type === "text";
   const canForward = FORWARDABLE_TYPES.has(message.content_type);
   const canDelete = isAgent && DELETABLE_TYPES.has(message.content_type);
-  // Customer voice notes only — never the agent's own (product decision
-  // 2026-09-01: this is about surfacing the CUSTOMER's stated intent,
-  // not a general-purpose transcription tool). Shown even once already
-  // transcribed — see handleTranscribe, it becomes a free "show it again
-  // under the bubble" tap instead of disappearing.
-  const canTranscribe = !isAgent && message.content_type === "audio";
+  // Customer AND corretor (Ronaldo/Thatianna) voice notes — never Clara's
+  // own (she has none to transcribe). Reversed 2026-09-18: the original
+  // 2026-09-01 customer-only restriction blocked the AI learning pipeline
+  // from ever reading the team's own recorded explanations/style. Shown
+  // even once already transcribed — see handleTranscribe, it becomes a
+  // free "show it again under the bubble" tap instead of disappearing.
+  const canTranscribe =
+    (message.sender_type === "customer" || message.sender_type === "agent") &&
+    message.content_type === "audio";
   const [transcribing, setTranscribing] = useState(false);
 
   // The corner trigger's own inset/size isn't one universal constant — it's

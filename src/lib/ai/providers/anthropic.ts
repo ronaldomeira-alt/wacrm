@@ -40,7 +40,7 @@ function normalizeForAnthropic(messages: ChatMessage[]): ChatMessage[] {
  * in `generateReply`).
  */
 export async function generateAnthropic(args: ProviderArgs): Promise<ProviderResult> {
-  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired } = args
+  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired, maxOutputTokens } = args
 
   // Anthropic has no `response_format` switch — the standard way to force
   // valid JSON is an assistant-turn prefill: seed the reply with "{" so the
@@ -64,7 +64,7 @@ export async function generateAnthropic(args: ProviderArgs): Promise<ProviderRes
       body: JSON.stringify({
         model,
         system: systemPrompt,
-        max_tokens: MAX_OUTPUT_TOKENS,
+        max_tokens: maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         messages: apiMessages,
       }),
       signal: AbortSignal.timeout(timeoutMs),

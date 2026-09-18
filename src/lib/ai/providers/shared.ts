@@ -13,6 +13,10 @@ export interface ProviderArgs {
   /** When true, the provider must be constrained to return valid JSON
    *  (the structured handoff-decision format) rather than free text. */
   structuredOutputRequired?: boolean
+  /** Overrides defaults.ts's MAX_OUTPUT_TOKENS for this call — for a
+   *  response shape (e.g. the learning scan's candidate array) that can
+   *  legitimately need more room than a short conversational reply. */
+  maxOutputTokens?: number
 }
 
 /**

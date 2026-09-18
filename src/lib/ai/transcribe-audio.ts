@@ -3,6 +3,7 @@ import { AiError } from './types'
 import { providerHttpError, toNetworkError } from './providers/shared'
 import { loadEmbeddingsKey } from './config'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { resolveMediaUrlForSend } from '@/lib/storage/resolve-media-for-send'
 
 const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions'
 // Whisper's ceiling. WhatsApp voice notes are already capped well under
@@ -102,18 +103,13 @@ export async function transcribeAudioBuffer(
 }
 
 /**
- * Transcribes one inbound (customer) audio message and saves the result
- * on the row — the single entry point both the webhook (background, on
- * every customer voice note) and the on-demand "Transcrever" menu action
- * (POST /api/ai/transcribe) go through, so there's exactly one code path
- * that ever writes `transcript_text`.
- *
- * Caller contract: only call this for `sender_type='customer'` audio
- * messages — never for the agent's own voice notes. Nothing here checks
- * sender_type itself (it isn't loaded), by design: this is a low-level
- * "transcribe this specific message" primitive, and the customer-only
- * restriction is a product decision enforced once, at the two call
- * sites, not duplicated into a query here.
+ * Transcribes an already-downloaded buffer and saves the result on the
+ * message row. The one place that ever writes `transcript_text` —
+ * `transcribeInboundAudioMessage` (customer, downloaded via Meta) and
+ * `transcribeAgentAudioMessage` (corretor, downloaded via a plain fetch
+ * of our own Storage URL) both funnel through here so there is exactly
+ * one write path regardless of which WhatsApp channel a voice note
+ * arrived or was sent on.
  *
  * Returns null (never throws) when there's no embeddings key configured
  * for the account — same "silently unavailable rather than broken"
@@ -124,7 +120,7 @@ export async function transcribeAudioBuffer(
  * account running Anthropic for auto-reply still has this key if
  * semantic search / the knowledge base is set up.
  */
-export async function transcribeInboundAudioMessage(
+async function transcribeAndSave(
   db: SupabaseClient,
   accountId: string,
   messageId: string,
@@ -142,4 +138,63 @@ export async function transcribeInboundAudioMessage(
   if (error) throw error
 
   return text
+}
+
+/**
+ * Transcribes one inbound (customer) audio message — the single entry
+ * point both the webhook (background, on every customer voice note) and
+ * the on-demand "Transcrever" menu action (POST /api/ai/transcribe) go
+ * through for customer audio.
+ *
+ * Caller contract: only call this for `sender_type='customer'` audio
+ * messages. Nothing here checks sender_type itself (it isn't loaded), by
+ * design: this is a low-level "transcribe this specific message"
+ * primitive — the customer-only restriction is enforced at the call
+ * sites, not duplicated into a query here.
+ */
+export async function transcribeInboundAudioMessage(
+  db: SupabaseClient,
+  accountId: string,
+  messageId: string,
+  audioBuffer: Buffer,
+): Promise<string | null> {
+  return transcribeAndSave(db, accountId, messageId, audioBuffer)
+}
+
+/**
+ * Transcribes one agent-sent (Ronaldo/Thatianna) voice note. Unlike
+ * customer audio — which lives behind Meta's media API and needs a
+ * WhatsApp access token to download — an agent's own recording never
+ * needs a WhatsApp token: `messages.media_url` for an outbound send is
+ * always our own storage (a legacy Supabase public URL, or an R2 key
+ * post-migration — see scripts/migrate-historical-media-to-r2.ts).
+ * `resolveMediaUrlForSend` is the one place that already knows how to
+ * turn any of those shapes into something actually fetchable (the same
+ * resolution the send path itself does before handing a URL to Meta),
+ * so it's reused here rather than assuming `media_url` is already a
+ * plain URL — a real, pre-migration voice note's stored value is a bare
+ * R2 key that a direct `fetch()` cannot resolve on its own.
+ *
+ * Used by both the automatic best-effort trigger right after an agent's
+ * voice note is sent (send-message.ts) and the on-demand "Transcrever"
+ * action (POST /api/ai/transcribe) for a message that trigger missed or
+ * that predates this feature (the 2026-09 backlog — see
+ * scripts/backfill-agent-audio-transcripts.ts).
+ */
+export async function transcribeAgentAudioMessage(
+  db: SupabaseClient,
+  accountId: string,
+  messageId: string,
+  mediaUrl: string,
+): Promise<string | null> {
+  const fetchableUrl = await resolveMediaUrlForSend(mediaUrl)
+  const res = await fetch(fetchableUrl)
+  if (!res.ok) {
+    throw new AiError(`Failed to download agent voice note (HTTP ${res.status}).`, {
+      code: 'network_error',
+      status: 502,
+    })
+  }
+  const audioBuffer = Buffer.from(await res.arrayBuffer())
+  return transcribeAndSave(db, accountId, messageId, audioBuffer)
 }

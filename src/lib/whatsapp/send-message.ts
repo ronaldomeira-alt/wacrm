@@ -51,6 +51,7 @@ import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 import { generateDocumentPreviewFromUrl, looksLikePdf } from '@/lib/documents/generate-document-preview';
 import { resolveMediaUrlForSend } from '@/lib/storage/resolve-media-for-send';
 import { logError } from '@/lib/observability/log';
+import { transcribeAgentAudioMessage } from '@/lib/ai/transcribe-audio';
 
 /**
  * Structured, greppable log for the `clientRef` idempotency path —
@@ -892,6 +893,18 @@ export async function sendMessageToConversation(
     }
   } catch (err) {
     logError('send-message.pause_on_agent_send_threw', err);
+  }
+
+  // Fire-and-forget transcription of the corretor's own voice note — same
+  // "Clara should learn from Ronaldo/Thatianna's audio too" motivation as
+  // the customer-inbound trigger in the webhook, just on the outbound
+  // side. Never awaited: this Node process stays alive after the response
+  // (Hostinger, not a one-shot serverless function), so the promise runs
+  // to completion in the background without delaying the agent's send.
+  if (messageType === 'audio' && senderId && mediaUrl) {
+    transcribeAgentAudioMessage(supabaseAdmin(), accountId, messageRecord.id, mediaUrl).catch((err) => {
+      logError('send-message.agent_audio_transcription_failed', err);
+    });
   }
 
   return { messageId: messageRecord.id, whatsappMessageId: waMessageId };

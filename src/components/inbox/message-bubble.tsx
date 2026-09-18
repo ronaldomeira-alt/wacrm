@@ -868,17 +868,16 @@ function MessageContent({
               {t("audioSendFailed")} · {t("audioRetry")}
             </button>
           )}
-          {/* transcript_text is populated for every customer voice note by
-              the webhook's background job (so the AI has context), but it
-              must only be SHOWN once the agent explicitly asks via the
-              "Transcrever" message action — hence the separate
-              `transcriptRevealed` gate, not just checking the text exists.
-              `!isAgent` here is belt-and-suspenders, not the real gate, in
-              case that invariant is ever violated upstream. Deliberately
-              styled far quieter than a real caption (italic, muted,
-              prefixed) so it never reads as something the customer
-              actually typed. */}
-          {!isAgent && transcriptRevealed && message.transcript_text && (
+          {/* transcript_text is populated for both customer and corretor
+              (Ronaldo/Thatianna) voice notes in the background (see
+              transcribe-audio.ts — the AI learning pipeline needs it
+              either way), but it must only be SHOWN once the agent
+              explicitly asks via the "Transcrever" message action — hence
+              the separate `transcriptRevealed` gate, not just checking the
+              text exists. Deliberately styled far quieter than a real
+              caption (italic, muted, prefixed) so it never reads as
+              something typed live. */}
+          {transcriptRevealed && message.transcript_text && (
             <p className="mt-1 select-text whitespace-pre-wrap break-words text-xs italic text-muted-foreground">
               {t("transcriptLabel")} {linkifyText(message.transcript_text)}
             </p>

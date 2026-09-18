@@ -64,4 +64,62 @@ describe('parseLearningScanResult', () => {
     const raw = '```json\n{"learnings":[]}\n```';
     expect(parseLearningScanResult(raw)).toEqual([]);
   });
+
+  it('recovers JSON wrapped in prose commentary', () => {
+    const raw = `Aqui está minha análise:\n${JSON.stringify({ learnings: [{ info: 'x', confidence: 'high', is_isolated: false }] })}\nEspero que ajude!`;
+    const result = parseLearningScanResult(raw);
+    expect(result).toHaveLength(1);
+    expect(result?.[0].info).toBe('x');
+  });
+
+  it('salvages complete candidates from a response truncated mid-array by an output token limit', () => {
+    // Simulates exactly the production failure (2026-09-18): the model
+    // produced several complete objects, then got cut off mid-object.
+    const raw =
+      '{"learnings": [' +
+      '{"type": "business_rule", "info": "Primeiro fato completo.", "confidence": "high", "is_isolated": false, "occurrence_count": 3},' +
+      '{"type": "property_fact", "info": "Segundo fato completo.", "confidence": "high", "is_isolated": false, "occurrence_count": 2},' +
+      '{"type": "property_fact", "info": "Terceiro fato truncado no me';
+    const result = parseLearningScanResult(raw);
+    expect(result).toHaveLength(2);
+    expect(result?.[0].info).toBe('Primeiro fato completo.');
+    expect(result?.[1].info).toBe('Segundo fato completo.');
+  });
+
+  it('returns null when even the first candidate is truncated (nothing to salvage)', () => {
+    const raw = '{"learnings": [{"type": "business_rule", "info": "cortado no meio';
+    expect(parseLearningScanResult(raw)).toBeNull();
+  });
+
+  it('carries through the new scoped-memory fields (ad_id, conversation_id, agent_name)', () => {
+    const raw = JSON.stringify({
+      learnings: [
+        {
+          type: 'ad_fact',
+          info: 'Este anúncio divulga unidade de 21 m².',
+          confidence: 'high',
+          is_isolated: false,
+          ad_id: '120250622441180493',
+        },
+        {
+          type: 'client_preference',
+          info: 'Cliente quer para Airbnb.',
+          confidence: 'high',
+          is_isolated: false,
+          conversation_id: 'conv-123',
+        },
+        {
+          type: 'language_style',
+          info: 'Abre a conversa com "Joiaaaa".',
+          confidence: 'high',
+          is_isolated: false,
+          agent_name: 'Ronaldo',
+        },
+      ],
+    });
+    const result = parseLearningScanResult(raw);
+    expect(result?.[0].ad_id).toBe('120250622441180493');
+    expect(result?.[1].conversation_id).toBe('conv-123');
+    expect(result?.[2].agent_name).toBe('Ronaldo');
+  });
 });
