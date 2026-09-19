@@ -23,6 +23,7 @@ import {
   LEAD_ANALYSIS_INCREMENTAL_MESSAGE_LIMIT,
   LEAD_ANALYSIS_INITIAL_MESSAGE_LIMIT,
   PIPELINE_AUTO_MOVE_RULES,
+  QUALIFIED_LEAD_MIN_SCORE,
   STAGE_SUGGESTION_MIN_SCORE,
   meetsTagConfidenceThreshold,
 } from './lead-analysis-config'
@@ -101,6 +102,59 @@ export async function applyLeadAnalysisResult(args: ApplyLeadAnalysisArgs): Prom
 
   await applyStageSuggestion(args)
   await applyLeadScore(args)
+  await applyQualifiedLeadSignal(args)
+}
+
+// ============================================================
+// QualifiedLead → Meta Conversions API — deliberately independent of
+// pipeline stage. Business rule (superseding the earlier "only on
+// auto-move into Interesse" version): ai_score crossing from < 7 to >= 7
+// is itself the qualification signal, regardless of what stage the deal
+// is in, whether a deal exists at all, or how confident the model's
+// separate stage_suggestion is. Pipeline movement and the Meta signal
+// are two independent facts about the same lead — this function reads
+// nothing from `deal`/`stages`/`stage_suggestion` on purpose.
+//
+// "Crossing" (not "at or above") is what prevents re-firing on every
+// later batch that keeps the lead at 8, 9, etc.: args.currentAiScore is
+// always the score BEFORE this batch (passed in by the caller from the
+// contact's persisted value), so once it has ever reached
+// QUALIFIED_LEAD_MIN_SCORE, every subsequent batch's "before" value is
+// already >= threshold and the guard below short-circuits. This also
+// correctly handles a lead whose very first-ever analysis already scores
+// >= 7: there is no prior row to compare against, but the caller's
+// "before" default (0, see dispatchInboundToLeadAnalysis) is < 7 too, so
+// the crossing is still detected — no special-casing needed.
+//
+// A lead that drops back below 7 and later crosses again would, under
+// this same logic, attempt to send a second time. That residual case is
+// intentionally left to the deterministic event_id
+// (`qualified-lead:<conversationId>`, see meta-capi.ts) rather than a
+// second piece of state here: Meta collapses any repeat of that same
+// event_id for the same conversation, so at most one QualifiedLead is
+// ever actually counted for it, however many times this function is
+// (re)triggered.
+// ============================================================
+async function applyQualifiedLeadSignal(args: ApplyLeadAnalysisArgs): Promise<void> {
+  const { db, accountId, conversationId, result } = args
+  if (!result.lead_score) return // nothing new to evaluate this batch
+
+  const scoreBefore = args.currentAiScore ?? 0
+  const scoreNow = result.lead_score.value
+  if (scoreBefore >= QUALIFIED_LEAD_MIN_SCORE) return // already qualified as of the prior batch
+  if (scoreNow < QUALIFIED_LEAD_MIN_SCORE) return // didn't cross this batch
+
+  try {
+    if (args.metaCapiTestEventCode) {
+      await sendQualifiedLeadEvent(db, accountId, conversationId, {
+        testEventCode: args.metaCapiTestEventCode,
+      })
+    } else {
+      await sendQualifiedLeadEvent(db, accountId, conversationId)
+    }
+  } catch (err) {
+    console.error('[lead-analysis] QualifiedLead CAPI event failed:', err)
+  }
 }
 
 // Score IA (migration 082) — writes contacts.ai_score/ai_score_reason/
@@ -200,25 +254,6 @@ async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> 
           .from('ai_suggestions')
           .update({ status: 'done', resolved_at: new Date().toISOString() })
           .eq('id', staleSuggestion.id)
-      }
-      // Landing in Interesse is this account's own definition of "lead
-      // qualificado" (it's the same minAiScore: 7 gate as the rule that
-      // just fired) — tell Meta so ad delivery can optimize toward more
-      // of this. Best-effort: a missing ctwa_clid, unconfigured CAPI
-      // dataset, or a Graph API error must never block the stage move
-      // that already happened above.
-      if (toLower === 'interesse') {
-        try {
-          if (args.metaCapiTestEventCode) {
-            await sendQualifiedLeadEvent(db, accountId, conversationId, {
-              testEventCode: args.metaCapiTestEventCode,
-            })
-          } else {
-            await sendQualifiedLeadEvent(db, accountId, conversationId)
-          }
-        } catch (err) {
-          console.error('[lead-analysis] QualifiedLead CAPI event failed:', err)
-        }
       }
     }
     // Whether we auto-moved or the score was insufficient, these transitions

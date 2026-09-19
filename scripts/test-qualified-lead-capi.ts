@@ -9,11 +9,16 @@
  * function the real analysis pipeline calls — `applyLeadAnalysisResult`
  * in src/lib/ai/lead-analysis.ts, completely unmodified — with a
  * hand-crafted result standing in for what the LLM would have returned.
- * That function still runs its real logic: PIPELINE_AUTO_MOVE_RULES
- * matching, the STAGE_SUGGESTION_MIN_SCORE gate, the deal.stage_id
- * update, and — if the transition lands in "Interesse" — the real call
- * to sendQualifiedLeadEvent(). Nothing about lead-analysis.ts itself is
- * touched or bypassed by this script.
+ *
+ * Business rule (as of the "independent of pipeline" revision):
+ * applyQualifiedLeadSignal fires purely on the contact's ai_score
+ * crossing from < 7 to >= 7 in this batch — it does NOT require a
+ * pipeline stage move, does NOT read stage_suggestion at all. This
+ * script still also sends a stage_suggestion targeting "Interesse"
+ * alongside the score, so it exercises PIPELINE_AUTO_MOVE_RULES /
+ * STAGE_SUGGESTION_MIN_SCORE too (realistic combined scenario, and a
+ * convenient way to eyeball the deal really moving) — but that part is
+ * incidental to the CAPI call now, not a precondition for it.
  *
  * WARNING — this is not a dry run by default only as a safety rail, not
  * a simulation: with APPLY=1 it WRITES contacts.ai_score and moves the
@@ -26,7 +31,7 @@
  *     (dry run — prints what it found and what it WOULD do, writes nothing)
  *
  *   APPLY=1 npx tsx --env-file=.env.local scripts/test-qualified-lead-capi.ts --contact-id=<uuid>
- *     (writes ai_score=7, moves the deal to "Interesse", fires the real QualifiedLead event)
+ *     (writes ai_score=7, moves the deal to "Interesse" as a side effect, fires the real QualifiedLead event)
  *
  *   Add --test-event-code=TEST12345 (or TEST_EVENT_CODE=TEST12345 env var) to make the
  *   event show up live in Meta Events Manager → dataset → Test Events tab, instead of

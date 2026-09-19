@@ -74,6 +74,17 @@ export const PIPELINE_AUTO_MOVE_RULES: PipelineAutoMoveRule[] = [
   { from: 'qualificação', to: 'interesse', minAiScore: 7 },
 ]
 
+// ── Meta Conversions API "QualifiedLead" signal ─────────────────────────────
+// Deliberately its own constant, NOT a reference into PIPELINE_AUTO_MOVE_RULES
+// above, even though it currently shares the same numeric value (7) as the
+// rules targeting "interesse". Pipeline stage movement and "is this lead
+// qualified enough to tell Meta about" are independent business decisions
+// that happen to agree today — coupling them (e.g. by deriving this from the
+// pipeline rules) would silently change Meta's signal any time someone
+// retunes an auto-move threshold for pipeline reasons alone. See
+// applyQualifiedLeadSignal in lead-analysis.ts.
+export const QUALIFIED_LEAD_MIN_SCORE = 7
+
 /** Human-readable band for a 0–100 score, for display only (section 8). */
 export function scoreConfidenceBand(score: number): 'strong' | 'good' | 'moderate' | 'low' {
   if (score >= 90) return 'strong';

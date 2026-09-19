@@ -306,37 +306,14 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
       }),
     });
 
-    // Auto-move executed; no pending suggestion in Central de IA
+    // Auto-move executed; no pending suggestion in Central de IA. The
+    // Meta QualifiedLead signal is a separate concern now (see the
+    // dedicated describe block below) — currentAiScore: 8 here means the
+    // lead was already qualified before this batch, so no fresh
+    // crossing, so no CAPI assertion belongs in this pipeline-focused test.
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
     expect(calls.insert).toHaveLength(0);
-    // Landing in Interesse is this account's "lead qualificado" — tell Meta.
-    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledWith(db, BASE_ARGS.accountId, BASE_ARGS.conversationId);
-  });
-
-  it('passes metaCapiTestEventCode through to sendQualifiedLeadEvent only when the caller (test harness) sets it', async () => {
-    const { db } = fakeDb();
-    await applyLeadAnalysisResult({
-      db: db as never,
-      ...BASE_ARGS,
-      deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
-      stages: STAGES,
-      currentAiScore: 8,
-      metaCapiTestEventCode: 'TEST12345',
-      result: result({
-        stage_suggestion: {
-          should_suggest: true,
-          target_stage_name: 'Interesse',
-          justification: 'Teste controlado via harness.',
-          score: 90,
-        },
-      }),
-    });
-
-    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledWith(db, BASE_ARGS.accountId, BASE_ARGS.conversationId, {
-      testEventCode: 'TEST12345',
-    });
   });
 
   it('scenario 4c: auto-moves Qualificação → Interesse using freshly-computed lead_score over currentAiScore', async () => {
@@ -360,7 +337,6 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
 
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.insert).toHaveLength(0);
-    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
   });
 
   it('auto-moves Novo Lead → Qualificação when ai_score ≥ 3 and AI has evidence', async () => {
@@ -432,32 +408,6 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
     expect(calls.insert).toHaveLength(0);
-    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not let a CAPI failure block the stage move into Interesse', async () => {
-    mocks.sendQualifiedLeadEvent.mockRejectedValue(new Error('Graph API down'));
-    const { db, calls } = fakeDb();
-    await applyLeadAnalysisResult({
-      db: db as never,
-      ...BASE_ARGS,
-      deal: { id: 'deal-1', stage_id: 'stage-novo' },
-      stages: STAGES,
-      currentAiScore: 9,
-      result: result({
-        stage_suggestion: {
-          should_suggest: true,
-          target_stage_name: 'Interesse',
-          justification: 'Pediu proposta.',
-          score: 95,
-        },
-      }),
-    });
-
-    // The stage move already happened before the CAPI call — a failure there
-    // must not roll it back or throw out of applyLeadAnalysisResult.
-    expect(calls.dealUpdate).toHaveLength(1);
-    expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
   });
 
   it('resolves a stale pending suggestion when auto-moving', async () => {
@@ -665,6 +615,225 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     });
 
     expect(calls.insert).toHaveLength(0);
+  });
+});
+
+// ============================================================
+// QualifiedLead → Meta Conversions API signal — independent of pipeline
+// stage (business rule change: ai_score crossing 7 is the whole trigger,
+// no auto-move / no stage_suggestion confidence required). See
+// applyQualifiedLeadSignal in lead-analysis.ts.
+// ============================================================
+describe('applyLeadAnalysisResult — QualifiedLead Meta signal (independent of pipeline)', () => {
+  it('1. score 6 → não envia', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 0,
+      result: result({ lead_score: { value: 6, reason: 'Ainda em pesquisa.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).not.toHaveBeenCalled();
+  });
+
+  it('2. score 7 → envia', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 5,
+      result: result({ lead_score: { value: 7, reason: 'Pediu simulação de financiamento.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledWith(db, BASE_ARGS.accountId, BASE_ARGS.conversationId);
+  });
+
+  it('3. score 8 após já estar em 7 → não duplica', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 7, // already qualified as of the prior batch
+      result: result({ lead_score: { value: 8, reason: 'Continua engajado.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).not.toHaveBeenCalled();
+  });
+
+  it('4. score 9 após já estar em 8 → não duplica', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 8, // already qualified as of the prior batch
+      result: result({ lead_score: { value: 9, reason: 'Pediu proposta formal.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).not.toHaveBeenCalled();
+  });
+
+  it('5. lead em Novo Lead + score 7 → envia', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 2,
+      result: result({ lead_score: { value: 7, reason: 'Intenção forte logo na primeira mensagem.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('6. lead em Qualificação + score 7 → envia', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
+      stages: STAGES,
+      currentAiScore: 5,
+      result: result({ lead_score: { value: 7, reason: 'Perguntou sobre financiamento.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('7. lead em Interesse + score 7 → envia', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-interesse' },
+      stages: STAGES,
+      currentAiScore: 6,
+      result: result({ lead_score: { value: 7, reason: 'Pediu para agendar visita.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('8. score 7 sem stage_suggestion / sem mudança de estágio → envia', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 3,
+      // stage_suggestion is null (default) — no pipeline move happens at all.
+      result: result({ lead_score: { value: 7, reason: 'Perguntou condições de pagamento.' } }),
+    });
+
+    expect(calls.dealUpdate).toHaveLength(0);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('9. confiança do stage_suggestion abaixo de 60 + score 7 → envia mesmo assim', async () => {
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 4,
+      result: result({
+        lead_score: { value: 7, reason: 'Perguntou disponibilidade e preço.' },
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Sinal moderado, não decisivo pro pipeline.',
+          score: 40, // below STAGE_SUGGESTION_MIN_SCORE (60) — pipeline move must NOT happen
+        },
+      }),
+    });
+
+    // The Meta signal fires regardless of the pipeline's own confidence gate.
+    expect(calls.dealUpdate).toHaveLength(0);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('10. falha da Meta não quebra o restante do pipeline', async () => {
+    mocks.sendQualifiedLeadEvent.mockRejectedValueOnce(new Error('Graph API down'));
+    const { db, calls } = fakeDb();
+
+    await expect(
+      applyLeadAnalysisResult({
+        db: db as never,
+        ...BASE_ARGS,
+        deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
+        stages: STAGES,
+        currentAiScore: 5,
+        result: result({
+          lead_score: { value: 7, reason: 'Pediu proposta.' },
+          stage_suggestion: {
+            should_suggest: true,
+            target_stage_name: 'Interesse',
+            justification: 'Solicitou proposta formal.',
+            score: 90,
+          },
+        }),
+      }),
+    ).resolves.toBeUndefined();
+
+    // The pipeline auto-move is a separate concern and must complete
+    // regardless of the Meta call's outcome.
+    expect(calls.dealUpdate).toHaveLength(1);
+    expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('11. retry (mesmo score ainda não persistido) → mesma identidade de evento, não uma nova qualificação', async () => {
+    const { db } = fakeDb();
+    const args = {
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 5, // simulates the score never having been persisted between attempts
+      result: result({ lead_score: { value: 7, reason: 'Pediu simulação.' } }),
+    };
+
+    await applyLeadAnalysisResult(args);
+    await applyLeadAnalysisResult(args); // same batch reprocessed (webhook redelivery, crash-retry, etc.)
+
+    // lead-analysis.ts does not itself block the second attempt — that's
+    // deliberate (see the file-level comment on applyQualifiedLeadSignal).
+    // What guarantees Meta only ever counts ONE QualifiedLead is that both
+    // calls target the exact same (db, accountId, conversationId), which
+    // meta-capi.ts turns into the same deterministic event_id
+    // (`qualified-lead:<conversationId>`) every time — proven separately
+    // in meta-capi.test.ts's "deterministic event_id ... stable across
+    // calls" test.
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenNthCalledWith(1, db, BASE_ARGS.accountId, BASE_ARGS.conversationId);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenNthCalledWith(2, db, BASE_ARGS.accountId, BASE_ARGS.conversationId);
+  });
+
+  it('primeira análise já com score >= 7 (sem observação anterior) → envia', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      // currentAiScore omitted entirely — mirrors a brand-new contact
+      // (dispatchInboundToLeadAnalysis defaults contacts.ai_score ?? 0).
+      result: result({ lead_score: { value: 8, reason: 'Já chegou pedindo proposta e visita.' } }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
   });
 });
 
