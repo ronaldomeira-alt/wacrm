@@ -75,6 +75,9 @@
     "testBtn": "Send test notification",
     "testSuccess": "Test notification sent — check this device.",
     "testError": "Couldn't send the test notification.",
+    "refreshBtn": "Refresh subscription",
+    "refreshedToast": "Subscription refreshed on this device.",
+    "notArrivingHint": "Notifications not arriving even though it says \"Enabled\" here? iPhone sometimes stops delivering them silently after a while or an iOS update. Send a test notification; if it doesn't arrive, click \"Refresh subscription\". If that still doesn't fix it, remove WACRM from the Home Screen and add it again (Safari → Share → Add to Home Screen).",
     "genericError": "Something went wrong. Please try again."
   },
   "Notifications": {
@@ -1876,6 +1879,7 @@
       "tagsCount": "{count} {count, plural, =1 {tag} other {tags}}",
       "fieldsCount": "{count} custom {count, plural, =1 {field} other {fields}}",
       "appearance": "{mode} mode · {theme} accent",
+      "notifications": "Push notifications on this phone",
       "yourAccount": "Your account",
       "loading": "Loading…"
     },
@@ -2180,6 +2184,7 @@
       "profile": "Your profile",
       "security": "Login & security",
       "appearance": "Appearance",
+      "notifications": "Notifications",
       "whatsapp": "WhatsApp",
       "templates": "Templates",
       "quick-replies": "Quick replies",
@@ -2253,6 +2258,10 @@
       "active": "Active",
       "accentColor": "Accent color",
       "useTheme": "Use {name} theme"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "description": "Control push notifications on this device for new WhatsApp messages."
     },
     "security": {
       "title": "Login & security",

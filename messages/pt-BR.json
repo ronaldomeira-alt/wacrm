@@ -75,6 +75,9 @@
     "testBtn": "Enviar notificação de teste",
     "testSuccess": "Notificação de teste enviada — confira este dispositivo.",
     "testError": "Não foi possível enviar a notificação de teste.",
+    "refreshBtn": "Renovar inscrição",
+    "refreshedToast": "Inscrição renovada neste dispositivo.",
+    "notArrivingHint": "Notificação não chegando mesmo com \"Ativado\" aqui? O iPhone às vezes para de entregar silenciosamente depois de um tempo ou uma atualização do iOS. Envie uma notificação de teste; se não chegar, clique em \"Renovar inscrição\". Se mesmo assim não resolver, remova o WACRM da Tela de Início e adicione de novo (Safari → Compartilhar → Adicionar à Tela de Início).",
     "genericError": "Algo deu errado. Tente novamente."
   },
   "Notifications": {
@@ -1876,6 +1879,7 @@
       "tagsCount": "{count} {count, plural, =1 {tag} other {tags}}",
       "fieldsCount": "{count} {count, plural, =1 {campo personalizado} other {campos personalizados}}",
       "appearance": "modo {mode} · destaque {theme}",
+      "notifications": "Notificações push no celular",
       "yourAccount": "Sua conta",
       "loading": "Carregando…"
     },
@@ -2180,6 +2184,7 @@
       "profile": "Seu perfil",
       "security": "Login e segurança",
       "appearance": "Aparência",
+      "notifications": "Notificações",
       "whatsapp": "WhatsApp",
       "templates": "Templates",
       "quick-replies": "Respostas rápidas",
@@ -2253,6 +2258,10 @@
       "active": "Ativo",
       "accentColor": "Cor de destaque",
       "useTheme": "Usar tema {name}"
+    },
+    "notifications": {
+      "title": "Notificações",
+      "description": "Controle as notificações push deste dispositivo para novas mensagens do WhatsApp."
     },
     "security": {
       "title": "Login e segurança",

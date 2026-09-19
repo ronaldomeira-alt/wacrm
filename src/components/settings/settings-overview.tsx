@@ -222,6 +222,11 @@ export function SettingsOverview({
       loading: false,
       subtitle: t('appearance', { mode: cap(mode), theme: themeName }),
     },
+    {
+      section: 'notifications',
+      loading: false,
+      subtitle: t('notifications'),
+    },
   ];
 
   return (

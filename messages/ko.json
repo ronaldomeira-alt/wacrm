@@ -75,6 +75,9 @@
     "testBtn": "테스트 알림 보내기",
     "testSuccess": "테스트 알림을 보냈습니다 — 이 기기를 확인하세요.",
     "testError": "테스트 알림을 보내지 못했습니다.",
+    "refreshBtn": "구독 갱신",
+    "refreshedToast": "이 기기의 구독이 갱신되었습니다.",
+    "notArrivingHint": "여기에 \"활성화됨\"이라고 표시되는데도 알림이 오지 않나요? iPhone은 시간이 지나거나 iOS 업데이트 후 알림 전송을 조용히 멈추는 경우가 있습니다. 테스트 알림을 보내보고, 오지 않으면 \"구독 갱신\"을 눌러보세요. 그래도 해결되지 않으면 홈 화면에서 WACRM을 삭제한 후 다시 추가하세요 (Safari → 공유 → 홈 화면에 추가).",
     "genericError": "문제가 발생했습니다. 다시 시도해 주세요."
   },
   "Notifications": {
@@ -1876,6 +1879,7 @@
       "tagsCount": "태그 {count}개",
       "fieldsCount": "커스텀 필드 {count}개",
       "appearance": "{mode} 모드 · {theme} 색상",
+      "notifications": "이 휴대폰의 푸시 알림",
       "yourAccount": "내 계정",
       "loading": "불러오는 중…"
     },
@@ -2180,6 +2184,7 @@
       "profile": "내 프로필",
       "security": "로그인 & 보안",
       "appearance": "화면 설정",
+      "notifications": "알림",
       "whatsapp": "WhatsApp",
       "templates": "템플릿",
       "quick-replies": "빠른 답장",
@@ -2253,6 +2258,10 @@
       "active": "사용 중",
       "accentColor": "강조 색상",
       "useTheme": "{name} 테마 사용"
+    },
+    "notifications": {
+      "title": "알림",
+      "description": "새 WhatsApp 메시지에 대한 이 기기의 푸시 알림을 관리하세요."
     },
     "security": {
       "title": "로그인 & 보안",

@@ -7,7 +7,6 @@ import { MODES, THEMES, type Mode, type ThemeId } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { SettingsPanelHead } from "./settings-panel-head";
-import { PushNotificationsCard } from "./push-notifications-card";
 
 /**
  * Appearance panel — light/dark mode + accent-color picker.
@@ -73,10 +72,6 @@ export function AppearancePanel() {
             />
           ))}
         </div>
-      </div>
-
-      <div className="mt-8">
-        <PushNotificationsCard />
       </div>
     </section>
   );
