@@ -19,6 +19,33 @@ export type SendQualifiedLeadResult =
   | { sent: true }
   | { sent: false; reason: 'no_ctwa_clid' | 'capi_not_configured' | 'graph_api_error'; detail?: string }
 
+export interface SendQualifiedLeadOptions {
+  /**
+   * Meta's Test Events code (Events Manager → dataset → Test Events tab).
+   * ONLY ever supplied by the manual test harness
+   * (`scripts/test-qualified-lead-capi.ts`) — no production call site
+   * passes this, so real lead traffic can never carry it by accident, no
+   * matter what's set in the environment. When present, Meta shows the
+   * event live in Test Events instead of (or alongside) counting it as a
+   * normal production event.
+   */
+  testEventCode?: string
+}
+
+/**
+ * Deterministic event id: the logical event is "this conversation's lead
+ * became qualified", which by construction (see the early-return in
+ * applyStageSuggestion once a deal is already in the target stage) can
+ * only be produced once per conversation — but a retry of the same
+ * analysis run (network retry, at-least-once webhook redelivery racing
+ * the cooldown) must still resolve to the same id so Meta's own
+ * deduplication collapses it, instead of a fresh random id creating a
+ * second count each time. Never randomize this.
+ */
+function qualifiedLeadEventId(conversationId: string): string {
+  return `qualified-lead:${conversationId}`
+}
+
 /**
  * Fires the `QualifiedLead` CAPI event for the ad click that originated
  * this conversation. No-op (not an error) when the conversation didn't
@@ -30,6 +57,7 @@ export async function sendQualifiedLeadEvent(
   db: SupabaseClient,
   accountId: string,
   conversationId: string,
+  options?: SendQualifiedLeadOptions,
 ): Promise<SendQualifiedLeadResult> {
   const { data: conversation } = await db
     .from('conversations')
@@ -62,6 +90,7 @@ export async function sendQualifiedLeadEvent(
         data: [
           {
             event_name: 'QualifiedLead',
+            event_id: qualifiedLeadEventId(conversationId),
             event_time: Math.floor(Date.now() / 1000),
             action_source: 'business_messaging',
             messaging_channel: 'whatsapp',
@@ -71,6 +100,7 @@ export async function sendQualifiedLeadEvent(
             },
           },
         ],
+        ...(options?.testEventCode ? { test_event_code: options.testEventCode } : {}),
       }),
     },
   )

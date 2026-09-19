@@ -315,6 +315,30 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledWith(db, BASE_ARGS.accountId, BASE_ARGS.conversationId);
   });
 
+  it('passes metaCapiTestEventCode through to sendQualifiedLeadEvent only when the caller (test harness) sets it', async () => {
+    const { db } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-qualificacao' },
+      stages: STAGES,
+      currentAiScore: 8,
+      metaCapiTestEventCode: 'TEST12345',
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Teste controlado via harness.',
+          score: 90,
+        },
+      }),
+    });
+
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledWith(db, BASE_ARGS.accountId, BASE_ARGS.conversationId, {
+      testEventCode: 'TEST12345',
+    });
+  });
+
   it('scenario 4c: auto-moves Qualificação → Interesse using freshly-computed lead_score over currentAiScore', async () => {
     const { db, calls } = fakeDb();
     await applyLeadAnalysisResult({

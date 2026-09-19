@@ -87,11 +87,48 @@ describe('sendQualifiedLeadEvent', () => {
     const body = JSON.parse(init.body)
     expect(body.data[0]).toMatchObject({
       event_name: 'QualifiedLead',
+      event_id: `qualified-lead:${CONVERSATION_ID}`,
       action_source: 'business_messaging',
       messaging_channel: 'whatsapp',
       user_data: { whatsapp_business_account_id: WABA_ID, ctwa_clid: CLID },
     })
     expect(typeof body.data[0].event_time).toBe('number')
+    expect(body.test_event_code).toBeUndefined()
+  })
+
+  it('uses a deterministic event_id derived only from the conversation, stable across calls', async () => {
+    const db = fakeDb({
+      ctwaReferral: { ctwa_clid: CLID },
+      whatsappConfig: { access_token: encrypt(TOKEN), waba_id: WABA_ID, meta_capi_dataset_id: DATASET_ID },
+    })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await sendQualifiedLeadEvent(db as never, ACCOUNT_ID, CONVERSATION_ID)
+    await sendQualifiedLeadEvent(db as never, ACCOUNT_ID, CONVERSATION_ID)
+
+    const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+    // Same logical event on retry/reprocessing → same event_id, never a
+    // fresh random one — this is what lets Meta's own dedup collapse it.
+    expect(firstBody.data[0].event_id).toBe(secondBody.data[0].event_id)
+  })
+
+  it('includes test_event_code only when explicitly passed by the caller (test harness), never by default', async () => {
+    const db = fakeDb({
+      ctwaReferral: { ctwa_clid: CLID },
+      whatsappConfig: { access_token: encrypt(TOKEN), waba_id: WABA_ID, meta_capi_dataset_id: DATASET_ID },
+    })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await sendQualifiedLeadEvent(db as never, ACCOUNT_ID, CONVERSATION_ID, { testEventCode: 'TEST12345' })
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.test_event_code).toBe('TEST12345')
+    // The per-event fields are unaffected — test_event_code rides alongside,
+    // not instead of, the real payload.
+    expect(body.data[0].event_name).toBe('QualifiedLead')
   })
 
   it('returns graph_api_error when Meta rejects the event', async () => {

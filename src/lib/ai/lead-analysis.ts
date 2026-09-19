@@ -67,6 +67,10 @@ export interface ApplyLeadAnalysisArgs {
    *  when the model didn't return a lead_score in the current batch, so that
    *  pipeline auto-progression rules always have a score to evaluate against. */
   currentAiScore?: number
+  /** Meta Test Events code — ONLY ever set by the manual test harness
+   *  (scripts/test-qualified-lead-capi.ts). No production caller sets this,
+   *  so real lead traffic never carries it. See SendQualifiedLeadOptions. */
+  metaCapiTestEventCode?: string
 }
 
 export async function applyLeadAnalysisResult(args: ApplyLeadAnalysisArgs): Promise<void> {
@@ -205,7 +209,13 @@ async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> 
       // that already happened above.
       if (toLower === 'interesse') {
         try {
-          await sendQualifiedLeadEvent(db, accountId, conversationId)
+          if (args.metaCapiTestEventCode) {
+            await sendQualifiedLeadEvent(db, accountId, conversationId, {
+              testEventCode: args.metaCapiTestEventCode,
+            })
+          } else {
+            await sendQualifiedLeadEvent(db, accountId, conversationId)
+          }
         } catch (err) {
           console.error('[lead-analysis] QualifiedLead CAPI event failed:', err)
         }
