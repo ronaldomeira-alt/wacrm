@@ -7,7 +7,8 @@ import { loadAiConfig, loadEmbeddingsKey } from '@/lib/ai/config'
 import { ingestDocument, replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge'
 import { applyPropertySubjectiveLearning } from '@/lib/ai/property-learning-apply'
 import { resolvePropertyIdentity } from '@/lib/ai/property-identity'
-import { saveMemory, setMemoryStatus, inferScopeFromKnowledgeType, type MemoryKnowledgeType } from '@/lib/ai/memory'
+import { setMemoryStatus, inferScopeFromKnowledgeType, type MemoryKnowledgeType } from '@/lib/ai/memory'
+import { consolidateMemory } from '@/lib/ai/memory-consolidation'
 import type { AiSuggestionStatus } from '@/types'
 
 function bad(message: string, status = 400) {
@@ -366,7 +367,19 @@ export async function PATCH(
         }
 
         try {
-          const memory = await saveMemory(supabase, {
+          // Approving this suggestion is ONE observation, not a blank
+          // insert — consolidateMemory compares it against whatever this
+          // scope/target/type already knows (see memory-consolidation.ts)
+          // and reinforces/consolidates/conflicts instead of always
+          // creating a new row. Evidence independence keys off the
+          // conversation when we have one (so re-approving a fact seen in
+          // the same conversation twice never double-counts); otherwise
+          // this admin's approval itself is the independent confirmation.
+          const evidence = conversationId
+            ? ({ kind: 'conversation', conversationId } as const)
+            : ({ kind: 'human', agentId: userId, ref: id, note: 'suggestion_approved' } as const)
+
+          const result = await consolidateMemory(supabase, {
             accountId,
             scope,
             knowledgeType: learningType as MemoryKnowledgeType,
@@ -382,18 +395,19 @@ export async function PATCH(
             // traceability (which suggestion, whether audio-derived)
             // still lives in metadata regardless.
             sourceType: payload.origin_includes_audio ? 'audio_transcript' : 'suggestion_approved',
-            confidence: (typeof payload.confidence === 'string' ? payload.confidence : 'medium') as
-              | 'low'
-              | 'medium'
-              | 'high',
-            occurrenceCount: typeof payload.occurrence_count === 'number' ? payload.occurrence_count : 1,
+            evidence,
             metadata: { suggestion_id: id, learning_origin: 'suggestion_approved' },
           })
+
+          if (!result.memory) {
+            return bad('Este aprendizado não contém informação suficiente para virar uma memória (conteúdo de baixo sinal).')
+          }
 
           payload = {
             ...payload,
             applied_target: `memory:${scope}`,
-            applied_memory_id: memory.id,
+            applied_memory_id: result.memory.id,
+            consolidation_action: result.action,
             property_id: propertyId,
           }
         } catch (err) {

@@ -47,7 +47,16 @@ export type MemoryKnowledgeType =
   | ConversationKnowledgeType
 
 export type MemoryConfidence = 'low' | 'medium' | 'high'
-export type MemoryStatus = 'active' | 'inactive' | 'archived' | 'deprecated'
+/**
+ * 'candidate': learned once or twice, not yet trusted enough to answer a
+ * customer with — usable as provisional context in the SAME turn only
+ * (see memory-consolidation.ts's confidence policy), never surfaced as
+ * consolidated fact.
+ * 'conflict': contradicts an existing 'active' memory; held aside until
+ * enough independent evidence accumulates to replace it — the 'active'
+ * row is never touched while a 'conflict' row for it exists.
+ */
+export type MemoryStatus = 'active' | 'candidate' | 'conflict' | 'inactive' | 'archived' | 'deprecated'
 export type MemorySourceType =
   | 'learning_scan'
   | 'audio_transcript'
@@ -116,8 +125,36 @@ export interface MemoryRow {
   occurrenceCount: number
   status: MemoryStatus
   metadata: Record<string, unknown>
+  /** Independent confirmations this memory has accrued — see
+   *  memory-consolidation.ts. Never hand-edit; always append via
+   *  consolidateMemory so duplicate/non-independent evidence is deduped. */
+  evidence: MemoryEvidence[]
+  /** Prior values this memory held before being updated by a
+   *  higher-confidence contradiction (official source, or 3 independent
+   *  confirmations of new information) — see memory-consolidation.ts. */
+  valueHistory: MemoryValueHistoryEntry[]
   createdAt: string
   updatedAt: string
+}
+
+/** One independent confirmation of a piece of knowledge. 'system' evidence
+ *  (Clara's own repeated automatic output) is recorded but never counted
+ *  toward consolidation thresholds — see evidenceSignature in
+ *  memory-consolidation.ts. */
+export interface MemoryEvidence {
+  kind: 'conversation' | 'message' | 'official' | 'human' | 'system'
+  conversationId?: string | null
+  messageId?: string | null
+  agentId?: string | null
+  ref?: string | null
+  note?: string | null
+  recordedAt: string
+}
+
+export interface MemoryValueHistoryEntry {
+  value: string
+  replacedAt: string
+  reason: 'official_source' | 'contradiction_resolved'
 }
 
 interface MemoryDbRow {
@@ -138,11 +175,13 @@ interface MemoryDbRow {
   occurrence_count: number
   status: MemoryStatus
   metadata: Record<string, unknown> | null
+  evidence: MemoryEvidence[] | null
+  value_history: MemoryValueHistoryEntry[] | null
   created_at: string
   updated_at: string
 }
 
-function fromDbRow(row: MemoryDbRow): MemoryRow {
+export function fromDbRow(row: MemoryDbRow): MemoryRow {
   return {
     id: row.id,
     accountId: row.account_id,
@@ -161,13 +200,17 @@ function fromDbRow(row: MemoryDbRow): MemoryRow {
     occurrenceCount: row.occurrence_count,
     status: row.status,
     metadata: row.metadata ?? {},
+    evidence: row.evidence ?? [],
+    valueHistory: row.value_history ?? [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
 }
 
-const SELECT_COLUMNS =
-  'id, account_id, scope, knowledge_type, title, content, property_id, ad_id, conversation_id, contact_id, source_type, source_message_id, agent_id, confidence, occurrence_count, status, metadata, created_at, updated_at'
+export type { MemoryDbRow }
+
+export const SELECT_COLUMNS =
+  'id, account_id, scope, knowledge_type, title, content, property_id, ad_id, conversation_id, contact_id, source_type, source_message_id, agent_id, confidence, occurrence_count, status, metadata, evidence, value_history, created_at, updated_at'
 
 export interface SaveMemoryArgs {
   accountId: string
@@ -185,6 +228,11 @@ export interface SaveMemoryArgs {
   confidence: MemoryConfidence
   occurrenceCount?: number
   metadata?: Record<string, unknown>
+  /** Defaults to 'active' for back-compat with every pre-consolidation
+   *  caller. memory-consolidation.ts passes 'candidate' or 'conflict'
+   *  explicitly for a first/contested occurrence. */
+  status?: MemoryStatus
+  evidence?: MemoryEvidence[]
 }
 
 /**
@@ -228,6 +276,8 @@ export async function saveMemory(db: SupabaseClient, args: SaveMemoryArgs): Prom
       confidence: args.confidence,
       occurrence_count: args.occurrenceCount ?? 1,
       metadata: args.metadata ?? {},
+      status: args.status ?? 'active',
+      evidence: args.evidence ?? [],
     })
     .select(SELECT_COLUMNS)
     .single()
@@ -266,6 +316,15 @@ const EMPTY_SCOPED: ScopedMemories = { global: [], style: [], property: [], ad: 
  * everything relevant" query — so a bug in one branch can't leak into
  * another (e.g. a broken propertyId can only ever return zero PROPERTY
  * rows, never fall through to someone else's).
+ *
+ * Includes 'candidate' rows alongside 'active' ones (never 'conflict' —
+ * those are internal consolidation state, not usable knowledge). A
+ * candidate is real evidence Clara has already seen once or twice, just
+ * not yet consolidated — excluding it entirely would make automatic,
+ * no-approval-required learning (memory-consolidation.ts) pointless, since
+ * nothing would be usable until it happened to cross the active threshold.
+ * formatMemoriesForPrompt tags candidates as provisional so the model
+ * never treats them with the same certainty as a consolidated fact.
  */
 export async function retrieveScopedMemories(
   db: SupabaseClient,
@@ -278,7 +337,7 @@ export async function retrieveScopedMemories(
       .select(SELECT_COLUMNS)
       .eq('account_id', accountId)
       .eq('scope', 'global')
-      .eq('status', 'active')
+      .in('status', ['active', 'candidate'])
       .order('created_at', { ascending: false })
       .limit(40),
     ctx.propertyId
@@ -288,7 +347,7 @@ export async function retrieveScopedMemories(
           .eq('account_id', accountId)
           .eq('scope', 'property')
           .eq('property_id', ctx.propertyId)
-          .eq('status', 'active')
+          .in('status', ['active', 'candidate'])
           .order('created_at', { ascending: false })
           .limit(30)
       : Promise.resolve({ data: [] as MemoryDbRow[], error: null }),
@@ -299,7 +358,7 @@ export async function retrieveScopedMemories(
           .eq('account_id', accountId)
           .eq('scope', 'ad')
           .eq('ad_id', ctx.adId)
-          .eq('status', 'active')
+          .in('status', ['active', 'candidate'])
           .order('created_at', { ascending: false })
           .limit(15)
       : Promise.resolve({ data: [] as MemoryDbRow[], error: null }),
@@ -310,7 +369,7 @@ export async function retrieveScopedMemories(
           .eq('account_id', accountId)
           .eq('scope', 'conversation')
           .eq('conversation_id', ctx.conversationId)
-          .eq('status', 'active')
+          .in('status', ['active', 'candidate'])
           .order('created_at', { ascending: false })
           .limit(15)
       : Promise.resolve({ data: [] as MemoryDbRow[], error: null }),
@@ -341,8 +400,12 @@ export async function retrieveScopedMemories(
  */
 function formatMemory(m: MemoryRow, agentNameById: Map<string, string>): string {
   const who = m.agentId ? agentNameById.get(m.agentId) || null : null
-  const prefix = who ? `[${who}] ` : ''
-  return `${prefix}${m.content}`
+  const whoPrefix = who ? `[${who}] ` : ''
+  // A 'candidate' hasn't cleared the consolidation bar yet (see
+  // memory-consolidation.ts) — flagged inline so the model treats it as
+  // provisional context, never states it to a customer as a confirmed fact.
+  const statusPrefix = m.status === 'candidate' ? '[NÃO CONFIRMADO — use com cautela, não afirme como fato] ' : ''
+  return `${statusPrefix}${whoPrefix}${m.content}`
 }
 
 export function formatMemoriesForPrompt(

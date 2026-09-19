@@ -109,7 +109,7 @@ describe('WACRM — Off-Hours Conversational Continuity & Decision Logic', () =>
       businessHours: ctx,
     })
 
-    expect(prompt).toContain('Durante o horário comercial ativo (08:00 às 20:00): informe que nossa equipe (Ronaldo ou Thatianna) dará continuidade ao atendimento (sem falar em "próximo horário comercial")')
+    expect(prompt).toContain('informe com clareza que nossa equipe dará continuidade ao atendimento e passe o bastão')
   })
 
   // ============================================================

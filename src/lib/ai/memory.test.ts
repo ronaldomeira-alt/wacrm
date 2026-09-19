@@ -53,6 +53,10 @@ function fakeMemoriesDb(seed: Row[] = []) {
         filters.push((r) => (r as unknown as Record<string, unknown>)[field] === value);
         return api;
       },
+      in(field: string, values: unknown[]) {
+        filters.push((r) => values.includes((r as unknown as Record<string, unknown>)[field]));
+        return api;
+      },
       order() {
         return api;
       },
@@ -314,6 +318,23 @@ describe('retrieveScopedMemories — isolation guarantees', () => {
     expect(result.global.map((m) => m.id)).toEqual(['g']);
     expect(result.property).toEqual([]);
   });
+
+  it('Test 6: a "candidate" memory is retrieved alongside "active" ones — auto-learned knowledge must be usable before it fully consolidates', async () => {
+    const { db } = fakeMemoriesDb([
+      makeRow({ id: 'p-active', scope: 'property', property_id: 'prop-a', status: 'active', content: 'Tem piscina.' }),
+      makeRow({ id: 'p-candidate', scope: 'property', property_id: 'prop-a', status: 'candidate', confidence: 'low', content: 'Tem academia.' }),
+    ]);
+    const result = await retrieveScopedMemories(db, ACCOUNT, { propertyId: 'prop-a' });
+    expect(result.property.map((m) => m.id).sort()).toEqual(['p-active', 'p-candidate']);
+  });
+
+  it('never retrieves a "conflict" row — it is internal consolidation state, not usable knowledge', async () => {
+    const { db } = fakeMemoriesDb([
+      makeRow({ id: 'p-conflict', scope: 'property', property_id: 'prop-a', status: 'conflict', content: 'Tem 22m².' }),
+    ]);
+    const result = await retrieveScopedMemories(db, ACCOUNT, { propertyId: 'prop-a' });
+    expect(result.property).toEqual([]);
+  });
 });
 
 describe('formatMemoriesForPrompt', () => {
@@ -326,6 +347,16 @@ describe('formatMemoriesForPrompt', () => {
     const formatted = formatMemoriesForPrompt(memories, names);
     expect(formatted[0]).toBe('[Ronaldo Meira] Abre com "Joiaaaa".');
     expect(formatted[1]).toBe('Time é sempre cordial.');
+  });
+
+  it('tags a "candidate" memory as not-yet-confirmed so the model never states it as fact', () => {
+    const memories: MemoryRow[] = [
+      makeRowAsMemory({ status: 'candidate', content: 'Pode ter academia (não confirmado).' }),
+      makeRowAsMemory({ status: 'active', content: 'Tem piscina.' }),
+    ];
+    const formatted = formatMemoriesForPrompt(memories);
+    expect(formatted[0]).toMatch(/^\[NÃO CONFIRMADO/);
+    expect(formatted[1]).toBe('Tem piscina.');
   });
 });
 
@@ -348,6 +379,8 @@ function makeRowAsMemory(overrides: Partial<MemoryRow>): MemoryRow {
     occurrenceCount: 1,
     status: 'active',
     metadata: {},
+    evidence: [],
+    valueHistory: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,

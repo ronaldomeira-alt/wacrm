@@ -69,7 +69,10 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
     expect(sysPrompt).toContain('NÍVEL 1 — REATIVAÇÃO ESPECÍFICA')
     expect(sysPrompt).toContain('NÍVEL 2 — REATIVAÇÃO GLOBAL')
     expect(sysPrompt).toContain('NÃO JOGAR O CLIENTE EM UM CATÁLOGO')
-    expect(sysPrompt).toContain('PROIBIÇÃO DE CLICHÊS VAZIOS')
+    expect(sysPrompt).toContain('FRONTEIRA ESTRITA DE DOMÍNIO IMOBILIÁRIO')
+    expect(sysPrompt).toContain('É TERMINANTEMENTE PROIBIDO absorver, adotar ou inventar tópicos de outros mercados')
+    expect(sysPrompt).toContain('REGRA DE CONTENÇÃO OBRIGATÓRIA')
+    expect(sysPrompt).toContain('me conta o que posso fazer para te ajudar')
     expect(sysPrompt).toContain('Oi, você ainda está por aí?')
     expect(sysPrompt).toContain('Ficou alguma dúvida?')
 
@@ -87,6 +90,15 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
     expect(userPrompt).toContain('Live Park')
     expect(userPrompt).toContain('Quantos quartos tem?')
     expect(userPrompt).toContain('O Live Park possui unidades de 1 quarto.')
+
+    // Test prompt without property (no ad / no property linked)
+    const userPromptNoProperty = buildReactivationUserPrompt({
+      contactName: 'Giane',
+      messages: [
+        { role: 'user', content: 'Olá! Sou consultora do Instituto Fridrich...' },
+      ],
+    })
+    expect(userPromptNoProperty).toContain('Empreendimento em foco: Nenhum (contato sem imóvel vinculado — mantenha estrita contenção imobiliária)')
   })
 
   // ============================================================
@@ -606,6 +618,117 @@ describe('CONTEXTUAL REACTIVATION (Reativação de Conversas Interrompidas)', ()
       expect(res.outcome).toBe('cancelled_explicit_opt_out')
       expect(mocks.engineSendText).not.toHaveBeenCalled()
       expect(tracker.updatedPayload?.ai_reactivation_status).toBe('cancelled')
+    })
+
+    // CENÁRIO M: Contato fez prospecção externa (cursos/estética/vendas B2B) -> Descartado sem reativar
+    it('CENÁRIO M: External vendor / course sales pitch is discarded without sending reactivation', async () => {
+      mocks.generateOpenAi.mockResolvedValueOnce({
+        text: JSON.stringify({
+          should_reactivate: false,
+          reactivation_type: 'none',
+          detected_need_or_clue: null,
+          reason: 'Contato é consultora oferecendo cursos de estética de outra instituição, sem interesse imobiliário.',
+          message_text: '',
+        }),
+        usage: { promptTokens: 120, completionTokens: 35, totalTokens: 155 },
+      })
+
+      const tracker = { updatedPayload: null as ReactivationUpdatePayload | null }
+      const mockDb = buildMockDb({
+        conversation: {
+          id: 'conv-vendor-pitch',
+          account_id: 'acc-1',
+          contact_id: 'cont-vendor',
+          last_message_at: '2026-09-15T18:08:00.000Z',
+          ai_reactivation_status: null,
+          ai_reactivation_count: 0,
+          assigned_agent_id: null,
+          ai_autoreply_disabled: false,
+          status: 'open',
+          contact: { id: 'cont-vendor', name: 'Giane -IF comercial', phone: '+558388543404' },
+          property: null,
+        },
+        messages: [
+          {
+            id: 'm1',
+            sender_type: 'customer',
+            content_text: 'Olá! Seja muito bem-vinda ao Instituto Fridrich! Me chamo Giane e sou Consultora de vendas... você já atua na área da estética?',
+            created_at: '2026-09-15T18:07:00.000Z',
+          },
+          {
+            id: 'm2',
+            sender_type: 'bot',
+            content_text: 'Olá, Giane! 😊 Sou a Clara, assistente da equipe do Ronaldo Meira. Como posso te ajudar hoje?',
+            created_at: '2026-09-15T18:08:00.000Z',
+          },
+        ],
+        onUpdate: (payload) => {
+          tracker.updatedPayload = payload as ReactivationUpdatePayload
+        },
+      })
+
+      const res = await evaluateAndExecuteReactivation(mockDb, 'conv-vendor-pitch', {
+        simulatedHours: 'business_hours',
+      })
+
+      expect(res.outcome).toBe('skipped_not_appropriate')
+      expect(mocks.engineSendText).not.toHaveBeenCalled()
+      expect(tracker.updatedPayload?.ai_reactivation_status).toBe('skipped')
+    })
+
+    // CENÁRIO N: Contato sem anúncio e sem imóvel vinculado -> Regra de contenção terminando com 'me conta o que posso fazer para te ajudar'
+    it('CENÁRIO N: Lead without property/ad context gets contained global message ending with "me conta o que posso fazer para te ajudar"', async () => {
+      mocks.generateOpenAi.mockResolvedValueOnce({
+        text: JSON.stringify({
+          should_reactivate: true,
+          reactivation_type: 'global',
+          detected_need_or_clue: null,
+          reason: 'Contato inicial genérico sem anúncio vinculado, aplicando regra de contenção.',
+          message_text: 'Oi, Juliana! 😊 Passando por aqui. Me conta o que posso fazer para te ajudar.',
+        }),
+        usage: { promptTokens: 110, completionTokens: 30, totalTokens: 140 },
+      })
+
+      const mockDb = buildMockDb({
+        conversation: {
+          id: 'conv-no-ad-context',
+          account_id: 'acc-1',
+          contact_id: 'cont-no-ad',
+          last_message_at: '2026-09-15T18:00:00.000Z',
+          ai_reactivation_status: null,
+          ai_reactivation_count: 0,
+          assigned_agent_id: null,
+          ai_autoreply_disabled: false,
+          status: 'open',
+          contact: { id: 'cont-no-ad', name: 'Juliana', phone: '+5583999999999' },
+          property: null,
+        },
+        messages: [
+          {
+            id: 'm1',
+            sender_type: 'customer',
+            content_text: 'Oi',
+            created_at: '2026-09-15T17:59:00.000Z',
+          },
+          {
+            id: 'm2',
+            sender_type: 'bot',
+            content_text: 'Olá, Juliana! 😊 Sou a Clara, assistente da equipe do Ronaldo Meira. Como posso te ajudar hoje?',
+            created_at: '2026-09-15T18:00:00.000Z',
+          },
+        ],
+      })
+
+      const res = await evaluateAndExecuteReactivation(mockDb, 'conv-no-ad-context', {
+        simulatedHours: 'business_hours',
+      })
+
+      expect(res.outcome).toBe('sent')
+      expect(res.decision?.reactivation_type).toBe('global')
+      expect(res.messageText?.toLowerCase()).toContain('me conta o que posso fazer para te ajudar')
+      expect(res.messageText).not.toContain('área da estética')
+      expect(res.messageText).not.toContain('posso te orientar')
+      expect(mocks.engineSendText).toHaveBeenCalledTimes(1)
     })
   })
 

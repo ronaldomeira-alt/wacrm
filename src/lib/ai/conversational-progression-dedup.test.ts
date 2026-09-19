@@ -606,9 +606,10 @@ describe('CLARA — Conversational Progression, Information Deduplication and Be
     expect(resp).not.toContain('sauna');
     expect(resp).not.toContain('spa');
 
-    // 5. Mantém condução ativa direcionando para o próximo passo comercial
+    // 5. Mantém condução ativa direcionando para o próximo passo comercial de forma institucional (sem vazar nomes)
     expect(resp).toContain('próximo passo');
-    expect(resp).toContain('Ronaldo ou a Thatianna');
+    expect(resp).toContain('nossa equipe');
+    expect(resp).not.toMatch(/\b(ronaldo|thatianna)\b/i);
   });
 });
 

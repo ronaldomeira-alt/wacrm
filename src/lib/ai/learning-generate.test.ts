@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   resolvePropertyIdentity: vi.fn(),
   findConversationEvidence: vi.fn(),
   recordPropertyLearningEvidence: vi.fn(),
+  consolidateMemory: vi.fn(),
 }));
 
 vi.mock('./config', () => ({ loadAiConfig: mocks.loadAiConfig }));
@@ -20,6 +21,12 @@ vi.mock('./property-learning-apply', async () => {
   const actual = await vi.importActual<typeof import('./property-learning-apply')>('./property-learning-apply');
   return { ...actual, applyPropertySubjectiveLearning: mocks.applyPropertySubjectiveLearning };
 });
+// consolidateMemory's own policy (candidate/active ladder, conflict
+// handling, text equivalence) is covered end-to-end in
+// memory-consolidation.test.ts — here we only need to control whether it
+// "took" so the orchestration tests below aren't exercising the real
+// consolidation logic.
+vi.mock('./memory-consolidation', () => ({ consolidateMemory: mocks.consolidateMemory }));
 // Identity resolution/evidence itself is covered in property-identity.test.ts —
 // here we only need to control it so the orchestration tests below aren't
 // exercising real fuzzy matching or hitting untracked DB tables.
@@ -182,6 +189,10 @@ beforeEach(() => {
   mocks.resolvePropertyIdentity.mockReset().mockResolvedValue({ kind: 'no_match' });
   mocks.findConversationEvidence.mockReset().mockReturnValue({ mentioned: new Set(), withContext: new Set() });
   mocks.recordPropertyLearningEvidence.mockReset().mockResolvedValue(undefined);
+  mocks.consolidateMemory.mockReset().mockResolvedValue({
+    action: 'created_candidate',
+    memory: { id: 'mem-1', status: 'candidate' },
+  });
 });
 
 const BASE_MESSAGES: FixtureMessage[] = [
@@ -462,7 +473,7 @@ describe('generateLearningSuggestions', () => {
     expect(mocks.recordPropertyLearningEvidence).not.toHaveBeenCalled();
   });
 
-  it('never auto-applies a non-property_subjective learning, no matter how recurring', async () => {
+  it('never auto-applies a learning type with no scope of its own (never_rule), no matter how recurring — always needs a human', async () => {
     const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
     mocks.generateOpenAi.mockResolvedValue(
       scanResponse([
@@ -480,6 +491,155 @@ describe('generateLearningSuggestions', () => {
     expect(result).toEqual({ created: 1, touched: 0 });
     expect(inserted[0].status).toBe('pending');
     expect(mocks.applyPropertySubjectiveLearning).not.toHaveBeenCalled();
+    expect(mocks.consolidateMemory).not.toHaveBeenCalled();
+  });
+
+  describe('auto-consolidation of common knowledge (no manual approval required)', () => {
+    it('auto-consolidates a GLOBAL fact (business_rule) straight into ai_memories via consolidateMemory — no admin click needed', async () => {
+      mocks.consolidateMemory.mockResolvedValue({
+        action: 'created_candidate',
+        memory: { id: 'mem-1', status: 'candidate' },
+      });
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'business_rule', info: 'Não trabalhamos com terrenos.', confidence: 'high', is_isolated: false },
+        ]),
+      );
+
+      const result = await generateLearningSuggestions(db, 'account-1');
+      expect(result).toEqual({ created: 1, touched: 0 });
+      expect(mocks.consolidateMemory).toHaveBeenCalledTimes(1);
+      expect(mocks.consolidateMemory).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          accountId: 'account-1',
+          scope: 'global',
+          knowledgeType: 'business_rule',
+          content: 'Não trabalhamos com terrenos.',
+        }),
+      );
+      expect(inserted[0].status).toBe('approved');
+      const payload = inserted[0].payload as Record<string, unknown>;
+      expect(payload.auto_applied).toBe(true);
+      expect(payload.applied_target).toBe('memory:global');
+      expect(payload.applied_memory_id).toBe('mem-1');
+    });
+
+    it('auto-consolidates a PROPERTY fact once its property_id resolves safely', async () => {
+      mocks.resolvePropertyIdentity.mockResolvedValue({ kind: 'safe_match', propertyId: 'prop-live-park', score: 0.99 });
+      mocks.consolidateMemory.mockResolvedValue({
+        action: 'created_candidate',
+        memory: { id: 'mem-2', status: 'candidate' },
+      });
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'property_fact',
+            info: 'Tem piscina na cobertura.',
+            confidence: 'high',
+            is_isolated: false,
+            property_name: 'Live Park',
+          },
+        ]),
+      );
+
+      await generateLearningSuggestions(db, 'account-1');
+      expect(mocks.consolidateMemory).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ scope: 'property', propertyId: 'prop-live-park' }),
+      );
+      expect(inserted[0].status).toBe('approved');
+    });
+
+    it('does NOT auto-consolidate a PROPERTY fact when the property name is ambiguous — stays pending for a human to resolve', async () => {
+      mocks.resolvePropertyIdentity.mockResolvedValue({
+        kind: 'ambiguous',
+        candidates: [{ propertyId: 'a', score: 0.7 }, { propertyId: 'b', score: 0.68 }],
+      });
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'property_fact', info: 'Tem piscina.', confidence: 'high', is_isolated: false, property_name: 'Live' },
+        ]),
+      );
+
+      await generateLearningSuggestions(db, 'account-1');
+      expect(mocks.consolidateMemory).not.toHaveBeenCalled();
+      expect(inserted[0].status).toBe('pending');
+    });
+
+    it('does NOT auto-consolidate an AD fact when the ad_id was fabricated (not actually seen in this batch)', async () => {
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'ad_fact',
+            info: 'Fato de um anúncio inventado.',
+            confidence: 'high',
+            is_isolated: false,
+            ad_id: 'ad-fabricado-999',
+          },
+        ]),
+      );
+
+      await generateLearningSuggestions(db, 'account-1');
+      expect(mocks.consolidateMemory).not.toHaveBeenCalled();
+      expect(inserted[0].status).toBe('pending');
+    });
+
+    it('leaves the suggestion pending when consolidateMemory declines the content as low-signal (memory: null)', async () => {
+      mocks.consolidateMemory.mockResolvedValue({ action: 'skipped_low_signal', memory: null });
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'business_rule', info: 'Não trabalhamos com terrenos.', confidence: 'high', is_isolated: false },
+        ]),
+      );
+
+      await generateLearningSuggestions(db, 'account-1');
+      expect(inserted[0].status).toBe('pending');
+    });
+
+    it('never routes language_style through consolidateMemory/ai_memories — it keeps its dedicated team_presentation approval path', async () => {
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          { type: 'language_style', info: 'Tom leve e informal do time.', confidence: 'high', is_isolated: false },
+        ]),
+      );
+
+      await generateLearningSuggestions(db, 'account-1');
+      expect(mocks.consolidateMemory).not.toHaveBeenCalled();
+      expect(inserted[0].status).toBe('pending');
+    });
+
+    it('auto-consolidates a CONVERSATION fact, keying evidence off the resolved conversation_id', async () => {
+      const { db, inserted } = fakeDb({ messages: BASE_MESSAGES });
+      mocks.generateOpenAi.mockResolvedValue(
+        scanResponse([
+          {
+            type: 'client_preference',
+            info: 'Cliente quer para Airbnb.',
+            confidence: 'high',
+            is_isolated: false,
+            conversation_id: 'conv-1',
+          },
+        ]),
+      );
+
+      await generateLearningSuggestions(db, 'account-1');
+      expect(mocks.consolidateMemory).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          scope: 'conversation',
+          conversationId: 'conv-1',
+          evidence: { kind: 'conversation', conversationId: 'conv-1' },
+        }),
+      );
+      expect(inserted[0].status).toBe('approved');
+    });
   });
 
   it('does not re-suggest something already in the knowledge base', async () => {

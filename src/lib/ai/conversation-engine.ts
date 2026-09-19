@@ -27,6 +27,7 @@ import {
   type ResolvedMediaToSend,
 } from './property-media-service';
 import { retrieveScopedMemories, formatMemoriesForPrompt, loadAgentNames } from './memory';
+import { runSecurityGuard, buildSecuritySafeResponse, sanitizeTeamMemberNames, type SecurityViolation } from './security-guard';
 import { STAGE_LABELS, type PropertyStage } from '@/types';
 
 export interface ConversationalTurnArgs {
@@ -58,6 +59,10 @@ export interface ConversationalTurnResult {
   businessHoursContext: BusinessHoursContext;
   leadContext: FormattedLeadContext | null;
   mediaSendAllowed?: boolean;
+  /** Non-empty only when the deterministic security guard rewrote the
+   *  response — see security-guard.ts. Never null'd out silently: a
+   *  blocked turn always still returns a (safe) responseText. */
+  securityGuardViolations?: SecurityViolation[];
 }
 
 const VALID_BOUNDARIES = new Set<string>([
@@ -441,8 +446,8 @@ export async function executeConversationalTurn(
   if (replyCount >= safetyLimit) {
     const isHours = businessHours.isBusinessHours;
     const fallbackText = isHours
-      ? 'Para garantir o melhor atendimento e tirar todas as suas dúvidas com precisão, vou transferir nossa conversa para nossos especialistas (Ronaldo ou Thatianna) que darão sequência imediata ao seu contato.'
-      : 'Para garantir o melhor atendimento com precisão, já deixei nossa conversa registrada para que o Ronaldo ou a Thatianna entrem em contato diretamente com você logo no início do nosso expediente.';
+      ? 'Para garantir o melhor atendimento e tirar todas as suas dúvidas com precisão, vou transferir nossa conversa para a nossa equipe, que já dá sequência ao seu atendimento.'
+      : 'Para garantir o melhor atendimento com precisão, já deixei nossa conversa registrada para que nossa equipe dê continuidade ao seu atendimento logo no início do nosso expediente.';
 
     const decision: AiDecision = {
       response_text: fallbackText,
@@ -592,22 +597,33 @@ export async function executeConversationalTurn(
     .map((m) => m.content.trim())
     .filter((txt) => txt.length > 0);
 
-  // 6. Build Modular System Prompt with structured decision requirement
+  // 6. Build Modular System Prompt with structured decision requirement.
+  // Every knowledge/memory group is named here once and reused verbatim
+  // by the security guard below (§8a-3) — the guard must see EXACTLY
+  // what the prompt saw, never a re-derived approximation of it.
+  const propertyKnowledgeChunks = propertyId ? knowledgeResult.propertyChunks : [];
+  const globalKnowledgeChunks = knowledgeResult.globalChunks;
+  const styleMemoriesText = formatMemoriesForPrompt(scopedMemories.style, agentNameById);
+  const globalMemoriesText = formatMemoriesForPrompt(scopedMemories.global, agentNameById);
+  const propertyMemoriesText = propertyId ? formatMemoriesForPrompt(scopedMemories.property) : [];
+  const adMemoriesText = formatMemoriesForPrompt(scopedMemories.ad);
+  const conversationMemoriesText = formatMemoriesForPrompt(scopedMemories.conversation);
+
   const systemPrompt = buildConversationalSystemPrompt({
     config,
     mode: mode || 'auto_reply',
     isInitialContact,
     property: propertyInfo,
-    propertyKnowledge: propertyId ? knowledgeResult.propertyChunks : [],
+    propertyKnowledge: propertyKnowledgeChunks,
     propertyMedia: availableMedia,
     propertyStyleInstructions: propertyId ? propertyStyleInstructions : [],
-    globalKnowledge: knowledgeResult.globalChunks,
-    styleMemories: formatMemoriesForPrompt(scopedMemories.style, agentNameById),
-    globalMemories: formatMemoriesForPrompt(scopedMemories.global, agentNameById),
-    propertyMemories: propertyId ? formatMemoriesForPrompt(scopedMemories.property) : [],
+    globalKnowledge: globalKnowledgeChunks,
+    styleMemories: styleMemoriesText,
+    globalMemories: globalMemoriesText,
+    propertyMemories: propertyMemoriesText,
     adContext,
-    adMemories: formatMemoriesForPrompt(scopedMemories.ad),
-    conversationMemories: formatMemoriesForPrompt(scopedMemories.conversation),
+    adMemories: adMemoriesText,
+    conversationMemories: conversationMemoriesText,
     leadContext,
     businessHours,
     structuredOutputRequired: true,
@@ -737,8 +753,58 @@ export async function executeConversationalTurn(
     }
   }
 
-  // 9. Validate and Resolve any media items requested by the model (strictly when authorized)
-  const validatedMediaToSend = mediaAuth.authorized
+  // 8d. Security Guard (HARD BLOCK — memory/knowledge can never override
+  // a protected rule). Runs LAST, after every other text/media
+  // transformation, so it always gets the final say: it inspects only
+  // the fully-resolved outgoing text, so it catches a leak regardless of
+  // whether the fact came from ai_memories, the legacy RAG (Book/Visão
+  // do Corretor), or a model hallucination, and any violation
+  // unconditionally clears send_media too — a blocked turn never ships
+  // with photos attached. See security-guard.ts for the categories it
+  // checks and why.
+  const officialPriceKnowledgeTexts = knowledgeResult.chunks
+    .filter((c) => c.sourceType === 'pdf_book')
+    .map((c) => c.content);
+
+  const allKnowledgeAndMemoryTexts = [
+    ...propertyKnowledgeChunks,
+    ...globalKnowledgeChunks,
+    ...styleMemoriesText,
+    ...globalMemoriesText,
+    ...propertyMemoriesText,
+    ...adMemoriesText,
+    ...conversationMemoriesText,
+    ...(adContext ? [adContext.headline, adContext.body, adContext.campaignName] : []),
+    ...(leadContext?.promptExcerpts ? [leadContext.promptExcerpts] : []),
+  ].filter((t): t is string => Boolean(t && t.trim()));
+
+  const securityGuardResult = runSecurityGuard({
+    responseText: decision.response_text,
+    transferRequired: decision.transfer_required,
+    property: propertyInfo,
+    allKnowledgeAndMemoryTexts,
+    officialPriceKnowledgeTexts,
+  });
+
+  if (securityGuardResult.violated) {
+    console.error(
+      `[conversation engine] SECURITY GUARD blocked response (conv=${conversationId || 'n/a'}, account=${accountId}):`,
+      JSON.stringify(securityGuardResult.violations),
+    );
+    decision.response_text = buildSecuritySafeResponse(businessHours.isBusinessHours);
+    decision.transfer_required = true;
+    decision.boundary_type = 'custom_never_rule';
+    decision.reason = `Bloqueio de segurança determinístico (${securityGuardResult.violations
+      .map((v) => v.category)
+      .join(', ')})`;
+    decision.suggested_next_action =
+      'Revisar manualmente o que a IA tentou responder antes de continuar o atendimento — bloqueio automático de segurança acionado.';
+    decision.send_media = null;
+  }
+
+  // 9. Validate and Resolve any media items requested by the model (strictly when authorized,
+  // and never when the security guard just blocked this turn)
+  const validatedMediaToSend = mediaAuth.authorized && !securityGuardResult.violated
     ? await validateAndResolveMediaToSend(
         db,
         accountId,
@@ -746,6 +812,9 @@ export async function executeConversationalTurn(
         decision.send_media,
       )
     : [];
+
+  // Deterministic backstop: ensure no personal broker names (Ronaldo, Thatianna) ever leak into outgoing messages
+  decision.response_text = sanitizeTeamMemberNames(decision.response_text);
 
   return {
     responseText: decision.response_text,
@@ -760,6 +829,7 @@ export async function executeConversationalTurn(
     validatedMediaToSend,
     businessHoursContext: businessHours,
     leadContext,
-    mediaSendAllowed: mediaAuth.authorized,
+    mediaSendAllowed: mediaAuth.authorized && !securityGuardResult.violated,
+    securityGuardViolations: securityGuardResult.violated ? securityGuardResult.violations : undefined,
   };
 }

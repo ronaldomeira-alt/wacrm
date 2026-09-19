@@ -24,7 +24,8 @@ import {
   recordPropertyLearningEvidence,
   resolvePropertyIdentity,
 } from './property-identity'
-import { inferScopeFromKnowledgeType, type MemoryScope } from './memory'
+import { inferScopeFromKnowledgeType, type MemoryKnowledgeType, type MemoryScope } from './memory'
+import { consolidateMemory } from './memory-consolidation'
 import type { AiConfig } from './types'
 
 /** Prompt stays bounded regardless of how big the KB/pending queue gets. */
@@ -278,40 +279,138 @@ export async function generateLearningSuggestions(
    * (>= AUTO_APPLY_MIN_OCCURRENCES) gets applied immediately instead of
    * waiting for manual review — same pipeline as approving it by hand
    * (suggestions/[id]/route.ts), so a subsequent revert works identically
-   * either way. Every other learning type keeps requiring approval.
+   * either way.
+   *
+   * Every other scoped-memory type (business_rule, company_fact,
+   * property_fact, ad_fact, client_preference, ...) also auto-applies, via
+   * consolidateMemory instead of a manual PATCH approve — common knowledge
+   * from Ronaldo/Tatiana/clientes/anúncios enters as evidence without a
+   * human clicking approve (memory-consolidation.ts's own candidate/active
+   * confidence ladder is what keeps a single stray mention from being
+   * treated as fact, not this gate). Human approval stays required only
+   * for the types that never had a scope to begin with (never_rule,
+   * language_style, boundary_suggestion, process_suggestion,
+   * global_knowledge — behavior/policy changes, not knowledge) and for the
+   * genuinely ambiguous case a scope's target can't be resolved safely
+   * (unknown property name, unrecognized ad/conversation id) — see
+   * tryAutoConsolidate below.
    */
   async function tryAutoApply(
     payload: Record<string, unknown>,
   ): Promise<{ approved: boolean; extra: Record<string, unknown> }> {
-    if (payload.type !== 'property_subjective') return { approved: false, extra: {} }
-    const candidate = {
-      confidence: payload.confidence as LearningConfidence,
-      is_isolated: false,
-      occurrence_count: (payload.occurrence_count as number) || 0,
-    }
-    if (!meetsAutoApplyThreshold(candidate)) return { approved: false, extra: {} }
+    if (payload.type === 'property_subjective') {
+      const candidate = {
+        confidence: payload.confidence as LearningConfidence,
+        is_isolated: false,
+        occurrence_count: (payload.occurrence_count as number) || 0,
+      }
+      if (!meetsAutoApplyThreshold(candidate)) return { approved: false, extra: {} }
 
-    const owner = await getOwnerUserId()
-    if (!owner) return { approved: false, extra: {} }
+      const owner = await getOwnerUserId()
+      if (!owner) return { approved: false, extra: {} }
+
+      try {
+        const applied = await applyPropertySubjectiveLearning(db, accountId, config as AiConfig, owner, {
+          propertyName: (payload.property_name as string | null) ?? null,
+          info: payload.info as string,
+        })
+        if (!applied) return { approved: false, extra: {} }
+        return {
+          approved: true,
+          extra: {
+            applied_target: 'property_subjective',
+            applied_property_id: applied.propertyId,
+            previous_subjective_knowledge: applied.previousKnowledge,
+            auto_applied: true,
+            auto_applied_reason: `occurrence_count >= ${AUTO_APPLY_MIN_OCCURRENCES}, confidence high, is_isolated false`,
+          },
+        }
+      } catch (err) {
+        console.error('[learning generate] auto-apply failed:', err)
+        return { approved: false, extra: {} }
+      }
+    }
+
+    // 'language_style' resolves to scope "global" (it's a STYLE_KNOWLEDGE_TYPE
+    // in memory.ts) but suggestions/[id]/route.ts deliberately special-cases
+    // it to ai_configs.team_presentation instead of ai_memories — auto-apply
+    // must mirror that exact routing, not just "has a scope", or the two
+    // paths would send the same learning type to two different homes.
+    const scope = payload.scope as MemoryScope | null
+    if (scope && payload.type !== 'language_style') return tryAutoConsolidate(payload, scope)
+
+    return { approved: false, extra: {} }
+  }
+
+  /**
+   * Auto-consolidates one scoped-memory candidate straight into
+   * ai_memories via consolidateMemory — no ai_suggestions pending state,
+   * no admin click. Declines (falls back to a 'pending' suggestion for a
+   * human to resolve) only when the scope's required target id isn't
+   * something this scan can trust (property name didn't resolve to a
+   * single safe match, ad/conversation id wasn't one actually seen in this
+   * batch) — a genuine business-decision ambiguity, not something to guess.
+   */
+  async function tryAutoConsolidate(
+    payload: Record<string, unknown>,
+    scope: MemoryScope,
+  ): Promise<{ approved: boolean; extra: Record<string, unknown> }> {
+    const propertyId = (payload.property_id as string | null) ?? null
+    const adId = (payload.ad_id as string | null) ?? null
+    const conversationId = (payload.conversation_id as string | null) ?? null
+    const contactId = (payload.contact_id as string | null) ?? null
+    const agentId = (payload.agent_id as string | null) ?? null
+    const learningType = payload.type as MemoryKnowledgeType
+    const info = typeof payload.info === 'string' ? payload.info.trim() : ''
+    if (!info) return { approved: false, extra: {} }
+
+    if (scope === 'property' && !propertyId) return { approved: false, extra: {} }
+    if (scope === 'ad' && !adId) return { approved: false, extra: {} }
+    if (scope === 'conversation' && !conversationId) return { approved: false, extra: {} }
+
+    const title = info.slice(0, TITLE_MAX_LENGTH)
+    // Evidence independence keys off the conversation when this candidate
+    // is tied to one (matches how a human approval's evidence is keyed —
+    // see suggestions/[id]/route.ts). GLOBAL/PROPERTY candidates the model
+    // didn't attribute to one specific conversation instead key off this
+    // scan run: two different scan runs are, by construction, two
+    // temporally distinct observations, which is exactly what "independent
+    // evidence" means here.
+    const evidence = conversationId
+      ? ({ kind: 'conversation', conversationId } as const)
+      : ({ kind: 'message', messageId: `learning-scan:${nextCursor}:${normalizeTitle(title)}` } as const)
 
     try {
-      const applied = await applyPropertySubjectiveLearning(db, accountId, config as AiConfig, owner, {
-        propertyName: (payload.property_name as string | null) ?? null,
-        info: payload.info as string,
+      const result = await consolidateMemory(db, {
+        accountId,
+        scope,
+        knowledgeType: learningType,
+        title,
+        content: info,
+        propertyId,
+        adId,
+        conversationId,
+        contactId,
+        agentId,
+        sourceType: hasAudioEvidence ? 'audio_transcript' : 'learning_scan',
+        evidence,
+        metadata: { learning_origin: 'auto_consolidated' },
       })
-      if (!applied) return { approved: false, extra: {} }
+      if (!result.memory) return { approved: false, extra: {} } // low-signal content — nothing to apply
+
       return {
         approved: true,
         extra: {
-          applied_target: 'property_subjective',
-          applied_property_id: applied.propertyId,
-          previous_subjective_knowledge: applied.previousKnowledge,
+          applied_target: `memory:${scope}`,
+          applied_memory_id: result.memory.id,
+          applied_memory_status: result.memory.status,
+          consolidation_action: result.action,
           auto_applied: true,
-          auto_applied_reason: `occurrence_count >= ${AUTO_APPLY_MIN_OCCURRENCES}, confidence high, is_isolated false`,
+          auto_applied_reason: 'common_knowledge_auto_consolidated',
         },
       }
     } catch (err) {
-      console.error('[learning generate] auto-apply failed:', err)
+      console.error('[learning generate] auto-consolidate failed:', err)
       return { approved: false, extra: {} }
     }
   }

@@ -197,8 +197,7 @@ describe('CLARA — 9 Mandatory Tests & Real Cases A and B Suite', () => {
       property: TOSCANO_FLAT_PROPERTY,
     });
 
-    expect(prompt).toContain('HORÁRIO ATUAL: DENTRO DO EXPEDIENTE COMERCIAL ATIVO.');
-    expect(prompt).toContain('vou direcionar nossa conversa para o Ronaldo ou a Thatianna, que dão sequência com você por aqui');
+    expect(prompt).toContain('vou direcionar nossa conversa para a nossa equipe, que já dá sequência com você por aqui');
 
     const modelResponse = {
       response_text:
@@ -235,7 +234,7 @@ describe('CLARA — 9 Mandatory Tests & Real Cases A and B Suite', () => {
     // Verify prompt instructions
     expect(prompt).toContain('HORÁRIO ATUAL: FORA DO EXPEDIENTE COMERCIAL');
     expect(prompt).toContain('É TERMINANTEMENTE PROIBIDO prometer atendimento imediato');
-    expect(prompt).toContain('o Ronaldo ou a Thatianna darão sequência com você assim que o expediente retornar pela manhã');
+    expect(prompt).toContain('nossa equipe dará continuidade ao seu atendimento no próximo horário comercial');
 
     // Verify architectural guard against immediate claims
     const problematicLlmOutput =

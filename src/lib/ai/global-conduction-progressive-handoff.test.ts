@@ -343,7 +343,8 @@ describe('GLOBAL CONVERSATIONAL INTELLIGENCE — Clara Conduction & Progressive 
 
     expect(result.handoff).toBe(true);
     expect(result.decision.transfer_required).toBe(true);
-    expect(result.responseText).toContain('Ronaldo e a Thatianna');
+    expect(result.responseText).toContain('nossa equipe');
+    expect(result.responseText).not.toMatch(/\b(ronaldo|thatianna)\b/i);
 
     global.fetch = originalFetch;
   });
@@ -689,7 +690,8 @@ describe('GLOBAL CONVERSATIONAL INTELLIGENCE — Clara Conduction & Progressive 
 
       expect(result.handoff).toBe(true);
       expect(result.decision.transfer_required).toBe(true);
-      expect(result.responseText).toContain('Ronaldo e a Thatianna');
+      expect(result.responseText).toContain('nossa equipe');
+      expect(result.responseText).not.toMatch(/\b(ronaldo|thatianna)\b/i);
       expect(result.responseText).not.toContain('número pessoal');
 
       global.fetch = originalFetch;

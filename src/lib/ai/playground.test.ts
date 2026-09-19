@@ -36,7 +36,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
     embeddingsApiKey: null,
     identityName: 'Equipe de Atendimento',
     toneStyle: 'consultative_warm',
-    teamPresentation: 'Somos a equipe de atendimento do Ronaldo e da Thatianna.',
+    teamPresentation: 'Somos a equipe de atendimento imobiliário.',
     globalNeverRules: 'NUNCA negociar valores, prometer descontos ou inventar especificações não documentadas.',
     responseStyleInstructions: ['Responda em no máximo 2 frases curtas.', 'Sempre termine com uma pergunta.'],
     businessHoursStart: '08:00',
@@ -54,7 +54,7 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
   it('1. Playground executes turns without sending WhatsApp messages or triggering external webhook side-effects', async () => {
     h.generateOpenAi.mockResolvedValueOnce({
       text: JSON.stringify({
-        response_text: 'Olá! Sou da equipe do Ronaldo e da Thatianna. Em que posso ajudar você hoje?',
+        response_text: 'Olá! Sou da equipe de atendimento. Em que posso ajudar você hoje?',
         transfer_required: false,
         boundary_type: null,
         reason: null,
@@ -82,7 +82,8 @@ describe('Stage 5 — Playground & Conversational Diagnostics', () => {
       simulatedHours: 'business_hours',
     })
 
-    expect(result.responseText).toContain('Ronaldo e da Thatianna')
+    expect(result.responseText).toContain('equipe de atendimento')
+    expect(result.responseText).not.toMatch(/\b(ronaldo|thatianna)\b/i)
     expect(result.handoff).toBe(false)
     expect(result.decision.transfer_required).toBe(false)
     expect(result.systemPrompt).toBeTruthy()
