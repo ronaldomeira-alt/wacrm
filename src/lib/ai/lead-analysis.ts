@@ -30,6 +30,7 @@ import { CATEGORY_ORDER } from '@/lib/contacts/tag-categories'
 import { findOrCreateTag, findTag } from '@/lib/contacts/tag-find-or-create'
 import { addContactTagAndDispatch } from '@/lib/contacts/tag-events'
 import { removeContactTag } from '@/lib/contacts/tag-write'
+import { sendQualifiedLeadEvent } from '@/lib/whatsapp/meta-capi'
 
 interface DealRef {
   id: string
@@ -195,6 +196,19 @@ async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> 
           .from('ai_suggestions')
           .update({ status: 'done', resolved_at: new Date().toISOString() })
           .eq('id', staleSuggestion.id)
+      }
+      // Landing in Interesse is this account's own definition of "lead
+      // qualificado" (it's the same minAiScore: 7 gate as the rule that
+      // just fired) — tell Meta so ad delivery can optimize toward more
+      // of this. Best-effort: a missing ctwa_clid, unconfigured CAPI
+      // dataset, or a Graph API error must never block the stage move
+      // that already happened above.
+      if (toLower === 'interesse') {
+        try {
+          await sendQualifiedLeadEvent(db, accountId, conversationId)
+        } catch (err) {
+          console.error('[lead-analysis] QualifiedLead CAPI event failed:', err)
+        }
       }
     }
     // Whether we auto-moved or the score was insufficient, these transitions

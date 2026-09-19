@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   findTag: vi.fn(),
   addContactTagAndDispatch: vi.fn(),
   removeContactTag: vi.fn(),
+  sendQualifiedLeadEvent: vi.fn(),
 }));
 
 vi.mock('@/lib/contacts/tag-find-or-create', () => ({
@@ -16,6 +17,9 @@ vi.mock('@/lib/contacts/tag-events', () => ({
 }));
 vi.mock('@/lib/contacts/tag-write', () => ({
   removeContactTag: mocks.removeContactTag,
+}));
+vi.mock('@/lib/whatsapp/meta-capi', () => ({
+  sendQualifiedLeadEvent: mocks.sendQualifiedLeadEvent,
 }));
 
 import { applyLeadAnalysisResult } from './lead-analysis';
@@ -126,6 +130,7 @@ beforeEach(() => {
   mocks.findTag.mockReset().mockResolvedValue('tag-x');
   mocks.addContactTagAndDispatch.mockReset().mockResolvedValue({ added: true, dispatched: true });
   mocks.removeContactTag.mockReset().mockResolvedValue(undefined);
+  mocks.sendQualifiedLeadEvent.mockReset().mockResolvedValue({ sent: true });
 });
 
 describe('applyLeadAnalysisResult — tags (section 19.1/19.2/19.3)', () => {
@@ -280,6 +285,7 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     // Score insufficient → silent skip; no pending suggestion, no auto-move
     expect(calls.insert).toHaveLength(0);
     expect(calls.dealUpdate).toHaveLength(0);
+    expect(mocks.sendQualifiedLeadEvent).not.toHaveBeenCalled();
   });
 
   it('scenario 4b: auto-moves Qualificação → Interesse when ai_score qualifies', async () => {
@@ -304,6 +310,9 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
     expect(calls.insert).toHaveLength(0);
+    // Landing in Interesse is this account's "lead qualificado" — tell Meta.
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledWith(db, BASE_ARGS.accountId, BASE_ARGS.conversationId);
   });
 
   it('scenario 4c: auto-moves Qualificação → Interesse using freshly-computed lead_score over currentAiScore', async () => {
@@ -327,6 +336,7 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
 
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.insert).toHaveLength(0);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
   });
 
   it('auto-moves Novo Lead → Qualificação when ai_score ≥ 3 and AI has evidence', async () => {
@@ -350,6 +360,9 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-qualificacao' });
     expect(calls.insert).toHaveLength(0);
+    // Qualificação isn't this account's "lead qualificado" definition — only
+    // landing in Interesse is. No CAPI event for this transition.
+    expect(mocks.sendQualifiedLeadEvent).not.toHaveBeenCalled();
   });
 
   it('does NOT auto-move Novo Lead → Qualificação when ai_score is too low', async () => {
@@ -395,6 +408,32 @@ describe('applyLeadAnalysisResult — pipeline_move suggestions (section 19.4-19
     expect(calls.dealUpdate).toHaveLength(1);
     expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
     expect(calls.insert).toHaveLength(0);
+    expect(mocks.sendQualifiedLeadEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a CAPI failure block the stage move into Interesse', async () => {
+    mocks.sendQualifiedLeadEvent.mockRejectedValue(new Error('Graph API down'));
+    const { db, calls } = fakeDb();
+    await applyLeadAnalysisResult({
+      db: db as never,
+      ...BASE_ARGS,
+      deal: { id: 'deal-1', stage_id: 'stage-novo' },
+      stages: STAGES,
+      currentAiScore: 9,
+      result: result({
+        stage_suggestion: {
+          should_suggest: true,
+          target_stage_name: 'Interesse',
+          justification: 'Pediu proposta.',
+          score: 95,
+        },
+      }),
+    });
+
+    // The stage move already happened before the CAPI call — a failure there
+    // must not roll it back or throw out of applyLeadAnalysisResult.
+    expect(calls.dealUpdate).toHaveLength(1);
+    expect(calls.dealUpdate[0]).toMatchObject({ stage_id: 'stage-interesse' });
   });
 
   it('resolves a stale pending suggestion when auto-moving', async () => {
