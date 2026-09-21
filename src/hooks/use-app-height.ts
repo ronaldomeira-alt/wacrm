@@ -81,6 +81,11 @@ export function useAppHeight() {
 
     const root = document.documentElement;
 
+    // Tells the inbox thread (message-thread.tsx) that the shell's box just
+    // changed, synchronously, so it can re-pin its scroll position in the
+    // *same* frame — before paint — instead of polling a frame later.
+    const notifyLayout = () => window.dispatchEvent(new Event("wacrm:app-height"));
+
     // Confirmed by the previous round's debug data (parte 35): iOS's own
     // "scroll the focused input into view" behavior briefly sets
     // `document.scrollingElement.scrollTop` to a large value (measured:
@@ -98,9 +103,9 @@ export function useAppHeight() {
       if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
     }
 
-    // Spring-driven `--app-height` follow for the keyboard's *opening*
-    // move only (setResting()/closing stays a plain instant set, as it
-    // always has been — untouched on purpose).
+    // Spring-driven `--app-height` follow for the keyboard's opening and
+    // closing moves (setResting() itself stays a plain instant set — used
+    // for init/orientation change and as the spring's landing state).
     //
     // A plain CSS `transition` on --app-height was tried here before
     // (parte 33/34, see doc comment above) and reverted for "fighting"
@@ -134,6 +139,49 @@ export function useAppHeight() {
     let springVelocity = 0;
     let springTarget = window.outerHeight;
 
+    // Keyboard-open app height (last live `visualViewport.height` seen while
+    // a field was focused) and the device's resting bottom safe-area inset in
+    // px. Together they let the composer's bottom padding be driven by the
+    // spring's own progress instead of flipping in one step — see
+    // applySafeBottom(). `null` until the first keyboard-open is observed.
+    let keyboardH: number | null = null;
+    let safeInset: number | null = null;
+    // True while the spring is heading back to the resting height (keyboard
+    // closing); settling there hands over to setResting() to clear the
+    // overrides.
+    let closing = false;
+
+    function measureSafeInset(): number {
+      if (safeInset === null) {
+        // `env()` can't be read from JS directly (and must never be
+        // round-tripped through a custom property — see the doc comment
+        // above); resolving it through a throwaway element's padding is the
+        // one reliable way to get the number.
+        const probe = document.createElement("div");
+        probe.style.cssText =
+          "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;padding-bottom:env(safe-area-inset-bottom)";
+        document.body.appendChild(probe);
+        safeInset = parseFloat(getComputedStyle(probe).paddingBottom) || 0;
+        probe.remove();
+      }
+      return safeInset;
+    }
+
+    // The composer's bottom safe-area padding is only "real" while the
+    // keyboard is down, and must be 0 once the keyboard covers that area.
+    // Flipping it in one step at focus/blur moved the composer — and the
+    // pinned last bubble above it — by the whole inset (34px on current
+    // iPhones) in a single frame, ahead of (open) or against (close) the
+    // keyboard's own motion. Scaling it with the spring's progress between
+    // "keyboard open" and "resting" makes it part of the same smooth move.
+    function applySafeBottom() {
+      if (keyboardH === null) return;
+      const span = window.outerHeight - keyboardH;
+      if (span < 1) return;
+      const progress = Math.min(1, Math.max(0, (springCurrent - keyboardH) / span));
+      root.style.setProperty("--composer-safe-bottom", `${measureSafeInset() * progress}px`);
+    }
+
     function stopSpring() {
       if (springRaf !== null) {
         cancelAnimationFrame(springRaf);
@@ -156,11 +204,19 @@ export function useAppHeight() {
         Math.abs(springVelocity) < SPRING_REST_EPSILON
       ) {
         springCurrent = springTarget;
-        root.style.setProperty("--app-height", `${springCurrent}px`);
         stopSpring();
+        if (closing) {
+          setResting();
+          return;
+        }
+        root.style.setProperty("--app-height", `${springCurrent}px`);
+        applySafeBottom();
+        notifyLayout();
         return;
       }
       root.style.setProperty("--app-height", `${springCurrent}px`);
+      applySafeBottom();
+      notifyLayout();
       springRaf = requestAnimationFrame(springTick);
     }
 
@@ -171,6 +227,7 @@ export function useAppHeight() {
 
     function setResting() {
       stopSpring();
+      closing = false;
       springCurrent = window.outerHeight;
       springTarget = springCurrent;
       springVelocity = 0;
@@ -180,12 +237,28 @@ export function useAppHeight() {
       // falls through to its fallback — see the doc comment above.
       root.style.removeProperty("--composer-safe-bottom");
       root.style.removeProperty("--app-bg-override");
+      notifyLayout();
     }
 
     function setLive() {
       resetScroll();
       const h = window.visualViewport?.height ?? window.innerHeight;
+      closing = false;
+      if (h < window.outerHeight - 1) keyboardH = h;
       springTo(h);
+    }
+
+    // Keyboard closing: follow it back down with the same spring instead of
+    // snapping to the resting height in one frame, which teleported the
+    // composer and the last bubble to the bottom of the screen — behind the
+    // keyboard that was still sliding away.
+    function closeKeyboard() {
+      if (keyboardH === null || springCurrent >= window.outerHeight - 1) {
+        setResting();
+        return;
+      }
+      closing = true;
+      springTo(window.outerHeight);
     }
 
     function onVvResize() {
@@ -195,8 +268,8 @@ export function useAppHeight() {
     function onFocusIn(e: FocusEvent) {
       if (!isTextInput(e.target)) return;
       setLive();
-      root.style.setProperty("--composer-safe-bottom", "0px");
       root.style.setProperty("--app-bg-override", "var(--card)");
+      notifyLayout();
       window.visualViewport?.addEventListener("resize", onVvResize);
     }
 
@@ -208,7 +281,7 @@ export function useAppHeight() {
       // doesn't flash back to the resting height mid-transition.
       setTimeout(() => {
         if (!isTextInput(document.activeElement)) {
-          setResting();
+          closeKeyboard();
         }
       }, 50);
     }
@@ -216,11 +289,16 @@ export function useAppHeight() {
     setResting();
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
-    window.addEventListener("orientationchange", setResting);
+    const onOrientationChange = () => {
+      keyboardH = null;
+      safeInset = null;
+      setResting();
+    };
+    window.addEventListener("orientationchange", onOrientationChange);
     return () => {
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
-      window.removeEventListener("orientationchange", setResting);
+      window.removeEventListener("orientationchange", onOrientationChange);
       window.visualViewport?.removeEventListener("resize", onVvResize);
       stopSpring();
     };

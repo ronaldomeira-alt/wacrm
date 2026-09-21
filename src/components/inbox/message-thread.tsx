@@ -126,6 +126,7 @@ interface ReplyDraft {
 // under that constraint, so gating every mitigation behind this check
 // keeps desktop at full throughput instead of inheriting iPhone-only
 // caution for no reason.
+
 const isIOSDevice =
   typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent);
 
@@ -961,6 +962,17 @@ export function MessageThread({
   const isScrollInMotionRef = useRef(false);
   const scrollMotionEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Last scrollTop this component wrote itself. The rAF motion sampler
+  // below must not read our own pin-to-bottom writes as user/momentum
+  // scrolling: it used to, which flagged "in motion" right after every
+  // compensation write and blocked the next ~3 frames of compensation,
+  // so the last bubble only followed the composer every 4th frame.
+  const ownScrollTopRef = useRef<number | null>(null);
+  const writeOwnScrollTop = useCallback((el: HTMLElement, top: number) => {
+    el.scrollTop = top;
+    ownScrollTopRef.current = el.scrollTop;
+  }, []);
+
   const markProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true;
     if (programmaticTimerRef.current) {
@@ -989,15 +1001,15 @@ export function MessageThread({
     if (!isPinnedToBottomRef.current && !force) return;
 
     markProgrammaticScroll();
-    el.scrollTop = el.scrollHeight;
+    writeOwnScrollTop(el, el.scrollHeight);
 
     requestAnimationFrame(() => {
       if (scrollRef.current && (isPinnedToBottomRef.current || force)) {
         markProgrammaticScroll();
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        writeOwnScrollTop(scrollRef.current, scrollRef.current.scrollHeight);
       }
     });
-  }, [markProgrammaticScroll]);
+  }, [markProgrammaticScroll, writeOwnScrollTop]);
 
   // All messages of the conversation are rendered stably to prevent layout shifts/jumps
   const visibleMessages = messages;
@@ -1070,7 +1082,12 @@ export function MessageThread({
       el.removeEventListener('wheel', onWheel);
       if (wheelTimer) clearTimeout(wheelTimer);
     };
-  }, []);
+    // Keyed on conversationId, not []: this component mounts in its
+    // "no conversation" empty state (scrollRef still null) and only
+    // renders the scroll container once a thread is picked, so a []
+    // effect ran once against null and never attached anything — user
+    // touch/scroll never unpinned the thread from the bottom.
+  }, [conversationId]);
 
   // Track whether user scrolled up to read history vs stayed at bottom.
   // Implements strict hysteresis: once unpinned, NEVER passively re-pins.
@@ -1136,7 +1153,7 @@ export function MessageThread({
 
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, []);
+  }, [conversationId]); // not [] — see the touch-listener effect above
 
   // rAF-driven motion detection for isScrollInMotionRef, replacing an
   // earlier 'scroll'-event idle timer (see HANDOFF-SCROLL-BUG.md,
@@ -1164,13 +1181,29 @@ export function MessageThread({
     const el = scrollRef.current;
     if (!el) return;
     let lastSampledTop = el.scrollTop;
+    let lastSampledClientHeight = el.clientHeight;
+    let lastSampledScrollHeight = el.scrollHeight;
     let stableFrames = 0;
     const STABLE_FRAMES_NEEDED = 3;
     let rafId = requestAnimationFrame(function sample() {
       const current = scrollRef.current;
       if (current) {
         const top = current.scrollTop;
-        if (Math.abs(top - lastSampledTop) > 0.5) {
+        const clientH = current.clientHeight;
+        const scrollH = current.scrollHeight;
+        // scrollTop moves that we caused ourselves, or that the engine
+        // made by clamping to the new bottom edge when the box resized
+        // (composer growing/shrinking, keyboard), are layout — not a
+        // finger or WebKit momentum, so they must not read as "motion".
+        const ownWrite =
+          ownScrollTopRef.current !== null &&
+          Math.abs(top - ownScrollTopRef.current) <= 0.5;
+        const layoutClamp =
+          (clientH !== lastSampledClientHeight || scrollH !== lastSampledScrollHeight) &&
+          top >= scrollH - clientH - 0.5;
+        lastSampledClientHeight = clientH;
+        lastSampledScrollHeight = scrollH;
+        if (Math.abs(top - lastSampledTop) > 0.5 && !ownWrite && !layoutClamp) {
           stableFrames = 0;
           isScrollInMotionRef.current = true;
         } else {
@@ -1287,37 +1320,51 @@ export function MessageThread({
     const TOUCH_END_GRACE_MS = 250;
     const SCROLL_EPSILON_PX = 1;
 
-    let rafId = requestAnimationFrame(function tick() {
+    // One compensation routine, two triggers: the per-frame rAF poll
+    // (composer's CSS height transition — no JS in the loop to hook) and
+    // a synchronous call from use-app-height right after it writes
+    // `--app-height`/`--composer-safe-bottom` (keyboard spring). The
+    // latter matters: rAF callbacks run in registration order and this
+    // loop registered before the spring, so polling alone always read the
+    // *previous* frame's height and painted the bubble one frame behind.
+    function compensate() {
       const el = scrollRef.current;
-      if (el) {
-        const currentClientHeight = el.clientHeight;
-        const heightDelta = currentClientHeight - lastClientHeight;
-        lastClientHeight = currentClientHeight;
+      if (!el) return;
+      const currentClientHeight = el.clientHeight;
+      const heightDelta = currentClientHeight - lastClientHeight;
+      lastClientHeight = currentClientHeight;
 
-        const withinGrace = Date.now() - lastInteractionEndRef.current < TOUCH_END_GRACE_MS;
+      const withinGrace = Date.now() - lastInteractionEndRef.current < TOUCH_END_GRACE_MS;
 
-        // CRITICAL: Only compensate when clientHeight has actually changed (active layout transition,
-        // e.g. composer expanding/shrinking between 1-4 lines), AND the user is not touching,
-        // AND the user is legitimately pinned to bottom.
-        // If clientHeight is stable, this loop NEVER mutates scrollTop!
-        if (
-          Math.abs(heightDelta) > 0.5 &&
-          !isUserTouchingRef.current &&
-          !isScrollInMotionRef.current &&
-          !withinGrace &&
-          isPinnedToBottomRef.current
-        ) {
-          const target = el.scrollHeight - currentClientHeight;
-          if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
-            el.scrollTop = target;
-          }
+      // CRITICAL: Only compensate when clientHeight has actually changed (active layout transition,
+      // e.g. composer expanding/shrinking between 1-4 lines), AND the user is not touching,
+      // AND the user is legitimately pinned to bottom.
+      // If clientHeight is stable, this NEVER mutates scrollTop!
+      if (
+        Math.abs(heightDelta) > 0.5 &&
+        !isUserTouchingRef.current &&
+        !isScrollInMotionRef.current &&
+        !withinGrace &&
+        isPinnedToBottomRef.current
+      ) {
+        const target = el.scrollHeight - currentClientHeight;
+        if (Math.abs(el.scrollTop - target) > SCROLL_EPSILON_PX) {
+          writeOwnScrollTop(el, target);
         }
       }
+    }
+
+    let rafId = requestAnimationFrame(function tick() {
+      compensate();
       rafId = requestAnimationFrame(tick);
     });
+    window.addEventListener('wacrm:app-height', compensate);
 
-    return () => cancelAnimationFrame(rafId);
-  }, [conversationId]);
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('wacrm:app-height', compensate);
+    };
+  }, [conversationId, writeOwnScrollTop]);
 
   useEffect(() => {
     const contentEl = contentRef.current;
@@ -1350,7 +1397,7 @@ export function MessageThread({
           scrollRef.current
         ) {
           markProgrammaticScroll();
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          writeOwnScrollTop(scrollRef.current, scrollRef.current.scrollHeight);
         }
       }, 80);
     });
@@ -1361,7 +1408,7 @@ export function MessageThread({
       ro.disconnect();
       if (contentDebounceId !== null) clearTimeout(contentDebounceId);
     };
-  }, [conversationId, loading, markProgrammaticScroll]);
+  }, [conversationId, loading, markProgrammaticScroll, writeOwnScrollTop]);
 
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {

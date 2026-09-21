@@ -576,10 +576,7 @@ export function MessageComposer({
     });
   }, []);
 
-  const adjustHeight = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-
+  const measureAndApplyHeight = useCallback((el: HTMLTextAreaElement) => {
     const wasMultiline = el.hasAttribute("data-multiline");
     const startHeight = el.offsetHeight;
 
@@ -636,6 +633,30 @@ export function MessageComposer({
     void el.offsetHeight;
     el.style.height = `${targetHeight}px`;
   }, [fadeCapsuleOnModeSwitch]);
+
+  const adjustHeight = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+
+    // The measuring below collapses the textarea to `height: auto` and
+    // forces layout (scrollHeight/offsetHeight reads) several times before
+    // the final height is written. Without this pin, the composer really
+    // did get shorter for those forced layouts, the thread's scroll box
+    // (its flex sibling) grew, and WebKit clamped the thread's scrollTop
+    // to the new, smaller max — a clamp that is NOT undone when the
+    // composer is restored right after. Net effect on every keystroke:
+    // the last bubble dropped 60-115px behind the composer, then got
+    // dragged back a few frames later. Freezing the shell's box for the
+    // duration keeps those transient layouts invisible to the thread.
+    const shell = el.closest<HTMLElement>("[data-composer-shell]");
+    if (shell) shell.style.height = `${shell.offsetHeight}px`;
+    try {
+      measureAndApplyHeight(el);
+    } finally {
+      if (shell) shell.style.height = "";
+    }
+  }, [measureAndApplyHeight]);
+
 
   const handleSend = useCallback(async () => {
     if (isSubmittingRef.current || sending || sessionExpired) return;
