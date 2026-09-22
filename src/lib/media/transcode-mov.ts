@@ -74,7 +74,10 @@ export function isQuickTimeVideo(file: File): boolean {
  * message on failure — callers surface it via a toast, same convention
  * as `uploadAccountMedia`.
  */
-export async function convertMovToMp4(file: File): Promise<File> {
+export async function convertMovToMp4(
+  file: File,
+  options?: { profile?: "baseline" },
+): Promise<File> {
   let ffmpeg: FFmpeg;
   try {
     ffmpeg = await getFFmpeg();
@@ -98,6 +101,10 @@ export async function convertMovToMp4(file: File): Promise<File> {
       "libx264",
       "-preset",
       "veryfast",
+      // libx264 defaults to High profile, which combined with its default
+      // B-adaptive frames is exactly the combination WhatsApp's Android
+      // client can't play. Baseline is spec-guaranteed B-frame-free.
+      ...(options?.profile === "baseline" ? ["-profile:v", "baseline"] : []),
       "-c:a",
       "aac",
       "-movflags",

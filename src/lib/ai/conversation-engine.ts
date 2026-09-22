@@ -333,18 +333,51 @@ export function isExplicitMediaRequest(
   return { requested: true, topic, kind: detectMediaKind(trimmed) };
 }
 
+// Hoisted to module scope (instead of re-created per call, and shared
+// with detectOfferedMediaKind below) — the article group before the
+// noun also accepts "um/uma/uns/umas" (not just "algumas"), since a
+// video offer is naturally phrased in the singular ("mostrar UM vídeo
+// da área de lazer"), unlike photos. An optional "também" is allowed
+// right after the verb too — the natural way to offer a second kind of
+// media after already showing the first ("Quer que eu te envie também
+// um vídeo?").
+const MEDIA_OFFER_REGEX = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser posso|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:tamb[eé]m\s+)?(?:(?:algumas?|um|uma|uns|umas)\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
+const MEDIA_QUESTION_OFFER_REGEX = /(?:fotos?|imagens?|plantas?|v[ií]deos?).*?\b(?:quer|gostaria|deseja|posso|te envio|te mando)\b.*?\?/i;
+const MEDIA_DIRECT_OFFER_REGEX = /(?:posso te enviar|quer que eu mande|quer ver)\s+(?:as\s+|algumas?\s+)?(?:fotos?|imagens?|plantas?)/i;
+
 /**
  * Checks if the assistant offered media in the immediately preceding turn
  */
 export function didAssistantOfferMedia(lastAssistantText: string): boolean {
   if (!lastAssistantText) return false;
-  // The article group before the noun also accepts "um/uma/uns/umas"
-  // (not just "algumas"), since a video offer is naturally phrased in
-  // the singular ("mostrar UM vídeo da área de lazer"), unlike photos.
-  const offerRegex = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser posso|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:(?:algumas?|um|uma|uns|umas)\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
-  const questionOfferRegex = /(?:fotos?|imagens?|plantas?|v[ií]deos?).*?\b(?:quer|gostaria|deseja|posso|te envio|te mando)\b.*?\?/i;
-  const directOfferRegex = /(?:posso te enviar|quer que eu mande|quer ver)\s+(?:as\s+|algumas?\s+)?(?:fotos?|imagens?|plantas?)/i;
-  return offerRegex.test(lastAssistantText) || questionOfferRegex.test(lastAssistantText) || directOfferRegex.test(lastAssistantText);
+  return (
+    MEDIA_OFFER_REGEX.test(lastAssistantText) ||
+    MEDIA_QUESTION_OFFER_REGEX.test(lastAssistantText) ||
+    MEDIA_DIRECT_OFFER_REGEX.test(lastAssistantText)
+  );
+}
+
+/**
+ * Detects which media kind Clara's offer was actually about, using ONLY
+ * the matched offer clause — not the whole assistant message. This
+ * matters when the message also references the other kind in a
+ * different tense/context ("Já te mostrei algumas fotos. Quer que eu te
+ * envie também um vídeo?" mentions "fotos" AND "vídeo", but the offer
+ * itself, the clause detectMediaKind should judge, is only about the
+ * vídeo). Falls back to scanning the full text when none of the offer
+ * patterns match anything (defensive; didAssistantOfferMedia already
+ * gates on one of them matching before this is ever called).
+ */
+function detectOfferedMediaKind(text: string): 'image' | 'video' | undefined {
+  if (!text) return undefined;
+  for (const pattern of [MEDIA_OFFER_REGEX, MEDIA_QUESTION_OFFER_REGEX, MEDIA_DIRECT_OFFER_REGEX]) {
+    const match = text.match(pattern);
+    if (match) {
+      const kind = detectMediaKind(match[0]);
+      if (kind) return kind;
+    }
+  }
+  return detectMediaKind(text);
 }
 
 // Closed vocabulary for isAffirmativeConfirmation: only used once
@@ -439,7 +472,7 @@ export function isMediaSendAuthorized(args: {
       authorized: true,
       reason: 'Lead confirmou afirmativamente oferta de fotos/vídeo feita pela Clara no turno anterior.',
       filterTopic: 'geral',
-      filterKind: detectMediaKind(lastAssistantText),
+      filterKind: detectOfferedMediaKind(lastAssistantText),
     };
   }
 
@@ -785,8 +818,17 @@ export async function executeConversationalTurn(
         }
       }
 
-      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, topic=${mediaAuth.filterTopic || 'geral'}, kind=${mediaAuth.filterKind || 'any'})`);
-      decision.send_media = filteredMedia.slice(0, 5).map((m) => ({
+      // Progressive disclosure, not a library dump: when the model itself
+      // didn't pick specific items, this fallback must still behave like
+      // Clara would — a small first batch, never "all matching items just
+      // because they exist" (mirrors the prompt's own "2 a 3 fotos, 1
+      // vídeo por turno" guidance in prompt-builder.ts's media rules).
+      // MAX_AI_MEDIA_PER_TURN in validateAndResolveMediaToSend remains the
+      // hard safety ceiling for whatever the model explicitly requests.
+      const AUTO_RESOLVE_BATCH_SIZE = mediaAuth.filterKind === 'video' ? 1 : 3;
+
+      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, sending first ${Math.min(filteredMedia.length, AUTO_RESOLVE_BATCH_SIZE)}, topic=${mediaAuth.filterTopic || 'geral'}, kind=${mediaAuth.filterKind || 'any'})`);
+      decision.send_media = filteredMedia.slice(0, AUTO_RESOLVE_BATCH_SIZE).map((m) => ({
         property_id: propertyId,
         media_id: m.id,
         caption: null,

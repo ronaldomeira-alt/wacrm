@@ -119,9 +119,34 @@ export async function canTranscodeViaWebCodecs(file: File): Promise<boolean> {
  * same convention as `uploadAccountMedia` and the previous ffmpeg.wasm
  * path.
  */
+export interface ConvertMovToMp4Options {
+  /**
+   * Full WebCodecs codec string (e.g. `"avc1.42001f"` for H.264
+   * Baseline) to request from the encoder instead of mediabunny's own
+   * default, which is H.264 High profile (`buildVideoCodecString` in
+   * mediabunny always picks profile_idc 0x64/High for `codec: "avc"`).
+   * Left undefined, behavior is 100% unchanged from before this option
+   * existed — every existing caller (the inbox composer) keeps getting
+   * mediabunny's default High-profile output.
+   */
+  fullCodecString?: string;
+  /**
+   * When `true`, forces a real re-encode of the video track even if the
+   * input is already H.264/AAC — mediabunny's Conversion otherwise takes
+   * a cheap stream-copy shortcut whenever the input and output codec
+   * families match, which would silently preserve whatever profile/
+   * B-frame structure the source file already had (exactly the bug this
+   * option exists to fix for property videos). Left undefined/false,
+   * behavior is unchanged: an already avc/aac input may still be
+   * remuxed without re-encoding, as before.
+   */
+  forceTranscode?: boolean;
+}
+
 export async function convertMovToMp4ViaWebCodecs(
   file: File,
   onProgress?: (ratio: number) => void,
+  options?: ConvertMovToMp4Options,
 ): Promise<File> {
   try {
     const {
@@ -139,6 +164,11 @@ export async function convertMovToMp4ViaWebCodecs(
     const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
 
     const hasAudio = await input.getPrimaryAudioTrack().then((t) => !!t).catch(() => false);
+
+    const profileOverride = options?.fullCodecString
+      ? { fullCodecString: options.fullCodecString }
+      : {};
+    const forceTranscodeOverride = options?.forceTranscode ? { forceTranscode: true } : {};
 
     let conversion: Awaited<ReturnType<typeof Conversion.init>> | null = null;
     try {
@@ -163,6 +193,8 @@ export async function convertMovToMp4ViaWebCodecs(
           // the rotation into the pixels here makes the output correct
           // for every player, matrix-aware or not.
           allowRotationMetadata: false,
+          ...profileOverride,
+          ...forceTranscodeOverride,
         },
         ...(hasAudio ? { audio: { codec: "aac" } } : {}),
       });
@@ -172,7 +204,7 @@ export async function convertMovToMp4ViaWebCodecs(
         conversion = await Conversion.init({
           input,
           output,
-          video: { codec: "avc", allowRotationMetadata: false },
+          video: { codec: "avc", allowRotationMetadata: false, ...profileOverride, ...forceTranscodeOverride },
           ...(hasAudio ? { audio: { codec: "aac" } } : {}),
         });
       } catch {
@@ -180,7 +212,7 @@ export async function convertMovToMp4ViaWebCodecs(
         conversion = await Conversion.init({
           input,
           output,
-          video: { codec: "avc", allowRotationMetadata: false },
+          video: { codec: "avc", allowRotationMetadata: false, ...profileOverride, ...forceTranscodeOverride },
         });
       }
     }
@@ -218,5 +250,8 @@ export async function convertMovToMp4ViaWebCodecs(
 
   // Fallback to ffmpeg.wasm
   const { convertMovToMp4 } = await import("./transcode-mov");
-  return await convertMovToMp4(file);
+  return await convertMovToMp4(
+    file,
+    options?.fullCodecString ? { profile: "baseline" } : undefined,
+  );
 }

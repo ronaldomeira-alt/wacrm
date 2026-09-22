@@ -1138,4 +1138,108 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
     const firstMediaCallOrder = sendMediaSpy.mock.invocationCallOrder[0];
     expect(textCallOrder).toBeLessThan(firstMediaCallOrder);
   });
+
+  // ============================================================
+  // Progressive disclosure — confirming media authorizes the OFFERED
+  // media, not a dump of the whole gallery. No new authorization logic:
+  // same isMediaSendAuthorized guard, just a smaller auto-resolve batch.
+  // ============================================================
+
+  // TEST 22: with 5 photos available and a generic explicit photo
+  // request, auto-resolve must send a small first batch (3), never all 5
+  // just because they exist — "quantidade gradual, não mecânica".
+  it('CENÁRIO 22: Pedido genérico de fotos com 5 disponíveis envia uma leva pequena (não as 5 de uma vez)', async () => {
+    const mockDb = createMockDb(sampleMediaPool); // 5 image items
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Claro! Aqui estão algumas fotos.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const result = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages: [{ role: 'user', content: 'Pode me mandar fotos?' }],
+      replyCount: 0,
+    });
+
+    expect(result.mediaSendAllowed).toBe(true);
+    expect(result.validatedMediaToSend.length).toBeGreaterThan(0);
+    expect(result.validatedMediaToSend.length).toBeLessThan(5);
+  });
+
+  // TEST 18 (E2E, exact wording from spec): Clara already showed photos,
+  // then offers a video too — the offer clause mentions "vídeo" while an
+  // earlier clause in the SAME message mentions "fotos" (past tense).
+  // Confirming must select the video ONLY, proving kind detection reads
+  // the offer clause, not the whole message.
+  it('CENÁRIO 23: "Já te mostrei fotos... vídeo também?" + "Quero." seleciona somente o vídeo', () => {
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria saber mais' },
+      {
+        role: 'assistant' as const,
+        content: 'Já te mostrei algumas fotos. Quer que eu te envie também um vídeo?',
+      },
+      { role: 'user' as const, content: 'Quero.' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+
+    expect(auth.authorized).toBe(true);
+    expect(auth.filterKind).toBe('video');
+  });
+
+  // TEST (E2E, exact wording from spec): "Quero ver as fotos" after Clara
+  // mentioned both kinds must resolve to photos, never videos.
+  it('CENÁRIO 24: "Tenho fotos e vídeos" + "Quero ver as fotos" seleciona fotos, não vídeos', async () => {
+    const sampleMediaPoolWithVideo: PropertyMediaSummary[] = [
+      ...sampleMediaPool,
+      {
+        id: 'media-video-lazer',
+        type: 'video',
+        description: 'Vídeo da área de lazer',
+        file_name: 'lazer.mp4',
+        is_cover: false,
+      },
+    ];
+    const mockDb = createMockDb(sampleMediaPoolWithVideo);
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Claro! Aqui estão as fotos.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const result = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages: [
+        { role: 'user', content: 'Oi' },
+        { role: 'assistant', content: 'Tenho algumas fotos e também tenho vídeos. Prefere ver primeiro qual?' },
+        { role: 'user', content: 'Quero ver as fotos' },
+      ],
+      replyCount: 1,
+    });
+
+    expect(result.mediaSendAllowed).toBe(true);
+    expect(result.validatedMediaToSend.length).toBeGreaterThan(0);
+    for (const item of result.validatedMediaToSend) {
+      expect(item.type).toBe('image');
+    }
+  });
 });
