@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   getAvailablePropertyMedia,
   validateAndResolveMediaToSend,
+  isVideoContentType,
 } from './property-media-service'
 import { MAX_AI_MEDIA_PER_TURN } from './types'
 
@@ -405,5 +406,151 @@ describe('Property Media Service', () => {
     expect(result).toHaveLength(1)
     expect(result[0].mediaId).toBe('img-media-1')
     expect(result.some((m) => m.mediaId === 'img-cover')).toBe(false)
+  })
+
+  // Test 6/11: video support — getAvailablePropertyMedia must derive
+  // `type: 'video'` from content_type alone (no separate media_type
+  // column), same as it already derives 'image', while photos in the
+  // same list keep working exactly as before.
+  it('getAvailablePropertyMedia derives type "video" for a video row, alongside photos as "image"', async () => {
+    const mockRows = [
+      {
+        id: 'img-1',
+        property_id: 'prop-1',
+        storage_path: 'account-1/img1.jpg',
+        file_name: 'fachada.jpg',
+        content_type: 'image/jpeg',
+        description: 'Fachada',
+        is_cover: false,
+        position: 0,
+      },
+      {
+        id: 'vid-1',
+        property_id: 'prop-1',
+        storage_path: 'account-1/lazer.mp4',
+        file_name: 'lazer.mp4',
+        content_type: 'video/mp4',
+        description: 'Vídeo da área de lazer',
+        is_cover: false,
+        position: 1,
+      },
+    ]
+
+    const mockDb = {
+      from: vi.fn((table: string) => {
+        if (table === 'properties') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: { cover_image_path: null }, error: null }),
+          }
+        }
+        if (table === 'property_images') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            order: vi.fn().mockReturnThis(),
+            then: (resolve: (val: unknown) => void) => resolve({ data: mockRows, error: null }),
+          }
+        }
+        return {}
+      }),
+      storage: { from: vi.fn(() => ({ getPublicUrl: mockStorageGetPublicUrl })) },
+    } as unknown as SupabaseClient
+
+    const result = await getAvailablePropertyMedia(mockDb, 'acc-1', 'prop-1')
+
+    expect(result).toHaveLength(2)
+    expect(result.find((m) => m.id === 'img-1')?.type).toBe('image')
+    expect(result.find((m) => m.id === 'vid-1')?.type).toBe('video')
+  })
+
+  it('isVideoContentType classifies MIME strings correctly', () => {
+    expect(isVideoContentType('video/mp4')).toBe(true)
+    expect(isVideoContentType('video/3gpp')).toBe(true)
+    expect(isVideoContentType('image/jpeg')).toBe(false)
+    expect(isVideoContentType(null)).toBe(false)
+    expect(isVideoContentType(undefined)).toBe(false)
+  })
+
+  // Test 13 (partial — the DB/URL-resolution side): a video row must
+  // validate and resolve to a public URL exactly like a photo does, and
+  // come back tagged `type: 'video'` so auto-reply.ts can pick the right
+  // WhatsApp `kind` without re-deriving it.
+  it('validateAndResolveMediaToSend accepts a video/mp4 row and tags it type: "video"', async () => {
+    const requestedMedia = [{ property_id: 'prop-1', media_id: 'vid-1', caption: null }]
+    const mockRows = [
+      {
+        id: 'vid-1',
+        property_id: 'prop-1',
+        storage_path: 'account-1/lazer.mp4',
+        file_name: 'lazer.mp4',
+        content_type: 'video/mp4',
+        is_cover: false,
+        description: 'Vídeo da área de lazer',
+      },
+    ]
+
+    const mockDb = {
+      from: vi.fn((table: string) => {
+        if (table === 'properties') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: { cover_image_path: null }, error: null }),
+          }
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          in: vi.fn().mockResolvedValue({ data: mockRows, error: null }),
+        }
+      }),
+      storage: { from: vi.fn(() => ({ getPublicUrl: mockStorageGetPublicUrl })) },
+    } as unknown as SupabaseClient
+
+    const result = await validateAndResolveMediaToSend(mockDb, 'acc-1', 'prop-1', requestedMedia)
+
+    expect(result).toHaveLength(1)
+    expect(result[0].mediaId).toBe('vid-1')
+    expect(result[0].type).toBe('video')
+    expect(result[0].contentType).toBe('video/mp4')
+    expect(result[0].publicUrl).toContain('account-1/lazer.mp4')
+  })
+
+  it('validateAndResolveMediaToSend rejects an unsupported video container (e.g. video/x-matroska)', async () => {
+    const requestedMedia = [{ property_id: 'prop-1', media_id: 'vid-bad', caption: null }]
+    const mockRows = [
+      {
+        id: 'vid-bad',
+        property_id: 'prop-1',
+        storage_path: 'account-1/clip.mkv',
+        file_name: 'clip.mkv',
+        content_type: 'video/x-matroska',
+        is_cover: false,
+        description: null,
+      },
+    ]
+
+    const mockDb = {
+      from: vi.fn((table: string) => {
+        if (table === 'properties') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: { cover_image_path: null }, error: null }),
+          }
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          in: vi.fn().mockResolvedValue({ data: mockRows, error: null }),
+        }
+      }),
+      storage: { from: vi.fn(() => ({ getPublicUrl: mockStorageGetPublicUrl })) },
+    } as unknown as SupabaseClient
+
+    const result = await validateAndResolveMediaToSend(mockDb, 'acc-1', 'prop-1', requestedMedia)
+    expect(result).toHaveLength(0)
   })
 })

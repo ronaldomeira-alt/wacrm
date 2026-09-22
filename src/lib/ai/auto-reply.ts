@@ -352,7 +352,7 @@ export async function dispatchInboundToAiReply(
               userId: configOwnerUserId,
               conversationId,
               contactId,
-              kind: 'image',
+              kind: mediaItem.type,
               link: mediaItem.publicUrl,
               // Fotos enviadas pela Clara nunca levam legenda/nome, permitindo que o WhatsApp as agrupe naturalmente em álbum
               caption: undefined,

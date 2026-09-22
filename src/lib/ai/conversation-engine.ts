@@ -268,12 +268,32 @@ export interface MediaAuthorizationResult {
   authorized: boolean;
   reason: string;
   filterTopic?: MediaFilterTopic;
+  /** Set only when the triggering text unambiguously named one kind ("foto"/"imagem" vs "vídeo") — lets 8c's auto-resolve avoid mixing a video into a reply that only asked for photos (or vice-versa). Left undefined for generic/visual-target requests, which keep today's untyped behavior. */
+  filterKind?: 'image' | 'video';
+}
+
+/**
+ * Detects which media kind a piece of text unambiguously names — 'image'
+ * for foto(s)/imagem(ns), 'video' for vídeo(s). Returns undefined when
+ * both, neither, or a generic visual reference ("mostra a área de
+ * lazer") is used, so callers fall back to the untyped/mixed behavior
+ * that already existed before video support.
+ */
+function detectMediaKind(text: string): 'image' | 'video' | undefined {
+  if (!text) return undefined;
+  const mentionsVideo = /\bv[ií]deos?\b/i.test(text);
+  const mentionsPhoto = /\b(fotos?|fotografia|imagens?|imagem)\b/i.test(text);
+  if (mentionsVideo && !mentionsPhoto) return 'video';
+  if (mentionsPhoto && !mentionsVideo) return 'image';
+  return undefined;
 }
 
 /**
  * Checks whether user explicitly requested media (photos, videos, floorplans, etc.)
  */
-export function isExplicitMediaRequest(text: string): { requested: boolean; topic?: MediaFilterTopic } {
+export function isExplicitMediaRequest(
+  text: string,
+): { requested: boolean; topic?: MediaFilterTopic; kind?: 'image' | 'video' } {
   if (!text || typeof text !== 'string') return { requested: false };
   const trimmed = text.trim();
 
@@ -310,7 +330,7 @@ export function isExplicitMediaRequest(text: string): { requested: boolean; topi
     topic = 'decorado';
   }
 
-  return { requested: true, topic };
+  return { requested: true, topic, kind: detectMediaKind(trimmed) };
 }
 
 /**
@@ -318,22 +338,37 @@ export function isExplicitMediaRequest(text: string): { requested: boolean; topi
  */
 export function didAssistantOfferMedia(lastAssistantText: string): boolean {
   if (!lastAssistantText) return false;
-  const offerRegex = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser posso|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:algumas?\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
+  // The article group before the noun also accepts "um/uma/uns/umas"
+  // (not just "algumas"), since a video offer is naturally phrased in
+  // the singular ("mostrar UM vídeo da área de lazer"), unlike photos.
+  const offerRegex = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser posso|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:(?:algumas?|um|uma|uns|umas)\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
   const questionOfferRegex = /(?:fotos?|imagens?|plantas?|v[ií]deos?).*?\b(?:quer|gostaria|deseja|posso|te envio|te mando)\b.*?\?/i;
   const directOfferRegex = /(?:posso te enviar|quer que eu mande|quer ver)\s+(?:as\s+|algumas?\s+)?(?:fotos?|imagens?|plantas?)/i;
   return offerRegex.test(lastAssistantText) || questionOfferRegex.test(lastAssistantText) || directOfferRegex.test(lastAssistantText);
 }
+
+// Closed vocabulary for isAffirmativeConfirmation: only used once
+// didAssistantOfferMedia() already confirmed the previous turn was a photo
+// offer, so this only has to recognize "yes, that offer" — not judge
+// arbitrary positive sentences ("gostei", "legal") as consent, which would
+// reopen the old bug of sending photos on any vague sign of interest.
+const CONFIRMATION_AFFIRMATIVE =
+  '(?:sim|ok|okay|certo|claro|com\\s*certeza|perfeito|beleza|blz|t[aá]\\s*bom|tudo\\s*bem|fechado|gostaria|quero\\s*ver|quero(?:\\s*sim)?|aguardo|fico\\s*no\\s*aguardo|por\\s*favor|fique\\s*[aà]\\s*vontade)';
+const CONFIRMATION_ACTION =
+  '(?:pode(?:\\s*(?:mandar|enviar|ser|mostrar|sim))?|manda(?:r)?(?:\\s*(?:a[ií]|sim|por\\s*favor))?|envia(?:r)?(?:\\s*(?:a[ií]|sim|por\\s*favor))?|mostr(?:a|e|ar)|mande)';
+const CONFIRMATION_TOKEN = `(?:${CONFIRMATION_AFFIRMATIVE}|${CONFIRMATION_ACTION})`;
+const CONFIRMATION_REGEX = new RegExp(
+  `^${CONFIRMATION_TOKEN}(?:\\s*[,e]?\\s*${CONFIRMATION_TOKEN})*(?:\\s*(?:as\\s*)?fotos?)?$`,
+  'i',
+);
 
 /**
  * Checks if the user gave an affirmative confirmation (e.g. to a previous media offer)
  */
 export function isAffirmativeConfirmation(userText: string): boolean {
   if (!userText) return false;
-  const trimmed = userText.trim().toLowerCase();
-  return (
-    /^(?:sim|claro|pode(?:\s*(?:mandar|enviar|ser|sim))?|manda(?:\s*(?:a[ií]|sim|por\s*favor))?|envia(?:\s*(?:a[ií]|sim|por\s*favor))?|quero(?:\s*sim)?|com\s*certeza|por\s*favor|fique\s*a\s*vontade|mande|manda\s*fotos?|quero\s*ver)[.!]*$/i.test(trimmed) ||
-    /^(?:sim|claro|com\s*certeza)[,\s]+(?:pode|manda|envia|quero|por\s*favor)/i.test(trimmed)
-  );
+  const trimmed = userText.trim().toLowerCase().replace(/[.!?]+$/g, '').trim();
+  return CONFIRMATION_REGEX.test(trimmed);
 }
 
 /**
@@ -353,7 +388,7 @@ export function isMediaSendAuthorized(args: {
     .filter((m) => m.role === 'user');
 
   // 2. Check if the user explicitly requested media in any message of the current turn
-  let explicitCheck: { requested: boolean; topic?: MediaFilterTopic } = { requested: false };
+  let explicitCheck: { requested: boolean; topic?: MediaFilterTopic; kind?: 'image' | 'video' } = { requested: false };
   for (const uMsg of currentTurnUserMessages) {
     const check = isExplicitMediaRequest(uMsg.content);
     if (check.requested) {
@@ -371,6 +406,7 @@ export function isMediaSendAuthorized(args: {
         authorized: true,
         reason: 'Lead explicitou pedido de mídia no primeiro contato.',
         filterTopic: explicitCheck.topic,
+        filterKind: explicitCheck.kind,
       };
     }
     return {
@@ -386,6 +422,7 @@ export function isMediaSendAuthorized(args: {
       authorized: true,
       reason: 'Lead explicitou pedido de mídia na conversa.',
       filterTopic: explicitCheck.topic,
+      filterKind: explicitCheck.kind,
     };
   }
 
@@ -395,10 +432,14 @@ export function isMediaSendAuthorized(args: {
   const latestUserText = currentTurnUserMessages.length > 0 ? currentTurnUserMessages[currentTurnUserMessages.length - 1].content : '';
 
   if (didAssistantOfferMedia(lastAssistantText) && isAffirmativeConfirmation(latestUserText)) {
+    // The lead's confirmation itself is usually generic ("pode mandar",
+    // "ok") — the kind (foto vs vídeo) is read from what CLARA offered,
+    // not from the confirmation text.
     return {
       authorized: true,
-      reason: 'Lead confirmou afirmativamente oferta de fotos feita pela Clara no turno anterior.',
+      reason: 'Lead confirmou afirmativamente oferta de fotos/vídeo feita pela Clara no turno anterior.',
       filterTopic: 'geral',
+      filterKind: detectMediaKind(lastAssistantText),
     };
   }
 
@@ -689,7 +730,7 @@ export async function executeConversationalTurn(
     // sanitize to avoid confusing the lead.
     if (decision.response_text) {
       decision.response_text = decision.response_text
-        .replace(/(?:estou\s+te\s+enviando|aqui\s+est[aã]o|seguem|segue)\s+(?:algumas?\s+)?(?:fotos?|imagens?|as\s+fotos?)[^.!?]*[.!?]/gi, '')
+        .replace(/(?:estou\s+te\s+enviando|aqui\s+est[aã]o|seguem|segue|vou\s+te\s+(?:enviar|mostrar|mandar)|vou\s+(?:enviar|mostrar|mandar|separar))\s+(?:algumas?\s+)?(?:fotos?|imagens?|as\s+fotos?)[^.!?]*[.!?]/gi, '')
         .trim();
     }
   } else {
@@ -715,15 +756,28 @@ export async function executeConversationalTurn(
 
     const topicRegex = getTopicRegex(mediaAuth.filterTopic);
 
+    // Kind (foto vs vídeo) filter — only narrows when the triggering text
+    // unambiguously named one kind (mediaAuth.filterKind); otherwise this
+    // is a no-op and behaves exactly as before video support existed.
+    // Same defensive "only replace if there's at least one match" shape
+    // as the topic filter below, so an empty gallery of that kind never
+    // wipes out an otherwise-valid auto-resolve.
+    const kindFilteredMedia = mediaAuth.filterKind
+      ? (() => {
+          const matches = availableMedia.filter((m) => m.type === mediaAuth.filterKind);
+          return matches.length > 0 ? matches : availableMedia;
+        })()
+      : availableMedia;
+
     // If decision.send_media is empty or null, auto-resolve from availableMedia
     if (
       propertyId &&
       availableMedia.length > 0 &&
       (!decision.send_media || decision.send_media.length === 0)
     ) {
-      let filteredMedia = availableMedia;
+      let filteredMedia = kindFilteredMedia;
       if (topicRegex) {
-        const matches = availableMedia.filter(
+        const matches = kindFilteredMedia.filter(
           (m) => (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name),
         );
         if (matches.length > 0) {
@@ -731,17 +785,19 @@ export async function executeConversationalTurn(
         }
       }
 
-      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, topic=${mediaAuth.filterTopic || 'geral'})`);
+      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, topic=${mediaAuth.filterTopic || 'geral'}, kind=${mediaAuth.filterKind || 'any'})`);
       decision.send_media = filteredMedia.slice(0, 5).map((m) => ({
         property_id: propertyId,
         media_id: m.id,
         caption: null,
       }));
-    } else if (decision.send_media && decision.send_media.length > 0 && topicRegex) {
-      // If LLM returned media but lead asked for a specific topic, prioritize matching items
+    } else if (decision.send_media && decision.send_media.length > 0 && (topicRegex || mediaAuth.filterKind)) {
+      // If the LLM already picked media itself, still defensively narrow it
+      // to the requested topic and/or kind — e.g. the lead asked for
+      // "vídeo" but the model attached a photo alongside it.
       const matchingMediaIds = new Set(
-        availableMedia
-          .filter((m) => (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name))
+        kindFilteredMedia
+          .filter((m) => !topicRegex || (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name))
           .map((m) => m.id),
       );
       if (matchingMediaIds.size > 0) {

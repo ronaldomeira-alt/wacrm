@@ -14,9 +14,22 @@ export interface ResolvedMediaToSend {
   caption: string | null
   fileName: string
   contentType: string
+  /** Derived from contentType — lets callers (auto-reply.ts) pick the right WhatsApp `kind` without re-deriving it themselves. */
+  type: 'image' | 'video'
 }
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/jpg'])
+// Only the two containers the WhatsApp Cloud API accepts for outbound
+// video (see meta-api.ts). Property videos are already normalized to
+// one of these client-side (prepare-property-video.ts) before upload,
+// so this is a defensive floor, not the place quality/compat decisions
+// are made.
+const ALLOWED_VIDEO_TYPES = new Set(['video/mp4', 'video/3gpp'])
+
+/** True for any MIME string that identifies a video (used to tell photos and videos apart from `content_type` — no separate `media_type` column needed). Exported so the upload route (property_images POST) can apply the same 5-photos/5-videos split without re-deriving this rule. */
+export function isVideoContentType(contentType: string | null | undefined): boolean {
+  return Boolean(contentType && contentType.toLowerCase().startsWith('video/'))
+}
 
 function isMissingColumnError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
@@ -108,7 +121,7 @@ export async function getAvailablePropertyMedia(
 
       return {
         id: img.id,
-        type: 'image' as const,
+        type: isVideoContentType(img.content_type) ? ('video' as const) : ('image' as const),
         description: img.description || null,
         file_name: img.file_name,
         is_cover: false,
@@ -225,9 +238,12 @@ export async function validateAndResolveMediaToSend(
         continue
       }
 
-      // Security check: MIME type
+      // Security check: MIME type — accepts the same image types as
+      // before, plus the two video containers WhatsApp supports.
       const contentType = row.content_type?.toLowerCase() || 'image/jpeg'
-      if (!ALLOWED_IMAGE_TYPES.has(contentType) && !contentType.startsWith('image/')) {
+      const isAllowedImage = ALLOWED_IMAGE_TYPES.has(contentType) || contentType.startsWith('image/')
+      const isAllowedVideo = ALLOWED_VIDEO_TYPES.has(contentType)
+      if (!isAllowedImage && !isAllowedVideo) {
         console.warn(`[property-media-service] Unsupported media MIME type: ${contentType}`)
         continue
       }
@@ -246,6 +262,7 @@ export async function validateAndResolveMediaToSend(
         caption: req.caption?.trim() || null,
         fileName: row.file_name,
         contentType,
+        type: isAllowedVideo ? 'video' : 'image',
       })
     }
 

@@ -3,6 +3,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { loadEmbeddingsKey } from '@/lib/ai/config';
 import { replacePropertySubjectiveKnowledge } from '@/lib/ai/knowledge';
 import { AiError } from '@/lib/ai/types';
+import { PROPERTY_MEDIA_BUCKET } from '@/lib/storage/upload-media';
 import type { PropertyStage } from '@/types';
 
 interface RouteContext {
@@ -177,12 +178,40 @@ export async function PATCH(req: Request, context: RouteContext) {
 /**
  * DELETE /api/ai/properties/[id] (agent+)
  *
- * Deletes a property and all associated AI context, documents, chunks, and ad mappings.
+ * Deletes a property and all associated AI context, documents, chunks,
+ * ad mappings, and commercial media (photos + videos) — both the
+ * `property_images` rows AND their actual Storage objects, so nothing
+ * is left reachable in the `property-media` bucket once the property is
+ * gone. (The FK on `property_images.property_id` cascade-deletes the
+ * DB rows on their own when `properties` is deleted below, but a DB
+ * cascade never touches Storage — the explicit removal here is what
+ * that gap needed, for both photos and videos alike, since both live in
+ * the same table/bucket.)
  */
 export async function DELETE(_req: Request, context: RouteContext) {
   try {
     const { id: propertyId } = await context.params;
     const { supabase, accountId } = await requireRole('agent');
+
+    // 0. Remove every commercial media Storage object (photos + videos +
+    // cover) for this property BEFORE the cascade removes the rows that
+    // record their paths — best-effort, mirrors the single-image DELETE
+    // route's own fire-and-forget Storage cleanup.
+    const { data: mediaRows } = await supabase
+      .from('property_images')
+      .select('storage_path')
+      .eq('property_id', propertyId)
+      .eq('account_id', accountId);
+
+    if (mediaRows && mediaRows.length > 0) {
+      const paths = mediaRows.map((r) => r.storage_path).filter(Boolean);
+      if (paths.length > 0) {
+        const { error: removeErr } = await supabase.storage.from(PROPERTY_MEDIA_BUCKET).remove(paths);
+        if (removeErr) {
+          console.error('[ai/properties DELETE] Storage cleanup error (continuing):', removeErr);
+        }
+      }
+    }
 
     // 1. Delete associated AI knowledge chunks & documents for this property
     await supabase

@@ -69,6 +69,7 @@ describe('AI Auto-Reply with Property Media Sending', () => {
           caption: 'Piscina com borda infinita',
           fileName: 'piscina.jpg',
           contentType: 'image/jpeg',
+          type: 'image',
         },
       ],
       businessHoursContext: {

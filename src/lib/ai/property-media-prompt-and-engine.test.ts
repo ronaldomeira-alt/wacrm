@@ -53,11 +53,11 @@ describe('Property Media Prompt Building & Engine Decision Parsing', () => {
       structuredOutputRequired: true,
     })
 
-    expect(prompt).toContain('MÍDIAS DISPONÍVEIS DESTE EMPREENDIMENTO (FOTOS CADASTRADAS):')
+    expect(prompt).toContain('MÍDIAS DISPONÍVEIS DESTE EMPREENDIMENTO (FOTOS E VÍDEOS CADASTRADOS):')
     expect(prompt).toContain('media-fachada-123')
     expect(prompt).toContain('Fachada principal com vista frontal e paisagismo')
     expect(prompt).toContain('media-lazer-456')
-    expect(prompt).toContain('DIRETRIZES PARA ENVIO DE FOTOS (send_media)')
+    expect(prompt).toContain('DIRETRIZES PARA ENVIO DE FOTOS E VÍDEOS (send_media)')
     expect(prompt).toContain('NUNCA invente media_id')
     expect(prompt).toContain('"send_media"')
   })

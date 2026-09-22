@@ -97,7 +97,7 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
                     property_id: 'prop-1',
                     storage_path: `account-1/${m.file_name}`,
                     file_name: m.file_name,
-                    content_type: 'image/jpeg',
+                    content_type: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
                     description: m.description,
                     is_cover: m.is_cover,
                     position: idx,
@@ -113,7 +113,7 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
                     property_id: 'prop-1',
                     storage_path: `account-1/${m.file_name}`,
                     file_name: m.file_name,
-                    content_type: 'image/jpeg',
+                    content_type: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
                     description: m.description,
                     is_cover: m.is_cover,
                     position: idx,
@@ -371,6 +371,7 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
           caption: null,
           fileName: 'fachada.jpg',
           contentType: 'image/jpeg',
+          type: 'image',
         },
       ],
       businessHoursContext: {
@@ -527,5 +528,614 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
     expect(result.mediaSendAllowed).toBe(true);
     expect(result.validatedMediaToSend.length).toBeGreaterThan(0);
     expect(result.validatedMediaToSend[0].mediaId).toBe('media-fachada-1');
+  });
+
+  // TEST 13: Regression for the reported bug — Clara offers photos, lead
+  // replies with a natural (non-imperative) confirmation, and the guard
+  // must recognize it instead of forcing another round of text.
+  it('CENÁRIO 13: Confirmação contextual "OK, pode mostrar" após oferta de fotos autoriza envio', () => {
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria saber mais sobre o apartamento' },
+      {
+        role: 'assistant' as const,
+        content: 'Se quiser, posso te mostrar algumas fotos da sala, cozinha e área de lazer.',
+      },
+      { role: 'user' as const, content: 'OK, pode mostrar.' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+
+    expect(auth.authorized).toBe(true);
+    expect(auth.reason).toContain('confirmou afirmativamente oferta de fotos');
+  });
+
+  // TEST 14: A broader set of natural confirmations must all be recognized
+  // as valid, as long as they answer a photo offer Clara just made.
+  it.each([
+    'Pode mandar',
+    'Pode enviar',
+    'Manda',
+    'Pode mandar as fotos',
+    'Quero ver',
+    'Gostaria',
+    'Sim',
+    'Sim, pode',
+    'Pode mostrar',
+    'Pode enviar as fotos',
+    'Aguardo',
+    'Fico no aguardo',
+    'Tá bom, pode mandar',
+    'Perfeito, pode mostrar',
+    'Ok',
+    'Tudo bem',
+  ])('CENÁRIO 14: Confirmação "%s" após oferta de fotos autoriza envio', (confirmation) => {
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria saber mais sobre o apartamento' },
+      {
+        role: 'assistant' as const,
+        content: 'Se quiser, posso te enviar algumas fotos do apartamento.',
+      },
+      { role: 'user' as const, content: confirmation },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+
+    expect(auth.authorized).toBe(true);
+  });
+
+  // TEST 15: A vague signal of interest with NO prior photo offer must still
+  // NOT authorize a send — the offer is what establishes the context.
+  it('CENÁRIO 15: "Gostei" sem oferta prévia de fotos NÃO autoriza envio', () => {
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria saber mais sobre o apartamento' },
+      {
+        role: 'assistant' as const,
+        content: 'O apartamento tem 2 quartos, 1 suíte e fica a 100m da praia.',
+      },
+      { role: 'user' as const, content: 'Gostei' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+
+    expect(auth.authorized).toBe(false);
+  });
+
+  // TEST 16: FULL END-TO-END — from the LLM's raw decision all the way to
+  // the real dispatch call that would hit WhatsApp. Nothing about
+  // executeConversationalTurn is mocked here (only the LLM provider call
+  // and the outbound Meta calls are stubbed), so this exercises the exact
+  // production path: guard → auto-resolve → validateAndResolveMediaToSend
+  // → dispatchInboundToAiReply → engineSendMedia. Deliberately reproduces
+  // the reported failure mode: the model's JSON leaves send_media empty
+  // (as if it only "promised" the photos in text) — proving the photos
+  // still go out because authorization + auto-resolution do the work
+  // independent of the model remembering to fill send_media itself.
+  it('CENÁRIO 16: E2E — "OK, pode mostrar." após oferta de fotos resulta em envio real de mídia via dispatch', async () => {
+    const mockDb = {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'properties') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { id: 'prop-1', name: 'Puerto Ventura', status: 'ativo', cover_image_path: null },
+              error: null,
+            }),
+          };
+        }
+        if (table === 'property_ai_contexts') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { stage: 'lancamento', response_style_instructions: [] },
+              error: null,
+            }),
+          };
+        }
+        if (table === 'property_images') {
+          const builder: Record<string, unknown> = {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            in: vi.fn().mockImplementation((_col: string, ids: string[]) => {
+              const filtered = sampleMediaPool.filter((m) => ids.includes(m.id));
+              return Promise.resolve({
+                data: filtered.map((m, idx) => ({
+                  id: m.id,
+                  property_id: 'prop-1',
+                  storage_path: `account-1/${m.file_name}`,
+                  file_name: m.file_name,
+                  content_type: 'image/jpeg',
+                  description: m.description,
+                  is_cover: m.is_cover,
+                  position: idx,
+                })),
+                error: null,
+              });
+            }),
+            order: vi.fn().mockImplementation(() => builder),
+            then: (resolve: (val: unknown) => void) => {
+              resolve({
+                data: sampleMediaPool.map((m, idx) => ({
+                  id: m.id,
+                  property_id: 'prop-1',
+                  storage_path: `account-1/${m.file_name}`,
+                  file_name: m.file_name,
+                  content_type: 'image/jpeg',
+                  description: m.description,
+                  is_cover: m.is_cover,
+                  position: idx,
+                })),
+                error: null,
+              });
+            },
+          };
+          return builder;
+        }
+        if (table === 'conversations') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                id: 'conv-16',
+                assigned_agent_id: null,
+                ai_autoreply_disabled: false,
+                ai_reply_count: 1,
+                property_id: 'prop-1',
+                ai_transfer_status: null,
+                ctwa_referral: null,
+                ai_reactivation_status: null,
+              },
+              error: null,
+            }),
+            update: vi.fn().mockReturnThis(),
+          };
+        }
+        if (table === 'messages') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            gte: vi.fn().mockReturnThis(),
+            gt: vi.fn().mockReturnThis(),
+            order: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({ data: [] }),
+          };
+        }
+        if (table === 'automations' || table === 'flow_runs') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            in: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({ data: [] }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        };
+      }),
+      storage: {
+        from: vi.fn().mockReturnValue({
+          getPublicUrl: vi.fn().mockImplementation((path: string) => ({
+            data: { publicUrl: `https://storage.supabase.co/property-media/${path}` },
+          })),
+        }),
+      },
+      rpc: vi.fn().mockResolvedValue({ data: true, error: null }),
+    };
+
+    vi.spyOn(configMod, 'loadAiConfig').mockResolvedValue(baseConfig);
+    vi.spyOn(contextMod, 'buildConversationContext').mockResolvedValue([
+      { role: 'user', content: 'Oi, queria saber mais sobre o apartamento' },
+      {
+        role: 'assistant',
+        content: 'Se quiser, posso te mostrar algumas fotos da sala, cozinha e área de lazer.',
+      },
+      { role: 'user', content: 'OK, pode mostrar.' },
+    ]);
+
+    // Deliberately reproduces the bug's exact failure ingredient: the
+    // model's JSON says it will show photos in text but leaves send_media
+    // empty — the pre-fix code had nothing to fall back on once the
+    // (broken) confirmation regex also failed; the auto-resolve step
+    // (8c in conversation-engine.ts) is what must compensate now.
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Perfeito! Vou te mostrar agora.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const adminClientMod = await import('./admin-client');
+    vi.spyOn(adminClientMod, 'supabaseAdmin').mockReturnValue(mockDb as never);
+
+    const sendMediaSpy = vi
+      .spyOn(metaSendMod, 'engineSendMedia')
+      .mockResolvedValue({ whatsapp_message_id: 'wamid-media-16' });
+    const sendTextSpy = vi
+      .spyOn(metaSendMod, 'engineSendText')
+      .mockResolvedValue({ whatsapp_message_id: 'wamid-text-16' });
+
+    // Step 1 — run the real engine in isolation to inspect every stage of
+    // the pipeline (not just the final authorized boolean).
+    const turnResult = await executeConversationalTurn({
+      db: mockDb as never,
+      accountId: 'acc-1',
+      config: baseConfig,
+      conversationId: 'conv-16',
+      contactId: 'contact-16',
+      propertyId: 'prop-1',
+      messages: [
+        { role: 'user', content: 'Oi, queria saber mais sobre o apartamento' },
+        {
+          role: 'assistant',
+          content: 'Se quiser, posso te mostrar algumas fotos da sala, cozinha e área de lazer.',
+        },
+        { role: 'user', content: 'OK, pode mostrar.' },
+      ],
+      replyCount: 1,
+    });
+
+    // Guard authorized the send from the contextual confirmation alone.
+    expect(turnResult.mediaSendAllowed).toBe(true);
+    // Auto-resolution filled send_media even though the model's JSON didn't.
+    expect(turnResult.decision.send_media).not.toBeNull();
+    expect(turnResult.decision.send_media!.length).toBeGreaterThan(0);
+    // Media was validated against the DB and resolved to real public URLs.
+    expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+    for (const item of turnResult.validatedMediaToSend) {
+      expect(item.publicUrl).toContain('https://storage.supabase.co/property-media/');
+    }
+
+    // Step 2 — run the actual dispatch path (auto-reply.ts) end-to-end and
+    // prove it reaches the real send call, not just a text promise.
+    await dispatchInboundToAiReply({
+      accountId: 'account-1',
+      conversationId: 'conv-16',
+      contactId: 'contact-16',
+      configOwnerUserId: 'user-1',
+      debounceMs: 0,
+    });
+
+    expect(sendTextSpy).toHaveBeenCalledTimes(1);
+    expect(sendMediaSpy).toHaveBeenCalled();
+    for (const call of sendMediaSpy.mock.calls) {
+      expect(call[0].link).toContain('https://storage.supabase.co/property-media/');
+      expect(call[0].kind).toBe('image');
+    }
+
+    // Text still goes out before media (ordering contract from CENÁRIO 10).
+    const textCallOrder = sendTextSpy.mock.invocationCallOrder[0];
+    const firstMediaCallOrder = sendMediaSpy.mock.invocationCallOrder[0];
+    expect(textCallOrder).toBeLessThan(firstMediaCallOrder);
+  });
+
+  // ============================================================
+  // Video support — reuses the exact same guard (isMediaSendAuthorized,
+  // didAssistantOfferMedia, isAffirmativeConfirmation) with no new
+  // authorization logic. These scenarios only add kind-awareness on top:
+  // an offer/request that names a kind should not leak the other kind
+  // into the send.
+  // ============================================================
+  const sampleMediaPoolWithVideo: PropertyMediaSummary[] = [
+    ...sampleMediaPool,
+    {
+      id: 'media-video-lazer',
+      type: 'video',
+      description: 'Vídeo da área de lazer com piscina e deck',
+      file_name: 'lazer.mp4',
+      is_cover: false,
+    },
+  ];
+
+  // TEST 17: Same offer+confirmation logic as photos, now for a video offer.
+  it('CENÁRIO 17: Oferta explícita de vídeo + confirmação "Pode mandar." autoriza e identifica filterKind "video"', () => {
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria saber mais sobre o apartamento' },
+      { role: 'assistant' as const, content: 'Posso te mostrar um vídeo da área de lazer.' },
+      { role: 'user' as const, content: 'Pode mandar.' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+
+    expect(auth.authorized).toBe(true);
+    expect(auth.reason).toContain('confirmou afirmativamente');
+    expect(auth.filterKind).toBe('video');
+  });
+
+  // TEST 18: Same "no offer, vague interest" guard as CENÁRIO 15 — the
+  // rule is not video-specific, but the checklist calls it out explicitly.
+  it('CENÁRIO 18: "Gostei" sem nenhuma oferta prévia NÃO autoriza envio (nem foto, nem vídeo)', () => {
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria saber mais sobre o apartamento' },
+      {
+        role: 'assistant' as const,
+        content: 'O apartamento tem 2 quartos, 1 suíte e fica a 100m da praia.',
+      },
+      { role: 'user' as const, content: 'Gostei' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+
+    expect(auth.authorized).toBe(false);
+  });
+
+  // TEST 19: Auto-resolve must be kind-aware — an explicit "vídeo" request
+  // against a mixed gallery (5 photos + 1 video) must select ONLY the
+  // video, never mix in photos.
+  it('CENÁRIO 19: Pedido explícito "Manda o vídeo da área de lazer" com galeria mista seleciona somente o vídeo', async () => {
+    const mockDb = createMockDb(sampleMediaPoolWithVideo);
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Claro! Aqui está o vídeo da área de lazer.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const result = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages: [{ role: 'user', content: 'Manda o vídeo da área de lazer' }],
+      replyCount: 0,
+    });
+
+    expect(result.mediaSendAllowed).toBe(true);
+    expect(result.validatedMediaToSend.length).toBeGreaterThan(0);
+    for (const item of result.validatedMediaToSend) {
+      expect(item.type).toBe('video');
+    }
+  });
+
+  // TEST 16 (inverse direction): the same kind-awareness must not let a
+  // photo request pull in the video either.
+  it('CENÁRIO 20: Pedido explícito "Manda as fotos" com galeria mista seleciona somente fotos, nunca o vídeo', async () => {
+    const mockDb = createMockDb(sampleMediaPoolWithVideo);
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Claro! Aqui estão as fotos.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const result = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages: [{ role: 'user', content: 'Manda as fotos' }],
+      replyCount: 0,
+    });
+
+    expect(result.mediaSendAllowed).toBe(true);
+    expect(result.validatedMediaToSend.length).toBeGreaterThan(0);
+    for (const item of result.validatedMediaToSend) {
+      expect(item.type).toBe('image');
+    }
+  });
+
+  // TEST 12/13/18 (video E2E): full pipeline — offer → confirmation →
+  // authorization → auto-resolved selection → DB validation → dispatch
+  // — proving the send actually happens with kind: 'video', not just
+  // that authorization returns true. Mirrors CENÁRIO 16 exactly, swapping
+  // the photo offer/gallery for a video one.
+  it('CENÁRIO 21: E2E vídeo — oferta + "Pode mandar." resulta em envio real com kind "video"', async () => {
+    const mockDb = {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'properties') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { id: 'prop-1', name: 'Puerto Ventura', status: 'ativo', cover_image_path: null },
+              error: null,
+            }),
+          };
+        }
+        if (table === 'property_ai_contexts') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { stage: 'lancamento', response_style_instructions: [] },
+              error: null,
+            }),
+          };
+        }
+        if (table === 'property_images') {
+          const builder: Record<string, unknown> = {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            in: vi.fn().mockImplementation((_col: string, ids: string[]) => {
+              const filtered = sampleMediaPoolWithVideo.filter((m) => ids.includes(m.id));
+              return Promise.resolve({
+                data: filtered.map((m, idx) => ({
+                  id: m.id,
+                  property_id: 'prop-1',
+                  storage_path: `account-1/${m.file_name}`,
+                  file_name: m.file_name,
+                  content_type: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
+                  description: m.description,
+                  is_cover: m.is_cover,
+                  position: idx,
+                })),
+                error: null,
+              });
+            }),
+            order: vi.fn().mockImplementation(() => builder),
+            then: (resolve: (val: unknown) => void) => {
+              resolve({
+                data: sampleMediaPoolWithVideo.map((m, idx) => ({
+                  id: m.id,
+                  property_id: 'prop-1',
+                  storage_path: `account-1/${m.file_name}`,
+                  file_name: m.file_name,
+                  content_type: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
+                  description: m.description,
+                  is_cover: m.is_cover,
+                  position: idx,
+                })),
+                error: null,
+              });
+            },
+          };
+          return builder;
+        }
+        if (table === 'conversations') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                id: 'conv-21',
+                assigned_agent_id: null,
+                ai_autoreply_disabled: false,
+                ai_reply_count: 1,
+                property_id: 'prop-1',
+                ai_transfer_status: null,
+                ctwa_referral: null,
+                ai_reactivation_status: null,
+              },
+              error: null,
+            }),
+            update: vi.fn().mockReturnThis(),
+          };
+        }
+        if (table === 'messages') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            gte: vi.fn().mockReturnThis(),
+            gt: vi.fn().mockReturnThis(),
+            order: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({ data: [] }),
+          };
+        }
+        if (table === 'automations' || table === 'flow_runs') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            in: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({ data: [] }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        };
+      }),
+      storage: {
+        from: vi.fn().mockReturnValue({
+          getPublicUrl: vi.fn().mockImplementation((path: string) => ({
+            data: { publicUrl: `https://storage.supabase.co/property-media/${path}` },
+          })),
+        }),
+      },
+      rpc: vi.fn().mockResolvedValue({ data: true, error: null }),
+    };
+
+    vi.spyOn(configMod, 'loadAiConfig').mockResolvedValue(baseConfig);
+    vi.spyOn(contextMod, 'buildConversationContext').mockResolvedValue([
+      { role: 'user', content: 'Oi, queria saber mais sobre o apartamento' },
+      { role: 'assistant', content: 'Posso te mostrar um vídeo da área de lazer.' },
+      { role: 'user', content: 'Pode mandar.' },
+    ]);
+
+    // Same failure ingredient as CENÁRIO 16: the model's JSON only
+    // promises in text and leaves send_media empty — auto-resolve (now
+    // kind-aware) must be what actually attaches the video.
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Perfeito! Vou te mandar agora.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const adminClientMod = await import('./admin-client');
+    vi.spyOn(adminClientMod, 'supabaseAdmin').mockReturnValue(mockDb as never);
+
+    const sendMediaSpy = vi
+      .spyOn(metaSendMod, 'engineSendMedia')
+      .mockResolvedValue({ whatsapp_message_id: 'wamid-media-21' });
+    const sendTextSpy = vi
+      .spyOn(metaSendMod, 'engineSendText')
+      .mockResolvedValue({ whatsapp_message_id: 'wamid-text-21' });
+
+    const turnResult = await executeConversationalTurn({
+      db: mockDb as never,
+      accountId: 'acc-1',
+      config: baseConfig,
+      conversationId: 'conv-21',
+      contactId: 'contact-21',
+      propertyId: 'prop-1',
+      messages: [
+        { role: 'user', content: 'Oi, queria saber mais sobre o apartamento' },
+        { role: 'assistant', content: 'Posso te mostrar um vídeo da área de lazer.' },
+        { role: 'user', content: 'Pode mandar.' },
+      ],
+      replyCount: 1,
+    });
+
+    expect(turnResult.mediaSendAllowed).toBe(true);
+    expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+    // Only the video was selected — the offer named "vídeo", so the
+    // kind-aware auto-resolve must not have pulled in any photo too.
+    for (const item of turnResult.validatedMediaToSend) {
+      expect(item.type).toBe('video');
+      expect(item.mediaId).toBe('media-video-lazer');
+    }
+
+    await dispatchInboundToAiReply({
+      accountId: 'account-1',
+      conversationId: 'conv-21',
+      contactId: 'contact-21',
+      configOwnerUserId: 'user-1',
+      debounceMs: 0,
+    });
+
+    expect(sendTextSpy).toHaveBeenCalledTimes(1);
+    expect(sendMediaSpy).toHaveBeenCalled();
+    for (const call of sendMediaSpy.mock.calls) {
+      expect(call[0].kind).toBe('video');
+      expect(call[0].link).toContain('lazer.mp4');
+    }
+
+    const textCallOrder = sendTextSpy.mock.invocationCallOrder[0];
+    const firstMediaCallOrder = sendMediaSpy.mock.invocationCallOrder[0];
+    expect(textCallOrder).toBeLessThan(firstMediaCallOrder);
   });
 });

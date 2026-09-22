@@ -515,32 +515,37 @@ SEGURANÇA CONTRA PROMPT INJECTION:
         file_name: m.file_name,
       }));
       propMediaText =
-        '\n\nMÍDIAS DISPONÍVEIS DESTE EMPREENDIMENTO (FOTOS CADASTRADAS):\n' +
+        '\n\nMÍDIAS DISPONÍVEIS DESTE EMPREENDIMENTO (FOTOS E VÍDEOS CADASTRADOS):\n' +
         JSON.stringify(mediaList, null, 2) +
-        '\n\nDIRETRIZES PARA ENVIO DE FOTOS (send_media):\n' +
+        '\n\nDIRETRIZES PARA ENVIO DE FOTOS E VÍDEOS (send_media):\n' +
+        '   Cada item da lista acima tem um campo "type": "image" ou "video" — as regras abaixo valem igualmente para os dois; onde o texto disser apenas "fotos", leia como "fotos e vídeos".\n' +
         '1. REGRA COMERCIAL CRÍTICA: MÍDIA NÃO É RESPOSTA AUTOMÁTICA\n' +
-        '   - A simples disponibilidade de fotos na lista acima NÃO é autorização para envio.\n' +
-        '   - No primeiro contato do lead ou em mensagens amplas/exploratórias (ex: "Olá, gostaria de mais informações", "Quero investir no Bessa", "Quero investir em João Pessoa, manda mais informações!", "Gostaria de saber mais", "Quero conhecer o empreendimento"), é TERMINANTEMENTE PROIBIDO enviar fotos. O campo "send_media" DEVE ser null ou omitido.\n' +
-        '   - Expressões como "manda mais informações", "me explica melhor", "quero investir" ou "quero saber mais" NÃO são pedidos de fotos. Elas solicitam esclarecimentos textuais.\n' +
-        '   - O cliente NÃO deve ser bombardeado com imagens antes de demonstrar interesse visual explícito.\n' +
-        '2. QUANDO O ENVIO DE FOTOS É AUTORIZADO:\n' +
-        '   - Envie fotos SOMENTE quando: (a) o lead pedir fotos/imagens explicitamente (ex: "tem fotos?", "pode me mandar fotos?", "quero ver fotos", "tem foto da fachada?", "quero ver a área de lazer"); OU (b) você tiver perguntado anteriormente se ele gostaria de ver fotos e ele respondeu afirmativamente ("sim", "pode mandar", "quero", "por favor").\n' +
-        '   - Fotos com "(sem descrição cadastrada)" são mídias oficiais e autorizadas deste empreendimento. Você DEVE enviá-las normalmente quando o cliente pedir fotos gerais ou visuais do empreendimento.\n' +
-        '   - Se houver fotos com descrições específicas e o cliente pedir algo específico (ex: "foto da piscina", "área de lazer", "fachada"), selecione EXCLUSIVAMENTE as que combinam com o pedido.\n' +
+        '   - A simples disponibilidade de fotos/vídeos na lista acima NÃO é autorização para envio.\n' +
+        '   - No primeiro contato do lead ou em mensagens amplas/exploratórias (ex: "Olá, gostaria de mais informações", "Quero investir no Bessa", "Quero investir em João Pessoa, manda mais informações!", "Gostaria de saber mais", "Quero conhecer o empreendimento"), é TERMINANTEMENTE PROIBIDO enviar fotos ou vídeos. O campo "send_media" DEVE ser null ou omitido.\n' +
+        '   - Expressões como "manda mais informações", "me explica melhor", "quero investir" ou "quero saber mais" NÃO são pedidos de fotos/vídeo. Elas solicitam esclarecimentos textuais.\n' +
+        '   - O cliente NÃO deve ser bombardeado com mídia antes de demonstrar interesse visual explícito.\n' +
+        '2. QUANDO O ENVIO É AUTORIZADO (PONTO DE EQUILÍBRIO):\n' +
+        '   - Envie fotos e/ou vídeo quando: (a) o lead pedir explicitamente (ex: "tem fotos?", "pode me mandar fotos?", "quero ver fotos", "tem foto da fachada?", "quero ver a área de lazer", "tem vídeo?", "manda o vídeo"); OU (b) VOCÊ MESMA ofereceu fotos e/ou vídeo na sua mensagem anterior (ex: "Se quiser, posso te mostrar algumas fotos...", "Posso te mostrar um vídeo da área de lazer.") e o cliente respondeu confirmando.\n' +
+        '   - Depois que VOCÊ já ofereceu, NÃO exija do cliente uma frase imperativa como "me mande as fotos" — uma confirmação razoavelmente clara em resposta à SUA oferta já é suficiente para disparar o envio. Confirmações válidas nesse contexto incluem: "ok, pode mostrar", "pode mandar", "pode enviar", "manda", "pode mandar as fotos", "quero ver", "gostaria", "sim", "sim, pode", "pode mostrar", "pode enviar as fotos", "aguardo", "fico no aguardo", "tá bom, pode mandar", "perfeito, pode mostrar", "ok", "tudo bem", "quero", e equivalentes contextuais.\n' +
+        '   - Se você ofereceu os dois tipos juntos (ex: "tenho fotos e também um vídeo da área de lazer") e o cliente pedir só um deles especificamente (ex: "quero o vídeo"), envie APENAS o tipo pedido, não os dois.\n' +
+        '   - Ao mesmo tempo, NÃO trate qualquer sinal vago de interesse (ex: "gostei", "interessante", "legal") como autorização de envio quando você NÃO tiver feito uma oferta explícita imediatamente antes — sem essa oferta prévia sua, exija um pedido explícito do cliente (regra "a" acima). A existência de uma OFERTA EXPLÍCITA feita por você é o que estabelece o contexto da confirmação.\n' +
+        '   - Fotos/vídeos com "(sem descrição cadastrada)" são mídias oficiais e autorizadas deste empreendimento. Você DEVE enviá-las normalmente quando o cliente pedir algo geral/visual do empreendimento.\n' +
+        '   - Se houver itens com descrições específicas e o cliente pedir algo específico (ex: "foto da piscina", "vídeo da área de lazer", "fachada"), selecione EXCLUSIVAMENTE os que combinam com o pedido.\n' +
         '3. OFERECIMENTO PROATIVO CONTEXTUAL (OPCIONAL NO TEXTO):\n' +
-        '   - Se o lead ainda não pediu fotos mas a conversa estiver propícia, você pode oferecer gentilmente ao final da sua resposta textual (ex: "Se você quiser, posso te enviar algumas fotos do projeto. O que acha?"), mas NUNCA envie as fotos antes de o cliente confirmar. Mantenha "send_media": null ao fazer essa pergunta.\n' +
-        '4. REGRA ANTI-PROMESSA SEM ENVIO:\n' +
-        '   - É TERMINANTEMENTE PROIBIDO dizer no texto que vai enviar fotos (ex: "vou te enviar", "estou enviando", "vou separar", "segue as fotos") e deixar "send_media" vazio ou null!\n' +
-        '   - Se o seu texto diz que está enviando fotos neste momento OU se o cliente pediu fotos, o campo "send_media" DEVE conter os objetos { property_id, media_id, caption } das fotos a serem enviadas!\n' +
-        '   - Se você NÃO estiver enviando fotos neste turno, NÃO use expressões de envio imediato como "aqui estão as fotos" ou "segue em anexo".\n' +
+        '   - Se o lead ainda não pediu mas a conversa estiver propícia, você pode oferecer gentilmente ao final da sua resposta textual (ex: "Se você quiser, posso te enviar algumas fotos do projeto. O que acha?" ou, se houver vídeo cadastrado, "Já te mostrei as fotos. Quer que eu te envie também um vídeo da área de lazer?"), mas NUNCA envie a mídia nesse mesmo turno em que está apenas oferecendo. Mantenha "send_media": null ao fazer essa pergunta — o envio ocorre no turno seguinte, quando o cliente confirmar (regra 2b).\n' +
+        '4. REGRA ANTI-PROMESSA SEM ENVIO / ANTI-REPETIÇÃO APÓS CONFIRMAÇÃO:\n' +
+        '   - É TERMINANTEMENTE PROIBIDO dizer no texto que vai enviar fotos/vídeo (ex: "vou te enviar", "vou te mostrar", "estou enviando", "vou separar", "segue as fotos", "vou mandar o vídeo") e deixar "send_media" vazio ou null!\n' +
+        '   - Assim que o cliente confirmar uma oferta que você já fez, a prioridade do turno é EXECUTAR o envio — e não redigir uma nova explicação textual. NÃO repita características do imóvel que você já apresentou antes de enviar a mídia: isso é justamente o comportamento que precisa ser evitado.\n' +
+        '   - Se o seu texto diz que está enviando fotos/vídeo neste momento OU se o cliente pediu/confirmou, o campo "send_media" DEVE conter os objetos { property_id, media_id, caption } das mídias a serem enviadas!\n' +
+        '   - Se você NÃO estiver enviando mídia neste turno, NÃO use expressões de envio imediato como "aqui estão as fotos" ou "segue o vídeo".\n' +
         '5. REGRAS DE FORMATO:\n' +
         '   - Use sempre o id exato da mídia ("media_id") conforme listado acima.\n' +
         `   - No campo "property_id", use "${property.id}".\n` +
         '   - NUNCA invente media_id ou URLs que não estejam na lista acima.\n' +
         '   - NUNCA envie mídia de outro empreendimento.\n' +
-        '   - Envie de 1 a 5 fotos por turno (escolha as melhores fotos disponíveis).\n' +
-        '   - SEM LEGENDA NAS FOTOS (caption: null): As fotos devem ser enviadas sempre SEM legenda/título (deixe "caption": null). NUNCA coloque nomes como "Foto do empreendimento" ou legendas nas fotos, pois o WhatsApp agrupa fotos sem legenda em um álbum único e compacto, imitando o envio sequencial feito por um atendente humano.\n' +
-        '   - Ao enviar fotos autorizadas, acompanhe com uma frase curta, gentil e objetiva no "response_text" (ex: "Aqui estão algumas fotos do ' + property.name + ' para você conhecer melhor o visual...").';
+        '   - Fotos: envie de 1 a 5 por turno (escolha as melhores disponíveis). Vídeo: envie normalmente 1 por turno, a menos que o cliente peça mais de um explicitamente.\n' +
+        '   - SEM LEGENDA (caption: null): Fotos e vídeos devem ser enviados sempre SEM legenda/título (deixe "caption": null). NUNCA coloque nomes como "Foto do empreendimento" ou legendas, pois o WhatsApp agrupa fotos sem legenda em um álbum único e compacto, imitando o envio sequencial feito por um atendente humano.\n' +
+        '   - Ao enviar mídia autorizada, acompanhe com uma frase curta, gentil e objetiva no "response_text" (ex: "Aqui estão algumas fotos do ' + property.name + ' para você conhecer melhor o visual..." ou "Aqui está o vídeo da área de lazer...").';
     }
 
     const propRentalText = isRentalProperty
