@@ -242,7 +242,9 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
             apiMessages.push({ role: 'assistant', content: t.content });
           }
           for (const m of t.diagnostic.media) {
-            const label = m.type === 'video' ? '[Assistente enviou um vídeo]' : '[Assistente enviou uma imagem]';
+            const label = m.type === 'video'
+              ? `[Assistente enviou um vídeo: "${m.fileName}" (id: ${m.mediaId})]`
+              : `[Assistente enviou uma imagem: "${m.fileName}" (id: ${m.mediaId})]`;
             apiMessages.push({ role: 'assistant', content: label });
           }
         } else {

@@ -341,9 +341,9 @@ export function isExplicitMediaRequest(
 // right after the verb too — the natural way to offer a second kind of
 // media after already showing the first ("Quer que eu te envie também
 // um vídeo?").
-const MEDIA_OFFER_REGEX = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser posso|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:tamb[eé]m\s+)?(?:(?:algumas?|um|uma|uns|umas)\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
+const MEDIA_OFFER_REGEX = /(?:quer(?: que eu)?|posso|gostaria que eu|deseja que eu|posso te|se quiser(?:,)? posso(?: te)?|posso enviar|posso mandar)\s+(?:te\s+)?(?:envi(?:ar|e|asse)|mand(?:ar|e|asse)|compartilh(?:ar|e)|mostr(?:ar|e))\s+(?:(?:tamb[eé]m|mais|outras?)\s+)?(?:(?:algumas?|um|uma|uns|umas|mais)\s+)?(?:fotos?|imagens?|plantas?|v[ií]deos?)/i;
 const MEDIA_QUESTION_OFFER_REGEX = /(?:fotos?|imagens?|plantas?|v[ií]deos?).*?\b(?:quer|gostaria|deseja|posso|te envio|te mando)\b.*?\?/i;
-const MEDIA_DIRECT_OFFER_REGEX = /(?:posso te enviar|quer que eu mande|quer ver)\s+(?:as\s+|algumas?\s+)?(?:fotos?|imagens?|plantas?)/i;
+const MEDIA_DIRECT_OFFER_REGEX = /(?:posso te enviar|quer que eu mande|quer ver)\s+(?:as\s+|algumas?\s+|mais\s+)?(?:fotos?|imagens?|plantas?)/i;
 
 /**
  * Checks if the assistant offered media in the immediately preceding turn
@@ -358,22 +358,35 @@ export function didAssistantOfferMedia(lastAssistantText: string): boolean {
 }
 
 /**
- * Detects which media kind Clara's offer was actually about, using ONLY
- * the matched offer clause — not the whole assistant message. This
- * matters when the message also references the other kind in a
- * different tense/context ("Já te mostrei algumas fotos. Quer que eu te
- * envie também um vídeo?" mentions "fotos" AND "vídeo", but the offer
- * itself, the clause detectMediaKind should judge, is only about the
- * vídeo). Falls back to scanning the full text when none of the offer
- * patterns match anything (defensive; didAssistantOfferMedia already
- * gates on one of them matching before this is ever called).
+ * Detects which media kind Clara's offer was actually about, using the
+ * matched offer clause and respecting whether the turn already delivered photos or videos.
+ * When the previous turn already sent photos and the text offered a video
+ * (e.g. "Tenho fotos... Se quiser, também posso te mostrar um vídeo."),
+ * the pending unfulfilled offer is unambiguously 'video'.
  */
-function detectOfferedMediaKind(text: string): 'image' | 'video' | undefined {
+export function detectOfferedMediaKind(
+  text: string,
+  options?: { alreadySentImagesInTurn?: boolean; alreadySentVideosInTurn?: boolean },
+): 'image' | 'video' | undefined {
   if (!text) return undefined;
-  for (const pattern of [MEDIA_OFFER_REGEX, MEDIA_QUESTION_OFFER_REGEX, MEDIA_DIRECT_OFFER_REGEX]) {
-    const match = text.match(pattern);
-    if (match) {
-      const kind = detectMediaKind(match[0]);
+
+  // Contextual priority: if images were already sent in this turn, any video offer is the pending one
+  if (options?.alreadySentImagesInTurn && /\bv[ií]deos?\b/i.test(text)) {
+    return 'video';
+  }
+  // If videos were already sent in this turn, any photo offer is the pending one
+  if (options?.alreadySentVideosInTurn && /\b(fotos?|fotografia|imagens?|imagem|plantas?)\b/i.test(text)) {
+    return 'image';
+  }
+
+  // Scan offers from last to first (the trailing offer represents the active pending question)
+  const patterns = [MEDIA_OFFER_REGEX, MEDIA_QUESTION_OFFER_REGEX, MEDIA_DIRECT_OFFER_REGEX];
+  for (const pattern of patterns) {
+    const globalPattern = new RegExp(pattern.source, 'gi');
+    const matches = Array.from(text.matchAll(globalPattern));
+    if (matches.length > 0) {
+      const lastMatch = matches[matches.length - 1][0];
+      const kind = detectMediaKind(lastMatch);
       if (kind) return kind;
     }
   }
@@ -397,6 +410,8 @@ const CONFIRMATION_REGEX = new RegExp(
 
 const RESEND_REGEX = /\b(?:reenvi(?:ar?|e|em)|manda(?:r)?\s+(?:de\s+novo|novamente)|mostra(?:r)?\s+(?:de\s+novo|novamente)|ver\s+(?:de\s+novo|novamente)|mandar?\s+(?:aquelas?|essas?)\s+(?:fotos?|imagens?|v[ií]deos?)\s+(?:novamente|de\s+novo)|pode\s+(?:mandar|enviar|mostrar)\s+(?:essas?|aquelas?)\s+(?:fotos?|imagens?|v[ií]deos?)\s+(?:novamente|de\s+novo))\b/i;
 
+const MORE_MEDIA_REGEX = /\b(?:mais|outras?|adicionais?)\s+(?:fotos?|imagens?|v[ií]deos?)\b|\b(?:quero\s+ver\s+mais|mostra\s+mais(?:\s+do\s+projeto)?|tem\s+mais\s+(?:fotos?|imagens?|v[ií]deos?)|manda\s+mais)\b/i;
+
 /**
  * Checks if the user explicitly requested to resend previously sent media.
  */
@@ -406,12 +421,78 @@ export function isExplicitResendRequest(userText: string): boolean {
 }
 
 /**
+ * Checks if the user requested "more photos/media" or additional images.
+ */
+export function isMoreMediaRequest(userText: string): boolean {
+  if (!userText) return false;
+  const trimmed = userText.trim();
+  if (isExplicitResendRequest(trimmed)) return false;
+  return MORE_MEDIA_REGEX.test(trimmed);
+}
+
+/**
  * Checks if the user gave an affirmative confirmation (e.g. to a previous media offer)
  */
 export function isAffirmativeConfirmation(userText: string): boolean {
   if (!userText) return false;
   const trimmed = userText.trim().toLowerCase().replace(/[.!?]+$/g, '').trim();
   return CONFIRMATION_REGEX.test(trimmed);
+}
+
+/**
+ * Scans conversation history to extract media IDs and filenames of media
+ * that the assistant has already sent in this conversation.
+ */
+export function getSentMediaIdsFromHistory(
+  messages: ChatMessage[],
+  availableMedia: PropertyMediaSummary[],
+): Set<string> {
+  const sentIds = new Set<string>();
+  const assistantMessages = messages.filter((m) => m.role === 'assistant');
+  let genericImageCount = 0;
+  let genericVideoCount = 0;
+
+  for (const msg of assistantMessages) {
+    const text = msg.content;
+    const idMatch = text.match(/\(id:\s*([a-zA-Z0-9_-]+)\)/i);
+    if (idMatch && idMatch[1]) {
+      sentIds.add(idMatch[1]);
+      continue;
+    }
+
+    let matchedSpecific = false;
+    for (const media of availableMedia) {
+      if (media.file_name && text.includes(media.file_name)) {
+        sentIds.add(media.id);
+        matchedSpecific = true;
+      } else if (media.url && text.includes(media.url)) {
+        sentIds.add(media.id);
+        matchedSpecific = true;
+      }
+    }
+
+    if (!matchedSpecific) {
+      if (/\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:uma?\s+)?(?:imagem|foto)/i.test(text)) {
+        genericImageCount++;
+      } else if (/\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:um\s+)?v[ií]deo/i.test(text)) {
+        genericVideoCount++;
+      }
+    }
+  }
+
+  // Fallback for generic untyped markers without IDs/filenames
+  if (sentIds.size === 0) {
+    const images = availableMedia.filter((m) => m.type === 'image');
+    for (let i = 0; i < Math.min(genericImageCount, images.length); i++) {
+      sentIds.add(images[i].id);
+    }
+    const videos = availableMedia.filter((m) => m.type === 'video');
+    for (let i = 0; i < Math.min(genericVideoCount, videos.length); i++) {
+      sentIds.add(videos[i].id);
+    }
+  }
+
+  return sentIds;
 }
 
 /**
@@ -495,9 +576,7 @@ export function isMediaSendAuthorized(args: {
       : '';
 
   if (didAssistantOfferMedia(lastAssistantText) && isAffirmativeConfirmation(latestUserText)) {
-    const offeredKind = detectOfferedMediaKind(lastAssistantText);
-
-    // Check if the offered kind of media was already sent in this previous turn
+    // Check if media was already sent in this previous turn
     const sentImagesInTurn = previousTurnAssistantMessages.some((m) =>
       /\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:uma?\s+)?(?:imagem|foto)/i.test(m.content)
     );
@@ -507,6 +586,11 @@ export function isMediaSendAuthorized(args: {
     const sentDocumentsInTurn = previousTurnAssistantMessages.some((m) =>
       /\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:um\s+)?documento/i.test(m.content)
     );
+
+    const offeredKind = detectOfferedMediaKind(lastAssistantText, {
+      alreadySentImagesInTurn: sentImagesInTurn,
+      alreadySentVideosInTurn: sentVideosInTurn,
+    });
 
     const alreadySentOfferedMedia =
       offeredKind === 'video'
@@ -725,6 +809,21 @@ export async function executeConversationalTurn(
     .map((m) => m.content.trim())
     .filter((txt) => txt.length > 0);
 
+  // 5b. Compute Media Authorization & History State for Prompt and Guard
+  const lastAssistantIndex = messages.map((m) => m.role).lastIndexOf('assistant');
+  const currentTurnUserMessages = messages
+    .slice(lastAssistantIndex + 1)
+    .filter((m) => m.role === 'user');
+  const isResend = currentTurnUserMessages.some((m) => isExplicitResendRequest(m.content));
+  const isMoreMedia = currentTurnUserMessages.some((m) => isMoreMediaRequest(m.content));
+  const sentMediaIds = getSentMediaIdsFromHistory(messages, availableMedia);
+
+  const mediaAuth = isMediaSendAuthorized({
+    messages,
+    isInitialContact,
+    userMessageCount,
+  });
+
   // 6. Build Modular System Prompt with structured decision requirement.
   // Every knowledge/memory group is named here once and reused verbatim
   // by the security guard below (§8a-3) — the guard must see EXACTLY
@@ -758,6 +857,9 @@ export async function executeConversationalTurn(
     userMessageCount,
     totalTurns,
     communicatedContent,
+    sentMediaIds,
+    mediaAuth,
+    isMoreMedia,
   });
 
   // 7. Invoke Provider
@@ -802,13 +904,7 @@ export async function executeConversationalTurn(
     );
   }
 
-  // 8b. Media Authorization Architectural Guard (HARD BLOCK)
-  const mediaAuth = isMediaSendAuthorized({
-    messages,
-    isInitialContact,
-    userMessageCount,
-  });
-
+  // 8b. Media Authorization & Deduplication Architectural Guard (HARD BLOCK)
   if (!mediaAuth.authorized) {
     // Hard block: Strip any media that LLM hallucinates or suggests
     decision.send_media = null;
@@ -821,8 +917,7 @@ export async function executeConversationalTurn(
         .trim();
     }
   } else {
-    // 8c. Media Auto-Resolution / Topic Filtering when authorized:
-    // Filter matching media by requested topic (e.g. lazer, fachada, piscina)
+    // 8c. Media Auto-Resolution / Topic Filtering / Deduplication when authorized:
     const getTopicRegex = (topic?: MediaFilterTopic): RegExp | null => {
       if (!topic || topic === 'geral') return null;
       switch (topic) {
@@ -843,25 +938,68 @@ export async function executeConversationalTurn(
 
     const topicRegex = getTopicRegex(mediaAuth.filterTopic);
 
-    // Kind (foto vs vídeo) filter — only narrows when the triggering text
-    // unambiguously named one kind (mediaAuth.filterKind); otherwise this
-    // is a no-op and behaves exactly as before video support existed.
-    // Same defensive "only replace if there's at least one match" shape
-    // as the topic filter below, so an empty gallery of that kind never
-    // wipes out an otherwise-valid auto-resolve.
-    const kindFilteredMedia = mediaAuth.filterKind
-      ? (() => {
-          const matches = availableMedia.filter((m) => m.type === mediaAuth.filterKind);
-          return matches.length > 0 ? matches : availableMedia;
-        })()
-      : availableMedia;
+    // Deduplication Pool: exclude already-sent media unless lead explicitly requested resend
+    const candidateMediaPool = isResend
+      ? availableMedia
+      : availableMedia.filter((m) => !sentMediaIds.has(m.id));
 
-    // If decision.send_media is empty or null, auto-resolve from availableMedia
-    if (
-      propertyId &&
-      availableMedia.length > 0 &&
-      (!decision.send_media || decision.send_media.length === 0)
-    ) {
+    // Kind (foto vs vídeo) filter on the candidate pool
+    const kindFilteredMedia = mediaAuth.filterKind
+      ? candidateMediaPool.filter((m) => m.type === mediaAuth.filterKind)
+      : candidateMediaPool;
+
+    const AUTO_RESOLVE_BATCH_SIZE = mediaAuth.filterKind === 'video' ? 1 : 3;
+
+    if (decision.send_media && decision.send_media.length > 0) {
+      // Model returned media items — defensively sanitize and enforce kind/resend rules:
+      let filtered = decision.send_media;
+
+      // Filter out already sent media if not an explicit resend request
+      if (!isResend && sentMediaIds.size > 0) {
+        filtered = filtered.filter((sm) => !sentMediaIds.has(sm.media_id));
+      }
+
+      // Filter by required kind if mediaAuth has a specific kind
+      if (mediaAuth.filterKind && availableMedia.length > 0) {
+        const mediaById = new Map(availableMedia.map((m) => [m.id, m]));
+        filtered = filtered.filter((sm) => {
+          const item = mediaById.get(sm.media_id);
+          return item ? item.type === mediaAuth.filterKind : true;
+        });
+      }
+
+      // Filter by topic if applicable
+      if (topicRegex) {
+        const matchingTopicIds = new Set(
+          candidateMediaPool
+            .filter((m) => (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name))
+            .map((m) => m.id),
+        );
+        if (matchingTopicIds.size > 0) {
+          const topicFiltered = filtered.filter((sm) => matchingTopicIds.has(sm.media_id));
+          if (topicFiltered.length > 0) {
+            filtered = topicFiltered;
+          }
+        }
+      }
+
+      if (filtered.length > 0) {
+        decision.send_media = filtered;
+      } else if (kindFilteredMedia.length > 0) {
+        // Model returned wrong kind (e.g. photos when video was required) or only already-sent items:
+        // Auto-resolve from the compliant candidate pool
+        console.log(`[conversation engine] Overriding invalid model send_media with compliant candidate pool for property ${propertyId} (kind=${mediaAuth.filterKind || 'any'})`);
+        decision.send_media = kindFilteredMedia.slice(0, AUTO_RESOLVE_BATCH_SIZE).map((m) => ({
+          property_id: propertyId!,
+          media_id: m.id,
+          caption: null,
+        }));
+      } else {
+        // No remaining unsent items of required kind (album exhausted)
+        decision.send_media = null;
+      }
+    } else if (propertyId && availableMedia.length > 0) {
+      // Model did not attach media — auto-resolve from kindFilteredMedia:
       let filteredMedia = kindFilteredMedia;
       if (topicRegex) {
         const matches = kindFilteredMedia.filter(
@@ -872,36 +1010,25 @@ export async function executeConversationalTurn(
         }
       }
 
-      // Progressive disclosure, not a library dump: when the model itself
-      // didn't pick specific items, this fallback must still behave like
-      // Clara would — a small first batch, never "all matching items just
-      // because they exist" (mirrors the prompt's own "2 a 3 fotos, 1
-      // vídeo por turno" guidance in prompt-builder.ts's media rules).
-      // MAX_AI_MEDIA_PER_TURN in validateAndResolveMediaToSend remains the
-      // hard safety ceiling for whatever the model explicitly requests.
-      const AUTO_RESOLVE_BATCH_SIZE = mediaAuth.filterKind === 'video' ? 1 : 3;
-
-      console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, sending first ${Math.min(filteredMedia.length, AUTO_RESOLVE_BATCH_SIZE)}, topic=${mediaAuth.filterTopic || 'geral'}, kind=${mediaAuth.filterKind || 'any'})`);
-      decision.send_media = filteredMedia.slice(0, AUTO_RESOLVE_BATCH_SIZE).map((m) => ({
-        property_id: propertyId,
-        media_id: m.id,
-        caption: null,
-      }));
-    } else if (decision.send_media && decision.send_media.length > 0 && (topicRegex || mediaAuth.filterKind)) {
-      // If the LLM already picked media itself, still defensively narrow it
-      // to the requested topic and/or kind — e.g. the lead asked for
-      // "vídeo" but the model attached a photo alongside it.
-      const matchingMediaIds = new Set(
-        kindFilteredMedia
-          .filter((m) => !topicRegex || (m.description && topicRegex.test(m.description)) || topicRegex.test(m.file_name))
-          .map((m) => m.id),
-      );
-      if (matchingMediaIds.size > 0) {
-        const filtered = decision.send_media.filter((sm) => matchingMediaIds.has(sm.media_id));
-        if (filtered.length > 0) {
-          decision.send_media = filtered;
-        }
+      if (filteredMedia.length > 0) {
+        console.log(`[conversation engine] Auto-resolving send_media for property ${propertyId} (${filteredMedia.length} filtered items, sending first ${Math.min(filteredMedia.length, AUTO_RESOLVE_BATCH_SIZE)}, topic=${mediaAuth.filterTopic || 'geral'}, kind=${mediaAuth.filterKind || 'any'})`);
+        decision.send_media = filteredMedia.slice(0, AUTO_RESOLVE_BATCH_SIZE).map((m) => ({
+          property_id: propertyId,
+          media_id: m.id,
+          caption: null,
+        }));
+      } else {
+        decision.send_media = null;
       }
+    }
+
+    // Defensive Text Alignment:
+    // If video was required and sent, but model erroneously wrote "fotos" in response_text, align text:
+    if (mediaAuth.filterKind === 'video' && decision.send_media && decision.send_media.length > 0 && decision.response_text) {
+      decision.response_text = decision.response_text.replace(
+        /(?:mais\s+)?(?:algumas?\s+)?fotos?(?:\s+do\s+projeto|\s+do\s+empreendimento)?/gi,
+        'um vídeo',
+      );
     }
   }
 

@@ -21,6 +21,7 @@ export function effectiveMessageText(message: {
   content_text?: string | null
   transcript_text?: string | null
   sender_type?: 'customer' | 'agent' | 'bot' | string | null
+  media_url?: string | null
 }): string | null {
   if (message.content_type === 'audio') {
     const trimmed = message.transcript_text?.trim()
@@ -34,10 +35,16 @@ export function effectiveMessageText(message: {
   switch (message.content_type) {
     case 'text':
       return caption
-    case 'image':
-      return caption ? `[${senderLabel} enviou uma imagem: "${caption}"]` : `[${senderLabel} enviou uma imagem]`
-    case 'video':
-      return caption ? `[${senderLabel} enviou um vídeo: "${caption}"]` : `[${senderLabel} enviou um vídeo]`
+    case 'image': {
+      const fileName = message.media_url ? message.media_url.split('/').pop()?.split('?')[0] : null
+      const desc = caption || fileName
+      return desc ? `[${senderLabel} enviou uma imagem: "${desc}"]` : `[${senderLabel} enviou uma imagem]`
+    }
+    case 'video': {
+      const fileName = message.media_url ? message.media_url.split('/').pop()?.split('?')[0] : null
+      const desc = caption || fileName
+      return desc ? `[${senderLabel} enviou um vídeo: "${desc}"]` : `[${senderLabel} enviou um vídeo]`
+    }
     case 'document':
       return caption ? `[${senderLabel} enviou um documento: "${caption}"]` : `[${senderLabel} enviou um documento]`
     case 'location':

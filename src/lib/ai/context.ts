@@ -8,6 +8,7 @@ interface DbMessage {
   content_type: string
   content_text: string | null
   transcript_text: string | null
+  media_url?: string | null
 }
 
 /**
@@ -34,7 +35,7 @@ export async function buildConversationContext(
 ): Promise<ChatMessage[]> {
   const { data, error } = await db
     .from('messages')
-    .select('sender_type, content_type, content_text, transcript_text')
+    .select('sender_type, content_type, content_text, transcript_text, media_url')
     .eq('conversation_id', conversationId)
     .in('content_type', ['text', 'audio', 'image', 'video', 'document', 'location', 'interactive'])
     .order('created_at', { ascending: false })

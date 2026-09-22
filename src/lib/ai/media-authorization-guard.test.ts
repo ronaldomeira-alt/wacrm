@@ -1500,4 +1500,363 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
     expect(turnResult.decision?.send_media).toBeNull();
     expect(turnResult.validatedMediaToSend).toEqual([]);
   });
+
+  // =========================================================================
+  // PROBLEMAS 1 E 2 — BINDING DE OFERTA DE VÍDEO E DEDUPLICAÇÃO DE FOTOS
+  // =========================================================================
+  describe('Problemas 1 e 2 — Offer Binding (Vídeo) e Desduplicação Contextual ("Mais Fotos")', () => {
+    const testMediaPool: PropertyMediaSummary[] = [
+      {
+        id: 'media-foto-A',
+        type: 'image',
+        description: 'Fachada frontal imponente',
+        file_name: 'fachada.jpg',
+        is_cover: false,
+      },
+      {
+        id: 'media-foto-B',
+        type: 'image',
+        description: 'Piscina com borda infinita',
+        file_name: 'piscina.jpg',
+        is_cover: false,
+      },
+      {
+        id: 'media-foto-C',
+        type: 'image',
+        description: 'Espaço gourmet integrado',
+        file_name: 'gourmet.jpg',
+        is_cover: false,
+      },
+      {
+        id: 'media-foto-D',
+        type: 'image',
+        description: 'Academia completa',
+        file_name: 'academia.jpg',
+        is_cover: false,
+      },
+      {
+        id: 'media-foto-E',
+        type: 'image',
+        description: 'Planta baixa 3 suítes',
+        file_name: 'planta.jpg',
+        is_cover: false,
+      },
+      {
+        id: 'media-video-1',
+        type: 'video',
+        description: 'Vídeo tour completo do empreendimento',
+        file_name: 'tour.mp4',
+        is_cover: false,
+      },
+    ];
+
+    // TESTE 1: Clara oferece vídeo ("Se quiser, posso te mostrar um vídeo.") + cliente diz "manda" -> envia APENAS vídeo, 0 fotos
+    it('TESTE 1: Clara oferece vídeo + cliente diz "manda" -> envia APENAS vídeo, 0 fotos', async () => {
+      const mockDb = createMockDb(testMediaPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Oi, queria conhecer o Live Park' },
+        {
+          role: 'assistant' as const,
+          content: 'Claro! 😊 Tenho sim algumas fotos do Live Park para você conhecer melhor o visual do projeto. Se quiser, também posso te mostrar um vídeo.',
+        },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "fachada.jpg" (id: media-foto-A)]' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "piscina.jpg" (id: media-foto-B)]' },
+        { role: 'user' as const, content: 'manda' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      // Mesmo se o modelo retornar fotos ou vazio, a engine ancora no VÍDEO
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Aqui está o vídeo do Live Park!',
+          transfer_required: false,
+          send_media: [
+            { property_id: 'prop-1', media_id: 'media-foto-C', caption: null },
+          ],
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 2,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(true);
+      expect(turnResult.validatedMediaToSend.length).toBe(1);
+      expect(turnResult.validatedMediaToSend[0].type).toBe('video');
+      expect(turnResult.validatedMediaToSend[0].mediaId).toBe('media-video-1');
+      expect(turnResult.validatedMediaToSend.filter((m) => m.type === 'image')).toHaveLength(0);
+    });
+
+    // TESTE 2: Clara oferece fotos ("Se quiser, posso te mostrar mais algumas fotos.") + cliente diz "manda" -> envia fotos
+    it('TESTE 2: Clara oferece fotos + cliente diz "manda" -> envia fotos', async () => {
+      const mockDb = createMockDb(testMediaPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Gostei da localização' },
+        {
+          role: 'assistant' as const,
+          content: 'Que ótimo! Se quiser, posso te mostrar mais algumas fotos do empreendimento.',
+        },
+        { role: 'user' as const, content: 'manda' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Vou te mostrar as fotos!',
+          transfer_required: false,
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 1,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(true);
+      expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+      expect(turnResult.validatedMediaToSend.every((m) => m.type === 'image')).toBe(true);
+    });
+
+    // TESTE 3: 5 fotos cadastradas (A, B, C, D, E), A e B já enviadas, cliente diz "manda mais fotos" -> envia C, D, E (A e B NUNCA aparecem)
+    it('TESTE 3: 5 fotos cadastradas, A e B já enviadas, cliente diz "manda mais fotos" -> envia C, D, E (A e B NUNCA aparecem)', async () => {
+      const fivePhotosPool = testMediaPool.filter((m) => m.type === 'image'); // A, B, C, D, E
+      const mockDb = createMockDb(fivePhotosPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Quero ver fotos' },
+        { role: 'assistant' as const, content: 'Aqui estão algumas fotos.' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "fachada.jpg" (id: media-foto-A)]' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "piscina.jpg" (id: media-foto-B)]' },
+        { role: 'user' as const, content: 'manda mais fotos' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      // Simulando que o modelo tenta erroneamente mandar fotos A e C
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Aqui estão mais fotos!',
+          transfer_required: false,
+          send_media: [
+            { property_id: 'prop-1', media_id: 'media-foto-A', caption: null },
+            { property_id: 'prop-1', media_id: 'media-foto-C', caption: null },
+          ],
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 2,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(true);
+      const sentIds = turnResult.validatedMediaToSend.map((m) => m.mediaId);
+      expect(sentIds).not.toContain('media-foto-A');
+      expect(sentIds).not.toContain('media-foto-B');
+      expect(sentIds).toContain('media-foto-C');
+    });
+
+    // TESTE 4: 3 fotos cadastradas (A, B, C), A e B já enviadas, cliente diz "manda mais fotos" -> envia APENAS C (não repete A ou B para "completar lote")
+    it('TESTE 4: 3 fotos cadastradas, A e B já enviadas, cliente diz "manda mais fotos" -> envia APENAS C (não repete A ou B para "completar lote")', async () => {
+      const threePhotosPool = testMediaPool.filter((m) => ['media-foto-A', 'media-foto-B', 'media-foto-C'].includes(m.id));
+      const mockDb = createMockDb(threePhotosPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Tem fotos?' },
+        { role: 'assistant' as const, content: 'Tenho sim, veja.' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "fachada.jpg" (id: media-foto-A)]' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "piscina.jpg" (id: media-foto-B)]' },
+        { role: 'user' as const, content: 'manda mais fotos' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      // Auto-resolve deve agir porque send_media vem nulo
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Aqui está mais uma foto!',
+          transfer_required: false,
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 2,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(true);
+      expect(turnResult.validatedMediaToSend.length).toBe(1);
+      expect(turnResult.validatedMediaToSend[0].mediaId).toBe('media-foto-C');
+      const sentIds = turnResult.validatedMediaToSend.map((m) => m.mediaId);
+      expect(sentIds).not.toContain('media-foto-A');
+      expect(sentIds).not.toContain('media-foto-B');
+    });
+
+    // TESTE 5: Fotos A, B enviadas, cliente diz "manda essas fotos novamente" -> reenvio permitido
+    it('TESTE 5: Fotos A, B enviadas, cliente diz "manda essas fotos novamente" -> reenvio permitido', async () => {
+      const twoPhotosPool = testMediaPool.filter((m) => ['media-foto-A', 'media-foto-B'].includes(m.id));
+      const mockDb = createMockDb(twoPhotosPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Tem fotos?' },
+        { role: 'assistant' as const, content: 'Aqui estão.' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "fachada.jpg" (id: media-foto-A)]' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "piscina.jpg" (id: media-foto-B)]' },
+        { role: 'user' as const, content: 'manda essas fotos novamente' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Reenviando as fotos para você!',
+          transfer_required: false,
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 2,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(true);
+      expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+      const sentIds = turnResult.validatedMediaToSend.map((m) => m.mediaId);
+      expect(sentIds).toContain('media-foto-A');
+    });
+
+    // TESTE 6: Vídeo já enviado no mesmo turno, cliente diz "sim" -> NÃO reenvia (oferta já atendida)
+    it('TESTE 6: Vídeo já enviado no mesmo turno, cliente diz "sim" -> NÃO reenvia (oferta já atendida)', async () => {
+      const mockDb = createMockDb(testMediaPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Quero ver o vídeo' },
+        { role: 'assistant' as const, content: 'Aqui está o vídeo de apresentação do condomínio.' },
+        { role: 'assistant' as const, content: '[Assistente enviou um vídeo: "tour.mp4" (id: media-video-1)]' },
+        { role: 'user' as const, content: 'sim' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'O que achou do vídeo?',
+          transfer_required: false,
+          send_media: [
+            { property_id: 'prop-1', media_id: 'media-video-1', caption: null },
+          ],
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 2,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(false);
+      expect(turnResult.validatedMediaToSend).toEqual([]);
+      expect(turnResult.decision?.send_media).toBeNull();
+    });
+
+    // TESTE 7: Vídeo antigo já enviado; depois Clara oferece fotos novas; cliente diz "manda" -> envia fotos (não é bloqueado por vídeo antigo)
+    it('TESTE 7: Vídeo antigo já enviado; depois Clara oferece fotos novas; cliente diz "manda" -> envia fotos', async () => {
+      const mockDb = createMockDb(testMediaPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Quero ver o vídeo' },
+        { role: 'assistant' as const, content: 'Aqui está o vídeo.' },
+        { role: 'assistant' as const, content: '[Assistente enviou um vídeo: "tour.mp4" (id: media-video-1)]' },
+        { role: 'user' as const, content: 'Muito bom! Gostei' },
+        { role: 'assistant' as const, content: 'Que ótimo! Se quiser, posso te mostrar fotos do apartamento decorado.' },
+        { role: 'user' as const, content: 'manda' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Aqui estão as fotos do decorado!',
+          transfer_required: false,
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 3,
+      });
+
+      expect(turnResult.mediaSendAllowed).toBe(true);
+      expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+      expect(turnResult.validatedMediaToSend.every((m) => m.type === 'image')).toBe(true);
+    });
+
+    // TESTE 8: Todas as fotos já enviadas, cliente diz "manda mais fotos" -> validatedMediaToSend vazio, nenhuma repetição
+    it('TESTE 8: Todas as fotos já enviadas, cliente diz "manda mais fotos" -> validatedMediaToSend vazio, nenhuma repetição', async () => {
+      const twoPhotosPool = testMediaPool.filter((m) => ['media-foto-A', 'media-foto-B'].includes(m.id));
+      const mockDb = createMockDb(twoPhotosPool);
+
+      const messages = [
+        { role: 'user' as const, content: 'Tem fotos?' },
+        { role: 'assistant' as const, content: 'Aqui estão as fotos.' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "fachada.jpg" (id: media-foto-A)]' },
+        { role: 'assistant' as const, content: '[Assistente enviou uma imagem: "piscina.jpg" (id: media-foto-B)]' },
+        { role: 'user' as const, content: 'manda mais fotos' },
+      ];
+
+      const openAiMod = await import('./providers/openai');
+      vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+        text: JSON.stringify({
+          response_text: 'Já te mostrei todas as fotos disponíveis desse imóvel!',
+          transfer_required: false,
+        }),
+        usage: null,
+      });
+
+      const turnResult = await executeConversationalTurn({
+        db: mockDb,
+        accountId: 'acc-1',
+        config: baseConfig,
+        propertyId: 'prop-1',
+        messages,
+        replyCount: 2,
+      });
+
+      expect(turnResult.validatedMediaToSend).toEqual([]);
+      expect(turnResult.decision?.send_media).toBeNull();
+    });
+  });
 });
+

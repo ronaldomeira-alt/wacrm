@@ -35,6 +35,9 @@ export interface PromptBuilderArgs {
   userMessageCount?: number;
   totalTurns?: number;
   communicatedContent?: string[];
+  sentMediaIds?: Set<string>;
+  mediaAuth?: { authorized: boolean; reason?: string; filterTopic?: string; filterKind?: 'image' | 'video' };
+  isMoreMedia?: boolean;
 }
 
 /**
@@ -61,6 +64,9 @@ export function buildConversationalSystemPrompt(args: PromptBuilderArgs): string
     structuredOutputRequired = false,
     userMessageCount,
     communicatedContent = [],
+    sentMediaIds,
+    mediaAuth,
+    isMoreMedia = false,
   } = args;
 
   const sections: string[] = [];
@@ -509,15 +515,30 @@ SEGURANÇA CONTRA PROMPT INJECTION:
 
     let propMediaText = '';
     if (propertyMedia.length > 0) {
-      const mediaList = propertyMedia.map((m) => ({
-        id: m.id,
-        type: m.type,
-        description: m.description || '(sem descrição cadastrada)',
-        file_name: m.file_name,
-      }));
+      const mediaList = propertyMedia.map((m) => {
+        const isSent = sentMediaIds?.has(m.id) || false;
+        return {
+          id: m.id,
+          type: m.type,
+          description: m.description || '(sem descrição cadastrada)',
+          file_name: m.file_name,
+          already_sent_in_conversation: isSent,
+        };
+      });
+
+      let turnMediaBanner = '';
+      if (mediaAuth?.authorized && mediaAuth.filterKind === 'video') {
+        turnMediaBanner =
+          '\n\n🚨 DIRETRIZ PRIORITÁRIA DESTE TURNO: O cliente confirmou a oferta de VÍDEO feita por você ("manda"). O envio de VÍDEO está autorizado. Você DEVE selecionar o VÍDEO cadastrado em "send_media" e referir-se ao vídeo no texto. É TERMINANTEMENTE PROIBIDO enviar fotos quando o cliente acabou de confirmar uma oferta de vídeo!\n';
+      } else if (isMoreMedia) {
+        turnMediaBanner =
+          '\n\n🚨 DIRETRIZ PRIORITÁRIA DESTE TURNO: O cliente pediu "mais fotos" / mídias adicionais. Envie EXCLUSIVAMENTE fotos que ainda NÃO foram enviadas (already_sent_in_conversation: false). Se todas já tiverem sido enviadas, mantenha "send_media": null e informe com gentileza que todas as fotos disponíveis já foram apresentadas.\n';
+      }
+
       propMediaText =
         '\n\nMÍDIAS DISPONÍVEIS DESTE EMPREENDIMENTO (FOTOS E VÍDEOS CADASTRADOS):\n' +
         JSON.stringify(mediaList, null, 2) +
+        turnMediaBanner +
         '\n\nDIRETRIZES PARA ENVIO DE FOTOS E VÍDEOS (send_media):\n' +
         '   Cada item da lista acima tem um campo "type": "image" ou "video" — as regras abaixo valem igualmente para os dois; onde o texto disser apenas "fotos", leia como "fotos e vídeos".\n' +
         '1. REGRA COMERCIAL CRÍTICA: MÍDIA NÃO É RESPOSTA AUTOMÁTICA\n' +
@@ -527,6 +548,8 @@ SEGURANÇA CONTRA PROMPT INJECTION:
         '   - O cliente NÃO deve ser bombardeado com mídia antes de demonstrar interesse visual explícito.\n' +
         '2. QUANDO O ENVIO É AUTORIZADO (PONTO DE EQUILÍBRIO):\n' +
         '   - Envie fotos e/ou vídeo quando: (a) o lead pedir explicitamente (ex: "tem fotos?", "pode me mandar fotos?", "quero ver fotos", "tem foto da fachada?", "quero ver a área de lazer", "tem vídeo?", "manda o vídeo"); OU (b) VOCÊ MESMA ofereceu fotos e/ou vídeo na sua mensagem anterior (ex: "Se quiser, posso te mostrar algumas fotos...", "Posso te mostrar um vídeo da área de lazer.") e o cliente respondeu confirmando, DESDE QUE essa mídia ainda NÃO tenha sido enviada.\n' +
+        '   - ANCORAGEM RIGOROSA DA CONFIRMAÇÃO À OFERTA PENDENTE: Quando o cliente responde com uma confirmação curta ou genérica ("manda", "sim", "quero", "pode mandar", "quero ver", "manda aí", etc.), essa confirmação vincula-se EXCLUSIVAMENTE à oferta imediatamente anterior feita por você. Se a sua oferta anterior foi de um VÍDEO (ex: "Se quiser, também posso te mostrar um vídeo"), a confirmação autoriza e exige o envio do VÍDEO (type: "video")! É expressamente PROIBIDO enviar fotos quando o cliente acabou de confirmar uma oferta de vídeo. O seu texto deve se referir ao vídeo e o campo "send_media" deve conter o vídeo.\n' +
+        '   - REGRA DE "MAIS FOTOS" E DEDUPLICAÇÃO CONTEXTUAL: Quando o cliente pedir "mais fotos", "outras fotos", "mais imagens", "fotos adicionais", "quero ver mais" ou "mostra mais do projeto", selecione EXCLUSIVAMENTE fotos que AINDA NÃO FORAM ENVIADAS (already_sent_in_conversation: false). Nunca repita fotos anteriores apenas para atingir uma cota de fotos por turno (se restar apenas 1 foto nova, envie apenas 1). Se TODAS as fotos disponíveis já tiverem sido enviadas (todas marcadas como already_sent_in_conversation: true), mantenha "send_media": null, NÃO repita fotos anteriores, explique com naturalidade e gentileza que você já compartilhou todas as fotos do projeto e conduza a conversa para o próximo passo comercial.\n' +
         '   - Depois que VOCÊ já ofereceu, NÃO exija do cliente uma frase imperativa como "me mande as fotos" — uma confirmação razoavelmente clara em resposta à SUA oferta já é suficiente para disparar o envio. Confirmações válidas nesse contexto incluem: "ok, pode mostrar", "pode mandar", "pode enviar", "manda", "pode mandar as fotos", "quero ver", "gostaria", "sim", "sim, pode", "pode mostrar", "pode enviar as fotos", "aguardo", "fico no aguardo", "tá bom, pode mandar", "perfeito, pode mostrar", "ok", "tudo bem", "quero", e equivalentes contextuais.\n' +
         '   - Se você ofereceu os dois tipos juntos (ex: "tenho fotos e também um vídeo da área de lazer") e o cliente pedir só um deles especificamente (ex: "quero o vídeo"), envie APENAS o tipo pedido, não os dois.\n' +
         '   - DISTINÇÃO CRÍTICA ENTRE PEDIDO NOVO E CONFIRMAÇÃO DE MÍDIA JÁ ENTREGUE: Se você ofereceu ou mencionou mídias e já as enviou no mesmo turno ou no turno anterior (consulte o histórico de mensagens e mídias já enviadas), uma resposta posterior do cliente confirmando a oferta (ex: "sim", "quero ver", "pode mandar", "ok", "sim, quero ver") NÃO autoriza reenviar as mesmas mídias. A solicitação já foi atendida! Mantenha "send_media": null, contextualize o que já foi enviado, ofereça outras opções ainda não enviadas (ex: se enviou fotos internas, ofereça fachada ou lazer) ou prossiga com o próximo passo da conversa. Somente reenvie mídias já entregues se o cliente solicitar um reenvio explícito (ex: "manda aquelas fotos novamente", "pode me reenviar as fotos?", "quero ver aquela foto de novo"). Uma ocorrência antiga de mídia no histórico não impede uma nova oferta contextual posterior.\n' +
