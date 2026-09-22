@@ -395,6 +395,16 @@ const CONFIRMATION_REGEX = new RegExp(
   'i',
 );
 
+const RESEND_REGEX = /\b(?:reenvi(?:ar?|e|em)|manda(?:r)?\s+(?:de\s+novo|novamente)|mostra(?:r)?\s+(?:de\s+novo|novamente)|ver\s+(?:de\s+novo|novamente)|mandar?\s+(?:aquelas?|essas?)\s+(?:fotos?|imagens?|v[ií]deos?)\s+(?:novamente|de\s+novo)|pode\s+(?:mandar|enviar|mostrar)\s+(?:essas?|aquelas?)\s+(?:fotos?|imagens?|v[ií]deos?)\s+(?:novamente|de\s+novo))\b/i;
+
+/**
+ * Checks if the user explicitly requested to resend previously sent media.
+ */
+export function isExplicitResendRequest(userText: string): boolean {
+  if (!userText) return false;
+  return RESEND_REGEX.test(userText.trim());
+}
+
 /**
  * Checks if the user gave an affirmative confirmation (e.g. to a previous media offer)
  */
@@ -449,30 +459,74 @@ export function isMediaSendAuthorized(args: {
   }
 
   // 4. Ongoing Turns:
-  // 4a. If user explicitly requested media in this turn
-  if (explicitCheck.requested) {
+  // 4a. If user explicitly requested media in this turn (including explicit resend request)
+  const isResend = currentTurnUserMessages.some((uMsg) => isExplicitResendRequest(uMsg.content));
+  if (explicitCheck.requested || isResend) {
     return {
       authorized: true,
-      reason: 'Lead explicitou pedido de mídia na conversa.',
+      reason: isResend
+        ? 'Lead solicitou reenvio explícito de mídia.'
+        : 'Lead explicitou pedido de mídia na conversa.',
       filterTopic: explicitCheck.topic,
       filterKind: explicitCheck.kind,
     };
   }
 
-  // 4b. If Clara offered media in the previous assistant message and lead confirmed
+  // 4b. If Clara offered media in the previous assistant message and lead gave an affirmative confirmation
   const assistantMessages = messages.filter((m) => m.role === 'assistant');
-  const lastAssistantText = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1].content : '';
   const latestUserText = currentTurnUserMessages.length > 0 ? currentTurnUserMessages[currentTurnUserMessages.length - 1].content : '';
 
+  // Identify assistant messages belonging to the turn that made the offer (contiguous block ending at lastAssistantIndex)
+  let previousTurnAssistantMessages: ChatMessage[] = [];
+  for (let i = lastAssistantIndex; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      previousTurnAssistantMessages.unshift(messages[i]);
+    } else {
+      break;
+    }
+  }
+
+  // Find the conversational text message of the assistant in that turn (skipping media markers)
+  const previousTurnTextMsg = previousTurnAssistantMessages.find((m) => !m.content.startsWith('['));
+  const lastAssistantText = previousTurnTextMsg
+    ? previousTurnTextMsg.content
+    : assistantMessages.length > 0
+      ? assistantMessages[assistantMessages.length - 1].content
+      : '';
+
   if (didAssistantOfferMedia(lastAssistantText) && isAffirmativeConfirmation(latestUserText)) {
-    // The lead's confirmation itself is usually generic ("pode mandar",
-    // "ok") — the kind (foto vs vídeo) is read from what CLARA offered,
-    // not from the confirmation text.
+    const offeredKind = detectOfferedMediaKind(lastAssistantText);
+
+    // Check if the offered kind of media was already sent in this previous turn
+    const sentImagesInTurn = previousTurnAssistantMessages.some((m) =>
+      /\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:uma?\s+)?(?:imagem|foto)/i.test(m.content)
+    );
+    const sentVideosInTurn = previousTurnAssistantMessages.some((m) =>
+      /\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:um\s+)?v[ií]deo/i.test(m.content)
+    );
+    const sentDocumentsInTurn = previousTurnAssistantMessages.some((m) =>
+      /\[(?:Assistente|Clara|Cliente)\s+enviou\s+(?:um\s+)?documento/i.test(m.content)
+    );
+
+    const alreadySentOfferedMedia =
+      offeredKind === 'video'
+        ? sentVideosInTurn
+        : offeredKind === 'image'
+          ? sentImagesInTurn
+          : (sentImagesInTurn || sentVideosInTurn || sentDocumentsInTurn);
+
+    if (alreadySentOfferedMedia) {
+      return {
+        authorized: false,
+        reason: 'Mídia oferecida já foi efetivamente enviada no turno anterior; confirmação afirmativa do lead não autoriza duplicidade.',
+      };
+    }
+
     return {
       authorized: true,
       reason: 'Lead confirmou afirmativamente oferta de fotos/vídeo feita pela Clara no turno anterior.',
       filterTopic: 'geral',
-      filterKind: detectOfferedMediaKind(lastAssistantText),
+      filterKind: offeredKind,
     };
   }
 

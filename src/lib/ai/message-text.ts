@@ -20,6 +20,7 @@ export function effectiveMessageText(message: {
   content_type: string
   content_text?: string | null
   transcript_text?: string | null
+  sender_type?: 'customer' | 'agent' | 'bot' | string | null
 }): string | null {
   if (message.content_type === 'audio') {
     const trimmed = message.transcript_text?.trim()
@@ -27,20 +28,22 @@ export function effectiveMessageText(message: {
   }
 
   const caption = message.content_text?.trim() || null
+  const isCustomer = !message.sender_type || message.sender_type === 'customer'
+  const senderLabel = isCustomer ? 'Cliente' : 'Assistente'
 
   switch (message.content_type) {
     case 'text':
       return caption
     case 'image':
-      return caption ? `[Cliente enviou uma imagem: "${caption}"]` : '[Cliente enviou uma imagem]'
+      return caption ? `[${senderLabel} enviou uma imagem: "${caption}"]` : `[${senderLabel} enviou uma imagem]`
     case 'video':
-      return caption ? `[Cliente enviou um vídeo: "${caption}"]` : '[Cliente enviou um vídeo]'
+      return caption ? `[${senderLabel} enviou um vídeo: "${caption}"]` : `[${senderLabel} enviou um vídeo]`
     case 'document':
-      return caption ? `[Cliente enviou um documento: "${caption}"]` : '[Cliente enviou um documento]'
+      return caption ? `[${senderLabel} enviou um documento: "${caption}"]` : `[${senderLabel} enviou um documento]`
     case 'location':
-      return caption ? `[Cliente enviou a localização: ${caption}]` : '[Cliente enviou uma localização]'
+      return caption ? `[${senderLabel} enviou a localização: ${caption}]` : `[${senderLabel} enviou uma localização]`
     case 'interactive':
-      return caption ? `[Cliente selecionou: "${caption}"]` : null
+      return caption ? `[${senderLabel} selecionou: "${caption}"]` : null
     default:
       return caption
   }

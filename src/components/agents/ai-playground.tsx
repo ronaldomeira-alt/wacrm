@@ -56,7 +56,15 @@ interface TurnDiagnostic {
   retrievedKnowledgeCount?: number;
   retrievedKnowledge?: string[];
   propertyInfo?: { id: string; name: string; stage?: string | null } | null;
-  media?: Array<{ mediaId: string; propertyId: string; publicUrl: string; caption: string | null; fileName: string }>;
+  media?: Array<{
+    mediaId: string;
+    propertyId: string;
+    publicUrl: string;
+    caption: string | null;
+    fileName: string;
+    type?: 'image' | 'video';
+    contentType?: string;
+  }>;
   availableMedia?: Array<{ id: string; type: string; description: string | null; file_name: string }>;
   businessHoursContext?: { isBusinessHours: boolean; startHour: string; endHour: string; instructionForModel: string };
   systemPrompt?: string;
@@ -88,6 +96,23 @@ const BOUNDARY_LABELS: Record<string, string> = {
   safety_limit_reached: 'Limite de Segurança Atingido',
   custom_never_rule: 'Regra Proibitiva (Nunca Fazer)',
 };
+
+function isVideoMedia(m: {
+  type?: string;
+  contentType?: string;
+  fileName?: string;
+  publicUrl?: string;
+}): boolean {
+  if (m.type === 'video') return true;
+  if (m.contentType && m.contentType.toLowerCase().startsWith('video/')) return true;
+  const target = (m.fileName || m.publicUrl || '').toLowerCase().split('?')[0];
+  return (
+    target.endsWith('.mp4') ||
+    target.endsWith('.webm') ||
+    target.endsWith('.mov') ||
+    target.endsWith('.m4v')
+  );
+}
 
 export interface AiPlaygroundProps {
   onGoToSetup?: () => void;
@@ -210,6 +235,21 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
     setSending(true);
 
     try {
+      const apiMessages: { role: 'user' | 'assistant'; content: string }[] = [];
+      for (const t of currentTurns) {
+        if (t.role === 'assistant' && t.diagnostic?.media && t.diagnostic.media.length > 0) {
+          if (t.content) {
+            apiMessages.push({ role: 'assistant', content: t.content });
+          }
+          for (const m of t.diagnostic.media) {
+            const label = m.type === 'video' ? '[Assistente enviou um vídeo]' : '[Assistente enviou uma imagem]';
+            apiMessages.push({ role: 'assistant', content: label });
+          }
+        } else {
+          apiMessages.push({ role: t.role, content: t.content });
+        }
+      }
+
       const res = await fetch('/api/ai/playground', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -217,7 +257,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           property_id: selectedPropertyId || null,
           simulated_hours: simulatedHours,
           simulated_lead: null,
-          messages: currentTurns.map((t) => ({ role: t.role, content: t.content })),
+          messages: apiMessages,
         }),
       });
 
@@ -489,25 +529,38 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                 >
                   {t.diagnostic?.media && t.diagnostic.media.length > 0 && (
                     <div className="mb-2.5 flex flex-wrap gap-2">
-                      {t.diagnostic.media.map((m, idx) => (
-                        <div
-                          key={idx}
-                          className="group/img relative rounded-lg overflow-hidden border border-border bg-card shadow-2xs max-w-[180px]"
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={m.publicUrl}
-                            alt={m.caption || m.fileName}
-                            className="h-28 w-full object-cover"
-                            loading="lazy"
-                          />
-                          {m.caption && (
-                            <p className="p-1.5 text-[10.5px] leading-tight text-foreground bg-muted/90 font-medium">
-                              {m.caption}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                      {t.diagnostic.media.map((m, idx) => {
+                        const isVideo = isVideoMedia(m);
+                        return (
+                          <div
+                            key={idx}
+                            className="group/img relative rounded-lg overflow-hidden border border-border bg-card shadow-2xs max-w-[180px]"
+                          >
+                            {isVideo ? (
+                              <video
+                                src={m.publicUrl}
+                                controls
+                                preload="metadata"
+                                playsInline
+                                className="h-28 w-full object-cover bg-black"
+                              />
+                            ) : (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                src={m.publicUrl}
+                                alt={m.caption || m.fileName}
+                                className="h-28 w-full object-cover"
+                                loading="lazy"
+                              />
+                            )}
+                            {m.caption && (
+                              <p className="p-1.5 text-[10.5px] leading-tight text-foreground bg-muted/90 font-medium">
+                                {m.caption}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 
@@ -529,11 +582,23 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                             </Badge>
                           )}
 
-                          {t.diagnostic?.media && t.diagnostic.media.length > 0 && (
-                            <span className="text-primary font-medium text-[10px] bg-primary/10 px-1.5 py-0.5 rounded border border-primary/20">
-                              📷 {t.diagnostic.media.length} foto(s) enviada(s)
-                            </span>
-                          )}
+                          {t.diagnostic?.media && t.diagnostic.media.length > 0 && (() => {
+                            const videoCount = t.diagnostic.media.filter(isVideoMedia).length;
+                            const photoCount = t.diagnostic.media.length - videoCount;
+                            let label = '';
+                            if (photoCount > 0 && videoCount > 0) {
+                              label = `📷 ${photoCount} foto(s) · 🎥 ${videoCount} vídeo(s)`;
+                            } else if (videoCount > 0) {
+                              label = `🎥 ${videoCount} vídeo(s) enviado(s)`;
+                            } else {
+                              label = `📷 ${photoCount} foto(s) enviada(s)`;
+                            }
+                            return (
+                              <span className="text-primary font-medium text-[10px] bg-primary/10 px-1.5 py-0.5 rounded border border-primary/20">
+                                {label}
+                              </span>
+                            );
+                          })()}
 
                           {typeof t.diagnostic?.retrievedKnowledgeCount === 'number' && t.diagnostic.retrievedKnowledgeCount > 0 && (
                             <span className="text-muted-foreground text-[10px]">

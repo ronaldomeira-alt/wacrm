@@ -1242,4 +1242,262 @@ describe('Media Authorization Guard - Scenarios 1 to 12', () => {
       expect(item.type).toBe('image');
     }
   });
+
+  // ============================================================
+  // REGRESSÃO CIRÚRGICA: OFERTA ATENDIDA VS PENDENTE VS REENVIO
+  // ============================================================
+
+  // CENÁRIO A — oferta + envio no mesmo turno
+  // Clara oferece fotos e já envia as fotos.
+  // Cliente: "sim, quero ver".
+  // Resultado: NÃO reenviar.
+  it('CENÁRIO A: Oferta + envio no mesmo turno seguido de "sim, quero ver" NÃO reenvia as fotos', async () => {
+    const mockDb = createMockDb(sampleMediaPool);
+
+    const messages = [
+      { role: 'user' as const, content: 'Tem fotos do apartamento?' },
+      {
+        role: 'assistant' as const,
+        content: 'Tenho sim — posso te mostrar algumas fotos para você conhecer melhor a cozinha, a sala e um dos quartos.',
+      },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'user' as const, content: 'sim, quero ver' },
+    ];
+
+    // Checagem direta do guardião
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+    expect(auth.authorized).toBe(false);
+    expect(auth.reason).toContain('já foi efetivamente enviada no turno anterior');
+
+    // Checagem E2E via executeConversationalTurn
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Essas foram as fotos dos ambientes principais! O que achou do espaço?',
+        transfer_required: false,
+        send_media: null,
+      }),
+      usage: null,
+    });
+
+    const turnResult = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages,
+      replyCount: 2,
+    });
+
+    expect(turnResult.mediaSendAllowed).toBe(false);
+    expect(turnResult.validatedMediaToSend).toEqual([]);
+    expect(turnResult.decision?.send_media).toBeNull();
+  });
+
+  // CENÁRIO B — oferta pendente
+  // Clara oferece fotos, mas NÃO envia nenhuma.
+  // Cliente: "sim, quero ver".
+  // Resultado: enviar as fotos.
+  it('CENÁRIO B: Oferta pendente sem envio prévio seguida de "sim, quero ver" autoriza e envia as fotos', async () => {
+    const mockDb = createMockDb(sampleMediaPool);
+
+    const messages = [
+      { role: 'user' as const, content: 'Oi, queria mais informações' },
+      {
+        role: 'assistant' as const,
+        content: 'Posso te mostrar algumas fotos da sala, cozinha e quarto.',
+      },
+      { role: 'user' as const, content: 'sim, quero ver' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+    expect(auth.authorized).toBe(true);
+    expect(auth.filterKind).toBe('image');
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Perfeito! Aqui estão as fotos.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const turnResult = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages,
+      replyCount: 2,
+    });
+
+    expect(turnResult.mediaSendAllowed).toBe(true);
+    expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+  });
+
+  // CENÁRIO C — reenvio explícito
+  // Fotos já foram enviadas.
+  // Cliente: "pode mandar essas fotos novamente?"
+  // Resultado: permitir reenvio.
+  it('CENÁRIO C: Fotos já enviadas + pedido explícito "pode mandar essas fotos novamente?" autoriza o reenvio', async () => {
+    const mockDb = createMockDb(sampleMediaPool);
+
+    const messages = [
+      { role: 'user' as const, content: 'Tem fotos?' },
+      {
+        role: 'assistant' as const,
+        content: 'Aqui estão as fotos do apartamento.',
+      },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'user' as const, content: 'pode mandar essas fotos novamente?' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 2,
+    });
+    expect(auth.authorized).toBe(true);
+    expect(auth.reason).toContain('Lead solicitou reenvio explícito de mídia');
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Claro! Reenviando as fotos para você.',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const turnResult = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages,
+      replyCount: 2,
+    });
+
+    expect(turnResult.mediaSendAllowed).toBe(true);
+    expect(turnResult.validatedMediaToSend.length).toBeGreaterThan(0);
+  });
+
+  // CENÁRIO D — nova oferta posterior
+  // Uma mídia foi enviada anteriormente, mas Clara faz uma nova oferta contextual posteriormente.
+  // Cliente confirma a nova oferta.
+  // Resultado: não bloquear apenas porque a mídia apareceu anteriormente no histórico.
+  it('CENÁRIO D: Mídia enviada anteriormente não bloqueia nova oferta posterior de outra mídia', async () => {
+    const sampleMediaPoolWithVideo: PropertyMediaSummary[] = [
+      ...sampleMediaPool,
+      {
+        id: 'media-video-lazer',
+        type: 'video',
+        description: 'Vídeo da área de lazer',
+        file_name: 'lazer.mp4',
+        is_cover: false,
+      },
+    ];
+    const mockDb = createMockDb(sampleMediaPoolWithVideo);
+
+    const messages = [
+      { role: 'user' as const, content: 'Tem fotos?' },
+      { role: 'assistant' as const, content: 'Tenho sim, veja as fotos.' },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'user' as const, content: 'Gostei dos quartos' },
+      {
+        role: 'assistant' as const,
+        content: 'São bem espaçosos! Se quiser, posso te mostrar um vídeo da área de lazer.',
+      },
+      { role: 'user' as const, content: 'pode mandar' },
+    ];
+
+    const auth = isMediaSendAuthorized({
+      messages,
+      isInitialContact: false,
+      userMessageCount: 3,
+    });
+    expect(auth.authorized).toBe(true);
+    expect(auth.filterKind).toBe('video');
+
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Aqui está o vídeo da área de lazer!',
+        transfer_required: false,
+      }),
+      usage: null,
+    });
+
+    const turnResult = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages,
+      replyCount: 3,
+    });
+
+    expect(turnResult.mediaSendAllowed).toBe(true);
+    expect(turnResult.validatedMediaToSend.length).toBe(1);
+    expect(turnResult.validatedMediaToSend[0].type).toBe('video');
+  });
+
+  // CENÁRIO E — auto-resolve
+  // Quando mediaAuth.authorized === false porque a oferta já foi atendida,
+  // confirmar que o passo de auto-resolve da engine também NÃO consegue injetar novamente as mídias.
+  it('CENÁRIO E: Quando oferta já foi atendida, auto-resolve é impedido e validatedMediaToSend permanece vazio', async () => {
+    const mockDb = createMockDb(sampleMediaPool);
+
+    const messages = [
+      { role: 'user' as const, content: 'Tem fotos?' },
+      {
+        role: 'assistant' as const,
+        content: 'Tenho sim, posso te mostrar algumas fotos da sala e cozinha.',
+      },
+      { role: 'assistant' as const, content: '[Assistente enviou uma imagem]' },
+      { role: 'user' as const, content: 'sim, quero ver' },
+    ];
+
+    // O LLM tenta erradamente enviar mídias ou omite send_media
+    const openAiMod = await import('./providers/openai');
+    vi.spyOn(openAiMod, 'generateOpenAi').mockResolvedValue({
+      text: JSON.stringify({
+        response_text: 'Vou te mostrar as fotos.',
+        transfer_required: false,
+        send_media: [
+          { property_id: 'prop-1', media_id: 'media-foto-1', caption: null },
+        ],
+      }),
+      usage: null,
+    });
+
+    const turnResult = await executeConversationalTurn({
+      db: mockDb,
+      accountId: 'acc-1',
+      config: baseConfig,
+      propertyId: 'prop-1',
+      messages,
+      replyCount: 2,
+    });
+
+    // Como mediaAuth.authorized é false:
+    // 1. send_media gerado pelo modelo é limpo (stripped para null)
+    // 2. auto-resolve não é acionado
+    // 3. validatedMediaToSend permanece rigorosamente vazio
+    expect(turnResult.mediaSendAllowed).toBe(false);
+    expect(turnResult.decision?.send_media).toBeNull();
+    expect(turnResult.validatedMediaToSend).toEqual([]);
+  });
 });
