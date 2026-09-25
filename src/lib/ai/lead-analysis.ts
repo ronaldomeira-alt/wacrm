@@ -32,6 +32,7 @@ import { findOrCreateTag, findTag } from '@/lib/contacts/tag-find-or-create'
 import { addContactTagAndDispatch } from '@/lib/contacts/tag-events'
 import { removeContactTag } from '@/lib/contacts/tag-write'
 import { sendQualifiedLeadEvent } from '@/lib/whatsapp/meta-capi'
+import { recalculateMatchesForLead } from '@/lib/match/service'
 
 interface DealRef {
   id: string
@@ -88,7 +89,7 @@ export async function applyLeadAnalysisResult(args: ApplyLeadAnalysisArgs): Prom
         category: change.category,
       })
       if (!tagId) continue
-      await addContactTagAndDispatch({ db, accountId, contactId, tagId })
+      await addContactTagAndDispatch({ db, accountId, contactId, tagId, source: 'conversation' })
     } else {
       const tagId = await findTag(db, {
         accountId,
@@ -549,6 +550,13 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
         last_analyzed_at: new Date().toISOString(),
       })
       .eq('contact_id', contactId)
+
+    // Recalcula os Matches determinísticos do lead com base no novo perfil
+    try {
+      await recalculateMatchesForLead(db, accountId, contactId)
+    } catch (matchErr) {
+      console.error('[lead analysis] recalculateMatchesForLead failed:', matchErr)
+    }
   } catch (err) {
     console.error('[lead analysis] dispatch failed:', err)
   }

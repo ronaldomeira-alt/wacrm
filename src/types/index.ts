@@ -157,6 +157,8 @@ export interface Tag {
   color: string;
   category?: string | null;
   created_at: string;
+  source?: 'ctwa' | 'conversation' | 'manual' | string;
+  originally_from_ctwa?: boolean;
 }
 
 export interface ContactTag {

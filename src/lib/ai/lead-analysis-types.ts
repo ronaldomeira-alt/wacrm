@@ -37,6 +37,9 @@ export interface LeadSummary {
   /** Momento comercial — free text note on where the lead is now. */
   stage_signal: string | null;
   notes: string | null;
+  /** FASE 4: Requisitos obrigatórios vs Preferências */
+  requirements?: Record<string, unknown> | null;
+  preferences?: Record<string, unknown> | null;
 }
 
 export interface TagChange {
@@ -85,6 +88,8 @@ export function emptyLeadSummary(): LeadSummary {
     intent: null,
     stage_signal: null,
     notes: null,
+    requirements: null,
+    preferences: null,
   };
 }
 
@@ -125,6 +130,8 @@ function sanitizeSummary(v: unknown): LeadSummary {
     intent: nullableString(o.intent),
     stage_signal: nullableString(o.stage_signal),
     notes: nullableString(o.notes),
+    requirements: o.requirements && typeof o.requirements === 'object' ? (o.requirements as Record<string, unknown>) : null,
+    preferences: o.preferences && typeof o.preferences === 'object' ? (o.preferences as Record<string, unknown>) : null,
   };
 }
 

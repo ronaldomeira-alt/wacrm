@@ -36,6 +36,7 @@ import { ContactNotesPanel } from "./contact-notes-panel";
 import { useLeadPipelineStage } from "@/hooks/use-lead-pipeline-stage";
 import { useFollowupGate } from "@/hooks/use-followup-gate";
 import { FollowupRequirementDialog } from "@/components/action-items/followup-requirement-dialog";
+import { SearchProfileTag } from "@/components/contacts/search-profile-tag";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -109,7 +110,7 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
     const [tagsRes, suggestionsRes] = await Promise.all([
       supabase
         .from("contact_tags")
-        .select("id, tag_id, tags(*)")
+        .select("id, tag_id, source, originally_from_ctwa, tags(*)")
         .eq("contact_id", contact.id),
       supabase
         .from("ai_suggestions")
@@ -125,6 +126,8 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
         .map((ct: Record<string, unknown>) => ({
           ...(ct.tags as Tag),
           contact_tag_id: ct.id as string,
+          source: (ct.source as string) || 'conversation',
+          originally_from_ctwa: (ct.originally_from_ctwa as boolean) || false,
         }));
       setTags(mapped);
     }
@@ -427,16 +430,14 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
                 <p className="px-1 text-xs text-muted-foreground">{tSidebar("noTags")}</p>
               ) : (
                 tags.map((tag) => (
-                  <span
+                  <SearchProfileTag
                     key={tag.contact_tag_id}
-                    className="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    style={{
-                      backgroundColor: `${tag.color}20`,
-                      color: tag.color,
-                    }}
-                  >
-                    {tag.name}
-                  </span>
+                    name={tag.name}
+                    category={tag.category}
+                    color={tag.color}
+                    source={tag.source}
+                    originallyFromCtwa={tag.originally_from_ctwa}
+                  />
                 ))
               )}
             </div>

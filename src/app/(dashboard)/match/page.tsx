@@ -1,0 +1,338 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { MatchCard, type MatchCardItem } from '@/components/match/match-card';
+import { SendWhatsAppModal } from '@/components/match/send-whatsapp-modal';
+import { LeadCommercialDrawer } from '@/components/match/lead-commercial-drawer';
+import { toast } from 'sonner';
+import {
+  Sparkles,
+  Search,
+  Filter,
+  RefreshCw,
+  Loader2,
+  Building2,
+  SlidersHorizontal,
+  Flame,
+  Gauge,
+} from 'lucide-react';
+import type { MatchStatus } from '@/lib/match/types';
+
+export default function MatchPage() {
+  const [activeTab, setActiveTab] = useState<MatchStatus>('novo');
+  const [matches, setMatches] = useState<MatchCardItem[]>([]);
+  const [counts, setCounts] = useState({ novos: 0, enviados: 0, pausados: 0, arquivados: 0 });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Filtros
+  const [leadSearch, setLeadSearch] = useState('');
+  const [propertySearch, setPropertySearch] = useState('');
+  const [scoreFilter, setScoreFilter] = useState<'all' | 'strong' | 'good' | 'possible' | 'manual'>('all');
+  const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
+  const [minAiScore, setMinAiScore] = useState<string>('0');
+
+  // Modais e Drawers
+  const [selectedMatchForSend, setSelectedMatchForSend] = useState<MatchCardItem | null>(null);
+  const [selectedLeadIdForProfile, setSelectedLeadIdForProfile] = useState<string | null>(null);
+
+  const fetchMatches = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('status', activeTab);
+
+      if (leadSearch.trim()) params.set('lead_search', leadSearch.trim());
+      if (propertySearch.trim()) params.set('property_search', propertySearch.trim());
+
+      if (scoreFilter === 'strong') {
+        params.set('min_score', '85');
+      } else if (scoreFilter === 'good') {
+        params.set('min_score', '70');
+        params.set('max_score', '84');
+      } else if (scoreFilter === 'possible') {
+        params.set('min_score', '50');
+        params.set('max_score', '69');
+      } else if (scoreFilter === 'manual') {
+        params.set('min_score', '0');
+        params.set('max_score', '49');
+      }
+
+      if (maturityFilter === 'ready') {
+        params.set('min_maturity', '70');
+      }
+
+      if (parseInt(minAiScore, 10) > 0) {
+        params.set('min_ai_score', minAiScore);
+      }
+
+      const res = await fetch(`/api/match?${params.toString()}`);
+      if (!res.ok) throw new Error('Falha ao carregar matches');
+      const data = await res.json();
+
+      setMatches(data.matches || []);
+      if (data.counts) {
+        setCounts(data.counts);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao carregar lista de matches');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [activeTab, leadSearch, propertySearch, scoreFilter, maturityFilter, minAiScore]);
+
+  useEffect(() => {
+    fetchMatches();
+  }, [fetchMatches]);
+
+  async function handleDiscard(matchId: string) {
+    try {
+      const res = await fetch(`/api/match/${matchId}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Falha ao descartar match');
+      toast.success('Match descartado com sucesso. Não voltará a aparecer.');
+      fetchMatches();
+    } catch (err) {
+      toast.error((err as Error).message || 'Erro ao descartar match');
+    }
+  }
+
+  async function handleStatusChange(matchId: string, newStatus: MatchStatus) {
+    try {
+      const res = await fetch(`/api/match/${matchId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) throw new Error('Falha ao atualizar status');
+      toast.success('Status do match atualizado!');
+      fetchMatches();
+    } catch (err) {
+      toast.error((err as Error).message || 'Erro ao alterar status');
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full overflow-y-auto">
+      {/* Top Header */}
+      <div className="border-b border-border bg-card/60 backdrop-blur-md px-6 py-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
+                <Sparkles className="size-5 text-primary" />
+                Match
+              </h1>
+              <span className="rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-xs font-semibold text-primary">
+                Túnel Ativo
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Recomendações determinísticas de imóveis para leads qualificados.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setRefreshing(true);
+                fetchMatches();
+              }}
+              disabled={loading || refreshing}
+              className="gap-1.5 text-xs"
+            >
+              <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              Atualizar
+            </Button>
+          </div>
+        </div>
+
+        {/* Tabs de Status Visíveis (FASE 11 & 12) */}
+        <div className="mt-4">
+          <Tabs
+            value={activeTab}
+            onValueChange={(val) => setActiveTab(val as MatchStatus)}
+            className="w-full"
+          >
+            <TabsList className="bg-muted/60 p-1">
+              <TabsTrigger value="novo" className="gap-2 text-xs">
+                Novos
+                <span className="rounded-full bg-primary/10 px-1.5 py-0.2 text-[10px] font-bold text-primary">
+                  {counts.novos}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="enviado" className="gap-2 text-xs">
+                Enviados
+                <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] font-bold text-muted-foreground">
+                  {counts.enviados}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="pausado" className="gap-2 text-xs">
+                Pausados
+                <span className="rounded-full bg-amber-500/10 px-1.5 py-0.2 text-[10px] font-bold text-amber-500">
+                  {counts.pausados}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="arquivado" className="gap-2 text-xs">
+                Arquivados
+                <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] font-bold text-muted-foreground">
+                  {counts.arquivados}
+                </span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+      </div>
+
+      {/* Barra de Filtros Inteligentes */}
+      <div className="border-b border-border bg-card/30 px-6 py-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+          {/* Busca por Lead */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Buscar lead (nome/tel)..."
+              value={leadSearch}
+              onChange={(e) => setLeadSearch(e.target.value)}
+              className="pl-8 text-xs h-8"
+            />
+          </div>
+
+          {/* Busca por Imóvel */}
+          <div className="relative">
+            <Building2 className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Buscar imóvel/bairro..."
+              value={propertySearch}
+              onChange={(e) => setPropertySearch(e.target.value)}
+              className="pl-8 text-xs h-8"
+            />
+          </div>
+
+          {/* Faixa de Match */}
+          <Select
+            value={scoreFilter}
+            onValueChange={(val) => setScoreFilter((val as typeof scoreFilter) || 'all')}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Compatibilidade" />
+            </SelectTrigger>
+            <SelectContent className="text-xs">
+              <SelectItem value="all">Todas as faixas</SelectItem>
+              <SelectItem value="strong">85%+ (Match Forte)</SelectItem>
+              <SelectItem value="good">70%–84% (Bom Match)</SelectItem>
+              <SelectItem value="possible">50%–69% (Compatibilidade Possível)</SelectItem>
+              <SelectItem value="manual">0%–49% (Consulta Manual)</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* Maturidade */}
+          <Select
+            value={maturityFilter}
+            onValueChange={(val) => setMaturityFilter((val as typeof maturityFilter) || 'all')}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Maturidade" />
+            </SelectTrigger>
+            <SelectContent className="text-xs">
+              <SelectItem value="all">Maturidade: Todas</SelectItem>
+              <SelectItem value="ready">≥ 70% (Pronto para Match)</SelectItem>
+              <SelectItem value="growing">&lt; 70% (Em Amadurecimento)</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* Temperatura / Score IA */}
+          <Select value={minAiScore} onValueChange={(val) => setMinAiScore(val || '0')}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Temperatura" />
+            </SelectTrigger>
+            <SelectContent className="text-xs">
+              <SelectItem value="0">Score: Qualquer</SelectItem>
+              <SelectItem value="5">Score ≥ 5 (Morno/Quente)</SelectItem>
+              <SelectItem value="7">Score ≥ 7 (Qualificado)</SelectItem>
+              <SelectItem value="9">Score ≥ 9 (Altíssimo calor)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Conteúdo Principal: Grid de Matches */}
+      <div className="flex-1 p-6">
+        {loading ? (
+          <div className="flex h-64 flex-col items-center justify-center gap-2">
+            <Loader2 className="size-8 animate-spin text-primary" />
+            <p className="text-xs text-muted-foreground">Calculando compatibilidades determinísticas...</p>
+          </div>
+        ) : matches.length === 0 ? (
+          <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
+            <Sparkles className="size-10 text-muted-foreground/40 mb-3" />
+            <h3 className="text-sm font-semibold text-foreground">Nenhum Match nesta visualização</h3>
+            <p className="text-xs text-muted-foreground max-w-sm mt-1">
+              Não há recomendações correspondentes aos filtros selecionados na aba{' '}
+              <strong>{activeTab.toUpperCase()}</strong>.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {matches.map((m) => (
+              <MatchCard
+                key={m.id}
+                match={m}
+                onOpenSend={(item) => setSelectedMatchForSend(item)}
+                onOpenProfile={(leadId) => setSelectedLeadIdForProfile(leadId)}
+                onDiscard={handleDiscard}
+                onStatusChange={handleStatusChange}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Modal de Envio via WhatsApp Pessoal (FASE 14 & 15) */}
+      {selectedMatchForSend && (
+        <SendWhatsAppModal
+          open={!!selectedMatchForSend}
+          onOpenChange={(open) => !open && setSelectedMatchForSend(null)}
+          matchId={selectedMatchForSend.id}
+          leadId={selectedMatchForSend.lead_id}
+          leadName={selectedMatchForSend.contacts.name || 'Lead'}
+          leadPhone={selectedMatchForSend.contacts.phone}
+          propertyId={selectedMatchForSend.property_id}
+          propertyTitle={selectedMatchForSend.property.title}
+          propertyNeighborhood={selectedMatchForSend.property.neighborhood}
+          propertyPriceMin={selectedMatchForSend.property.priceMin}
+          propertyCoverUrl={selectedMatchForSend.property.coverUrl}
+          matchScore={Math.round(selectedMatchForSend.match_score)}
+          onSent={() => {
+            fetchMatches();
+          }}
+        />
+      )}
+
+      {/* Drawer Comercial do Lead (FASE 13 & 20) */}
+      <LeadCommercialDrawer
+        open={!!selectedLeadIdForProfile}
+        onOpenChange={(open) => !open && setSelectedLeadIdForProfile(null)}
+        leadId={selectedLeadIdForProfile}
+        onLeadUpdated={() => {
+          fetchMatches();
+        }}
+      />
+    </div>
+  );
+}

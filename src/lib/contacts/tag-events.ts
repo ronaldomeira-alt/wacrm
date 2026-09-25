@@ -4,7 +4,7 @@ import {
   runAutomationsForTrigger,
   type AutomationContext,
 } from '@/lib/automations/engine';
-import { addContactTagIfAbsent } from './tag-write';
+import { addContactTagIfAbsent, type ContactTagSource } from './tag-write';
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from './tag-chain';
 
 export { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from './tag-chain';
@@ -14,6 +14,7 @@ interface AddContactTagAndDispatchInput {
   accountId: string;
   contactId: string;
   tagId: string;
+  source?: ContactTagSource;
   context?: AutomationContext;
 }
 
@@ -34,6 +35,7 @@ export async function addContactTagAndDispatch(
     accountId: input.accountId,
     contactId: input.contactId,
     tagId: input.tagId,
+    source: input.source,
   });
 
   if (!added) return { added: false, dispatched: false, reason: 'duplicate' };
