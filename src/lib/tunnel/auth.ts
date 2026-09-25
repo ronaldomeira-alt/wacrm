@@ -12,19 +12,22 @@ export interface TunnelAuthContext {
  * Aceita Bearer token configurado em TUNNEL_API_KEY ou service role key.
  */
 export async function authenticateTunnelRequest(request: Request): Promise<TunnelAuthContext | null> {
-  const reqHeaders = await headers();
-  const authHeader = reqHeaders.get('authorization') || request.headers.get('authorization') || '';
+  let authHeader = request?.headers?.get('authorization') || '';
+  if (!authHeader) {
+    try {
+      const reqHeaders = await headers();
+      authHeader = reqHeaders.get('authorization') || '';
+    } catch {
+      // Executando fora do escopo de requisição Next.js (ex: testes unitários)
+    }
+  }
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
   const configuredKey = process.env.TUNNEL_API_KEY;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  // Validação estrita do token de túnel sem fallback hardcoded
-  if (!token || (!configuredKey && !serviceKey)) {
-    return null;
-  }
-
-  if (token !== configuredKey && token !== serviceKey) {
+  // Validação estrita e exclusiva de TUNNEL_API_KEY (Fail-Closed)
+  // SUPABASE_SERVICE_ROLE_KEY NÃO é aceita como credencial do túnel
+  if (!configuredKey || !token || token !== configuredKey) {
     return null;
   }
 
