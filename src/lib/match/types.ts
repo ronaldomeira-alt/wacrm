@@ -175,3 +175,27 @@ export interface PropertyShareRecord {
   interestedAt?: string | null;
   revokedAt?: string | null;
 }
+
+/**
+ * Grupo de Matches agregado por Lead para visualização na Central Match (1 Card = 1 Lead).
+ */
+export interface LeadMatchGroup {
+  leadId: string;
+  lead: {
+    id: string;
+    name: string | null;
+    phone: string;
+    ai_score?: number | null;
+    aiScore?: number;
+    paused_at?: string | null;
+    archived_at?: string | null;
+    has_purchased?: boolean;
+    is_personal_whatsapp?: boolean;
+  };
+  profileMaturity: number;
+  aiScore: number;
+  bestMatch: MatchRecord;
+  totalMatches: number;
+  statusMatchesCount: number;
+  matches: MatchRecord[];
+}

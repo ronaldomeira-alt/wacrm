@@ -11,9 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { MatchCard, type MatchCardItem } from '@/components/match/match-card';
+import { LeadMatchCard } from '@/components/match/lead-match-card';
+import { LeadMatchesModal } from '@/components/match/lead-matches-modal';
 import { SendWhatsAppModal } from '@/components/match/send-whatsapp-modal';
-import { LeadCommercialDrawer } from '@/components/match/lead-commercial-drawer';
+import type { MatchCardItem } from '@/components/match/match-card';
 import { toast } from 'sonner';
 import {
   Sparkles,
@@ -25,12 +26,34 @@ import {
   SlidersHorizontal,
   Flame,
   Gauge,
+  Users,
 } from 'lucide-react';
-import type { MatchStatus } from '@/lib/match/types';
+import type { MatchStatus, LeadMatchGroup } from '@/lib/match/types';
+
+const SCORE_FILTER_LABELS: Record<string, string> = {
+  all: 'Todas as faixas',
+  strong: '85%+ (Match Forte)',
+  good: '70%–84% (Bom Match)',
+  possible: '50%–69% (Compatibilidade Possível)',
+  manual: '0%–49% (Consulta Manual)',
+};
+
+const MATURITY_FILTER_LABELS: Record<string, string> = {
+  all: 'Maturidade: Todas',
+  ready: '≥ 70% (Pronto para Match)',
+  growing: '< 70% (Em Amadurecimento)',
+};
+
+const AI_SCORE_FILTER_LABELS: Record<string, string> = {
+  '0': 'Score: Qualquer',
+  '5': 'Score ≥ 5 (Morno/Quente)',
+  '7': 'Score ≥ 7 (Qualificado)',
+  '9': 'Score ≥ 9 (Altíssimo calor)',
+};
 
 export default function MatchPage() {
   const [activeTab, setActiveTab] = useState<MatchStatus>('novo');
-  const [matches, setMatches] = useState<MatchCardItem[]>([]);
+  const [groups, setGroups] = useState<LeadMatchGroup[]>([]);
   const [counts, setCounts] = useState({ novos: 0, enviados: 0, pausados: 0, arquivados: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -42,9 +65,9 @@ export default function MatchPage() {
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
   const [minAiScore, setMinAiScore] = useState<string>('0');
 
-  // Modais e Drawers
+  // Modais
+  const [selectedGroupForModal, setSelectedGroupForModal] = useState<LeadMatchGroup | null>(null);
   const [selectedMatchForSend, setSelectedMatchForSend] = useState<MatchCardItem | null>(null);
-  const [selectedLeadIdForProfile, setSelectedLeadIdForProfile] = useState<string | null>(null);
 
   const fetchMatches = useCallback(async () => {
     setLoading(true);
@@ -80,10 +103,16 @@ export default function MatchPage() {
       if (!res.ok) throw new Error('Falha ao carregar matches');
       const data = await res.json();
 
-      setMatches(data.matches || []);
+      const newGroups: LeadMatchGroup[] = data.groups || [];
+      setGroups(newGroups);
       if (data.counts) {
         setCounts(data.counts);
       }
+      // Se o modal estiver aberto, atualiza com os dados frescos
+      setSelectedGroupForModal((prev) => {
+        if (!prev) return null;
+        return newGroups.find((g) => g.leadId === prev.leadId) || null;
+      });
     } catch (err) {
       console.error(err);
       toast.error('Erro ao carregar lista de matches');
@@ -96,34 +125,6 @@ export default function MatchPage() {
   useEffect(() => {
     fetchMatches();
   }, [fetchMatches]);
-
-  async function handleDiscard(matchId: string) {
-    try {
-      const res = await fetch(`/api/match/${matchId}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error('Falha ao descartar match');
-      toast.success('Match descartado com sucesso. Não voltará a aparecer.');
-      fetchMatches();
-    } catch (err) {
-      toast.error((err as Error).message || 'Erro ao descartar match');
-    }
-  }
-
-  async function handleStatusChange(matchId: string, newStatus: MatchStatus) {
-    try {
-      const res = await fetch(`/api/match/${matchId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (!res.ok) throw new Error('Falha ao atualizar status');
-      toast.success('Status do match atualizado!');
-      fetchMatches();
-    } catch (err) {
-      toast.error((err as Error).message || 'Erro ao alterar status');
-    }
-  }
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -230,7 +231,9 @@ export default function MatchPage() {
             onValueChange={(val) => setScoreFilter((val as typeof scoreFilter) || 'all')}
           >
             <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Compatibilidade" />
+              <SelectValue placeholder="Compatibilidade">
+                {SCORE_FILTER_LABELS[scoreFilter] || 'Todas as faixas'}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
               <SelectItem value="all">Todas as faixas</SelectItem>
@@ -247,7 +250,9 @@ export default function MatchPage() {
             onValueChange={(val) => setMaturityFilter((val as typeof maturityFilter) || 'all')}
           >
             <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Maturidade" />
+              <SelectValue placeholder="Maturidade">
+                {MATURITY_FILTER_LABELS[maturityFilter] || 'Maturidade: Todas'}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
               <SelectItem value="all">Maturidade: Todas</SelectItem>
@@ -259,7 +264,9 @@ export default function MatchPage() {
           {/* Temperatura / Score IA */}
           <Select value={minAiScore} onValueChange={(val) => setMinAiScore(val || '0')}>
             <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Temperatura" />
+              <SelectValue placeholder="Temperatura">
+                {AI_SCORE_FILTER_LABELS[minAiScore] || 'Score: Qualquer'}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
               <SelectItem value="0">Score: Qualquer</SelectItem>
@@ -271,17 +278,17 @@ export default function MatchPage() {
         </div>
       </div>
 
-      {/* Conteúdo Principal: Grid de Matches */}
+      {/* Conteúdo Principal: Grid de Leads (1 Card Visual = 1 Lead) */}
       <div className="flex-1 p-6">
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-2">
             <Loader2 className="size-8 animate-spin text-primary" />
             <p className="text-xs text-muted-foreground">Calculando compatibilidades determinísticas...</p>
           </div>
-        ) : matches.length === 0 ? (
+        ) : groups.length === 0 ? (
           <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
             <Sparkles className="size-10 text-muted-foreground/40 mb-3" />
-            <h3 className="text-sm font-semibold text-foreground">Nenhum Match nesta visualização</h3>
+            <h3 className="text-sm font-semibold text-foreground">Nenhum Lead com Match nesta visualização</h3>
             <p className="text-xs text-muted-foreground max-w-sm mt-1">
               Não há recomendações correspondentes aos filtros selecionados na aba{' '}
               <strong>{activeTab.toUpperCase()}</strong>.
@@ -289,21 +296,27 @@ export default function MatchPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {matches.map((m) => (
-              <MatchCard
-                key={m.id}
-                match={m}
-                onOpenSend={(item) => setSelectedMatchForSend(item)}
-                onOpenProfile={(leadId) => setSelectedLeadIdForProfile(leadId)}
-                onDiscard={handleDiscard}
-                onStatusChange={handleStatusChange}
+            {groups.map((group) => (
+              <LeadMatchCard
+                key={group.leadId}
+                group={group}
+                onOpenModal={(g) => setSelectedGroupForModal(g)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* Modal de Envio via WhatsApp Pessoal (FASE 14 & 15) */}
+      {/* Modal Central Grande de Imóveis Compatíveis do Lead */}
+      <LeadMatchesModal
+        open={!!selectedGroupForModal}
+        onOpenChange={(open) => !open && setSelectedGroupForModal(null)}
+        group={selectedGroupForModal}
+        onOpenSendModal={(match) => setSelectedMatchForSend(match)}
+        onMatchUpdated={() => fetchMatches()}
+      />
+
+      {/* Modal de Envio via WhatsApp Pessoal Individual */}
       {selectedMatchForSend && (
         <SendWhatsAppModal
           open={!!selectedMatchForSend}
@@ -323,16 +336,6 @@ export default function MatchPage() {
           }}
         />
       )}
-
-      {/* Drawer Comercial do Lead (FASE 13 & 20) */}
-      <LeadCommercialDrawer
-        open={!!selectedLeadIdForProfile}
-        onOpenChange={(open) => !open && setSelectedLeadIdForProfile(null)}
-        leadId={selectedLeadIdForProfile}
-        onLeadUpdated={() => {
-          fetchMatches();
-        }}
-      />
     </div>
   );
 }

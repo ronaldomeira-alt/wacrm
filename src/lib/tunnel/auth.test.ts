@@ -43,7 +43,7 @@ describe('Tunnel Authentication Hardening (auth.ts)', () => {
 
     const result = await authenticateTunnelRequest(req);
     expect(result).not.toBeNull();
-    expect(result?.authenticated).not.toBeNull();
+    expect(result?.db).not.toBeNull();
     expect(result?.accountId).toBe('test-account-uuid-1234');
   });
 
