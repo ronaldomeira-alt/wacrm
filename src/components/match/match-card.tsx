@@ -68,6 +68,8 @@ export interface MatchCardItem {
     priceMax: number;
     bedroomsMin?: number | null;
     bedroomsMax?: number | null;
+    areaMin?: number | null;
+    areaMax?: number | null;
     deliveryStatus: string;
     coverUrl?: string | null;
     publicUrl?: string | null;

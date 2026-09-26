@@ -18,6 +18,14 @@ export async function GET(
 
     const maturity = calculateProfileMaturity(profile);
 
+    const { data: contactRow } = await ctx.supabase
+      .from('contacts')
+      .select('has_purchased')
+      .eq('id', contactId)
+      .eq('account_id', ctx.accountId)
+      .maybeSingle();
+    const hasPurchased = Boolean(contactRow?.has_purchased);
+
     // 1. Busca os imóveis enviados a este lead
     const { data: shares } = await ctx.supabase
       .from('property_shares')
@@ -82,6 +90,101 @@ export async function GET(
         };
       });
 
+    // 4. Busca os matches não suprimidos deste lead para o workspace comercial
+    const { data: leadMatches } = await ctx.supabase
+      .from('lead_property_matches')
+      .select('*')
+      .eq('account_id', ctx.accountId)
+      .eq('lead_id', contactId)
+      .eq('suppressed', false)
+      .order('match_score', { ascending: false })
+      .order('commercial_priority', { ascending: false });
+
+    // Busca os dados completos de projeção dos imóveis compatíveis
+    const matchPropIds = [...new Set((leadMatches || []).map((m) => m.property_id))];
+    let matchPropertiesMap = new Map<string, Record<string, unknown>>();
+    if (matchPropIds.length > 0) {
+      const { data: mProps } = await ctx.supabase
+        .from('property_match_projections')
+        .select('*')
+        .eq('account_id', ctx.accountId)
+        .in('property_id', matchPropIds);
+
+      for (const p of mProps || []) {
+        matchPropertiesMap.set(p.property_id, p);
+      }
+    }
+
+    const enrichedMatches = (leadMatches || []).map((m) => {
+      const prop = matchPropertiesMap.get(m.property_id) || null;
+      return {
+        ...m,
+        contacts: {
+          id: profile.leadId,
+          name: profile.name,
+          phone: profile.phone,
+          ai_score: profile.aiScore,
+          is_paused: profile.isPaused,
+          is_archived: profile.isArchived,
+          has_purchased: hasPurchased,
+        },
+        property: prop
+          ? {
+              propertyId: prop.property_id,
+              title: prop.title,
+              code: prop.code,
+              neighborhood: prop.neighborhood,
+              city: prop.city,
+              priceMin: Number(prop.price_min),
+              priceMax: Number(prop.price_max),
+              bedroomsMin: prop.bedrooms_min,
+              bedroomsMax: prop.bedrooms_max,
+              areaMin: prop.area_min,
+              areaMax: prop.area_max,
+              deliveryStatus: prop.delivery_status,
+              coverUrl: prop.cover_url,
+              publicUrl: prop.public_url,
+              features: prop.features || [],
+            }
+          : {
+              propertyId: m.property_id,
+              title: 'Imóvel em Catálogo',
+              neighborhood: 'João Pessoa',
+              city: 'João Pessoa',
+              priceMin: 0,
+              priceMax: 0,
+              deliveryStatus: 'pronto',
+              features: [],
+            },
+      };
+    });
+
+    // Ordenação garantida: match_score DESC, depois prioridade comercial DESC
+    enrichedMatches.sort((a, b) => {
+      if (b.match_score !== a.match_score) return b.match_score - a.match_score;
+      return (b.commercial_priority || 0) - (a.commercial_priority || 0);
+    });
+
+    const matchGroup = {
+      leadId: profile.leadId,
+      lead: {
+        id: profile.leadId,
+        name: profile.name,
+        phone: profile.phone,
+        aiScore: profile.aiScore,
+        ai_score: profile.aiScore,
+        paused_at: profile.isPaused ? new Date().toISOString() : null,
+        archived_at: profile.isArchived ? new Date().toISOString() : null,
+        has_purchased: hasPurchased,
+      },
+      profileMaturity: maturity.maturity,
+      aiScore: profile.aiScore,
+      bestMatch: enrichedMatches[0] || null,
+      totalMatches: enrichedMatches.length,
+      statusMatchesCount: enrichedMatches.length,
+      matches: enrichedMatches,
+    };
+
     return NextResponse.json({
       lead: {
         id: profile.leadId,
@@ -90,6 +193,7 @@ export async function GET(
         aiScore: profile.aiScore,
         isPaused: profile.isPaused,
         isArchived: profile.isArchived,
+        hasPurchased,
       },
       searchProfile: {
         operation: profile.operation,
@@ -113,6 +217,8 @@ export async function GET(
       maturity,
       tags: mappedTags,
       sentProperties: enrichedShares,
+      matchGroup,
+      matches: enrichedMatches,
     });
   } catch (err) {
     return toErrorResponse(err);
