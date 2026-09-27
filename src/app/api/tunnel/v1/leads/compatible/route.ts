@@ -18,6 +18,34 @@ export async function GET(request: Request) {
 
   const { db, accountId } = ctx;
 
+  // 1. Verifica se o imóvel existe em property_match_projections para esta conta
+  const { data: propRow, error: propErr } = await db
+    .from('property_match_projections')
+    .select('property_id')
+    .eq('account_id', accountId)
+    .eq('property_id', propertyId)
+    .maybeSingle();
+
+  if (propErr) {
+    console.error('[GET /api/tunnel/v1/leads/compatible] Erro ao verificar projeção:', propErr);
+    return NextResponse.json({ error: 'Erro ao verificar imóvel' }, { status: 500 });
+  }
+
+  if (!propRow) {
+    // Se o imóvel não existe na conta, limpa eventuais matches órfãos residuais
+    void db
+      .from('lead_property_matches')
+      .delete()
+      .eq('account_id', accountId)
+      .eq('property_id', propertyId);
+
+    return NextResponse.json({
+      property_id: propertyId,
+      total_compatible: 0,
+      leads: [],
+    });
+  }
+
   let query = db
     .from('lead_property_matches')
     .select(`

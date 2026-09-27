@@ -315,8 +315,11 @@ export default function LeadMatchProfilePage() {
   ).length;
 
   // Métricas do Card KPI Oportunidades
-  const totalOpportunities = data?.matchGroup?.totalMatches || rawMatches.length;
-  const bestMatchScore = rawMatches[0]?.match_score ?? 0;
+  const totalOpportunities = data?.matchGroup?.totalMatches ?? rawMatches.length;
+  const bestMatchScore = useMemo(() => {
+    if (!rawMatches || rawMatches.length === 0) return 0;
+    return Math.max(...rawMatches.map((m: MatchCardItem) => Math.round(m.match_score || 0)));
+  }, [rawMatches]);
 
   const countStrong = useMemo(
     () => rawMatches.filter((m: MatchCardItem) => Math.round(m.match_score) >= 85).length,
@@ -342,14 +345,14 @@ export default function LeadMatchProfilePage() {
   );
 
   const distributionText = useMemo(() => {
-    if (totalOpportunities === 0) return 'Nenhuma oportunidade compatível no momento.';
+    if (totalOpportunities === 0) return '';
     const parts = [
       `${countStrong} ${countStrong === 1 ? 'forte' : 'fortes'}`,
       `${countGood} ${countGood === 1 ? 'bom' : 'bons'}`,
       `${countPossible} ${countPossible === 1 ? 'possível' : 'possíveis'}`,
     ];
     if (countManual > 0) {
-      parts.push(`${countManual} consulta manual`);
+      parts.push(`${countManual} ${countManual === 1 ? 'consulta manual' : 'consultas manuais'}`);
     }
     return parts.join(' · ');
   }, [totalOpportunities, countStrong, countGood, countPossible, countManual]);

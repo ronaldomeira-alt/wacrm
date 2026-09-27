@@ -115,49 +115,48 @@ export async function GET(
       }
     }
 
-    const enrichedMatches = (leadMatches || []).map((m) => {
-      const prop = matchPropertiesMap.get(m.property_id) || null;
-      return {
-        ...m,
-        contacts: {
-          id: profile.leadId,
-          name: profile.name,
-          phone: profile.phone,
-          ai_score: profile.aiScore,
-          is_paused: profile.isPaused,
-          is_archived: profile.isArchived,
-          has_purchased: hasPurchased,
-        },
-        property: prop
-          ? {
-              propertyId: prop.property_id,
-              title: prop.title,
-              code: prop.code,
-              neighborhood: prop.neighborhood,
-              city: prop.city,
-              priceMin: Number(prop.price_min),
-              priceMax: Number(prop.price_max),
-              bedroomsMin: prop.bedrooms_min,
-              bedroomsMax: prop.bedrooms_max,
-              areaMin: prop.area_min,
-              areaMax: prop.area_max,
-              deliveryStatus: prop.delivery_status,
-              coverUrl: prop.cover_url,
-              publicUrl: prop.public_url,
-              features: prop.features || [],
-            }
-          : {
-              propertyId: m.property_id,
-              title: 'Imóvel em Catálogo',
-              neighborhood: 'João Pessoa',
-              city: 'João Pessoa',
-              priceMin: 0,
-              priceMax: 0,
-              deliveryStatus: 'pronto',
-              features: [],
-            },
-      };
-    });
+    // Limpa do banco de dados qualquer match órfão que não possua projeção de imóvel
+    const orphanMatchIds = (leadMatches || [])
+      .filter((m) => !matchPropertiesMap.has(m.property_id))
+      .map((m) => m.id);
+    if (orphanMatchIds.length > 0) {
+      void ctx.supabase.from('lead_property_matches').delete().in('id', orphanMatchIds);
+    }
+
+    const enrichedMatches = (leadMatches || [])
+      .filter((m) => matchPropertiesMap.has(m.property_id))
+      .map((m) => {
+        const prop = matchPropertiesMap.get(m.property_id)!;
+        return {
+          ...m,
+          contacts: {
+            id: profile.leadId,
+            name: profile.name,
+            phone: profile.phone,
+            ai_score: profile.aiScore,
+            is_paused: profile.isPaused,
+            is_archived: profile.isArchived,
+            has_purchased: hasPurchased,
+          },
+          property: {
+            propertyId: prop.property_id,
+            title: prop.title,
+            code: prop.code,
+            neighborhood: prop.neighborhood,
+            city: prop.city,
+            priceMin: Number(prop.price_min),
+            priceMax: Number(prop.price_max),
+            bedroomsMin: prop.bedrooms_min,
+            bedroomsMax: prop.bedrooms_max,
+            areaMin: prop.area_min,
+            areaMax: prop.area_max,
+            deliveryStatus: prop.delivery_status,
+            coverUrl: prop.cover_url,
+            publicUrl: prop.public_url,
+            features: prop.features || [],
+          },
+        };
+      });
 
     // Ordenação garantida: match_score DESC, depois prioridade comercial DESC
     enrichedMatches.sort((a, b) => {

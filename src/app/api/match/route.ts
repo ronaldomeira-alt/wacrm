@@ -14,7 +14,14 @@ export async function GET(request: Request) {
     const leadSearch = (searchParams.get('lead_search') || '').trim();
     const propertySearch = (searchParams.get('property_search') || '').trim();
 
-    // 1. Contadores para cada aba de status (contando LEADS ÚNICOS conforme requisito 20)
+    // 1. Projeções válidas na mesma conta
+    const { data: allProjections } = await ctx.supabase
+      .from('property_match_projections')
+      .select('property_id')
+      .eq('account_id', ctx.accountId);
+    const validPropertyIds = new Set((allProjections || []).map((p) => p.property_id));
+
+    // Contadores para cada aba de status (contando LEADS ÚNICOS de matches com projeção válida)
     const [
       { data: distinctNovos },
       { data: distinctEnviados },
@@ -23,34 +30,60 @@ export async function GET(request: Request) {
     ] = await Promise.all([
       ctx.supabase
         .from('lead_property_matches')
-        .select('lead_id')
+        .select('lead_id, property_id')
         .eq('account_id', ctx.accountId)
         .eq('match_status', 'novo')
         .eq('suppressed', false),
       ctx.supabase
         .from('lead_property_matches')
-        .select('lead_id')
+        .select('lead_id, property_id')
         .eq('account_id', ctx.accountId)
         .eq('match_status', 'enviado')
         .eq('suppressed', false),
       ctx.supabase
         .from('lead_property_matches')
-        .select('lead_id')
+        .select('lead_id, property_id')
         .eq('account_id', ctx.accountId)
         .eq('match_status', 'pausado')
         .eq('suppressed', false),
       ctx.supabase
         .from('lead_property_matches')
-        .select('lead_id')
+        .select('lead_id, property_id')
         .eq('account_id', ctx.accountId)
         .eq('match_status', 'arquivado')
         .eq('suppressed', false),
     ]);
 
-    const countNovos = new Set(distinctNovos?.map((r) => r.lead_id)).size;
-    const countEnviados = new Set(distinctEnviados?.map((r) => r.lead_id)).size;
-    const countPausados = new Set(distinctPausados?.map((r) => r.lead_id)).size;
-    const countArquivados = new Set(distinctArquivados?.map((r) => r.lead_id)).size;
+    // Elimina eventuais órfãos encontrados nos contadores
+    const allMatchesRaw = [
+      ...(distinctNovos || []),
+      ...(distinctEnviados || []),
+      ...(distinctPausados || []),
+      ...(distinctArquivados || []),
+    ];
+    const orphanPropertyIds = allMatchesRaw
+      .filter((r) => !validPropertyIds.has(r.property_id))
+      .map((r) => r.property_id);
+    if (orphanPropertyIds.length > 0) {
+      void ctx.supabase
+        .from('lead_property_matches')
+        .delete()
+        .eq('account_id', ctx.accountId)
+        .in('property_id', [...new Set(orphanPropertyIds)]);
+    }
+
+    const countNovos = new Set(
+      distinctNovos?.filter((r) => validPropertyIds.has(r.property_id)).map((r) => r.lead_id)
+    ).size;
+    const countEnviados = new Set(
+      distinctEnviados?.filter((r) => validPropertyIds.has(r.property_id)).map((r) => r.lead_id)
+    ).size;
+    const countPausados = new Set(
+      distinctPausados?.filter((r) => validPropertyIds.has(r.property_id)).map((r) => r.lead_id)
+    ).size;
+    const countArquivados = new Set(
+      distinctArquivados?.filter((r) => validPropertyIds.has(r.property_id)).map((r) => r.lead_id)
+    ).size;
 
     // 2. Query dos Matches no status selecionado
     let query = ctx.supabase
@@ -130,8 +163,17 @@ export async function GET(request: Request) {
       }
     }
 
+    // Limpa do banco de dados qualquer match órfão que não possua imóvel correspondente
+    const orphanMatches = (matches || []).filter((m) => !propertiesMap.has(m.property_id));
+    if (orphanMatches.length > 0) {
+      const orphanIds = orphanMatches.map((m) => m.id);
+      void ctx.supabase.from('lead_property_matches').delete().in('id', orphanIds);
+    }
+
+    // Filtra estritamente apenas matches cujo imóvel existe na conta
+    let filteredMatches = (matches || []).filter((m) => propertiesMap.has(m.property_id));
+
     // Filtro por imóvel (caso fornecido)
-    let filteredMatches = matches || [];
     if (propertySearch) {
       const normSearch = propertySearch.toLowerCase();
       filteredMatches = filteredMatches.filter((m) => {
@@ -150,35 +192,24 @@ export async function GET(request: Request) {
 
     // Anexa os dados do imóvel em cada match
     const enrichedMatches = filteredMatches.map((m) => {
-      const prop = propertiesMap.get(m.property_id) || null;
+      const prop = propertiesMap.get(m.property_id)!;
       return {
         ...m,
-        property: prop
-          ? {
-              propertyId: prop.property_id,
-              title: prop.title,
-              code: prop.code,
-              neighborhood: prop.neighborhood,
-              city: prop.city,
-              priceMin: Number(prop.price_min),
-              priceMax: Number(prop.price_max),
-              bedroomsMin: prop.bedrooms_min,
-              bedroomsMax: prop.bedrooms_max,
-              deliveryStatus: prop.delivery_status,
-              coverUrl: prop.cover_url,
-              publicUrl: prop.public_url,
-              features: prop.features || [],
-            }
-          : {
-              propertyId: m.property_id,
-              title: 'Imóvel em Catálogo',
-              neighborhood: 'João Pessoa',
-              city: 'João Pessoa',
-              priceMin: 0,
-              priceMax: 0,
-              deliveryStatus: 'pronto',
-              features: [],
-            },
+        property: {
+          propertyId: prop.property_id,
+          title: prop.title,
+          code: prop.code,
+          neighborhood: prop.neighborhood,
+          city: prop.city,
+          priceMin: Number(prop.price_min),
+          priceMax: Number(prop.price_max),
+          bedroomsMin: prop.bedrooms_min,
+          bedroomsMax: prop.bedrooms_max,
+          deliveryStatus: prop.delivery_status,
+          coverUrl: prop.cover_url,
+          publicUrl: prop.public_url,
+          features: prop.features || [],
+        },
       };
     });
 
@@ -211,13 +242,15 @@ export async function GET(request: Request) {
     if (leadIds.length > 0) {
       const { data: totalCounts } = await ctx.supabase
         .from('lead_property_matches')
-        .select('lead_id')
+        .select('lead_id, property_id')
         .eq('account_id', ctx.accountId)
         .eq('suppressed', false)
         .in('lead_id', leadIds);
 
       for (const row of totalCounts || []) {
-        totalMatchesByLead[row.lead_id] = (totalMatchesByLead[row.lead_id] || 0) + 1;
+        if (validPropertyIds.has(row.property_id)) {
+          totalMatchesByLead[row.lead_id] = (totalMatchesByLead[row.lead_id] || 0) + 1;
+        }
       }
     }
 
