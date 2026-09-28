@@ -149,7 +149,7 @@ export async function GET(request: Request) {
 
     // Busca os imóveis correspondentes em property_match_projections
     const propertyIds = [...new Set((matches || []).map((m) => m.property_id))];
-    let propertiesMap = new Map<string, Record<string, unknown>>();
+    const propertiesMap = new Map<string, Record<string, unknown>>();
 
     if (propertyIds.length > 0) {
       const { data: props } = await ctx.supabase

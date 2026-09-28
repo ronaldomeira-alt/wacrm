@@ -558,7 +558,7 @@ export function isMediaSendAuthorized(args: {
   const latestUserText = currentTurnUserMessages.length > 0 ? currentTurnUserMessages[currentTurnUserMessages.length - 1].content : '';
 
   // Identify assistant messages belonging to the turn that made the offer (contiguous block ending at lastAssistantIndex)
-  let previousTurnAssistantMessages: ChatMessage[] = [];
+  const previousTurnAssistantMessages: ChatMessage[] = [];
   for (let i = lastAssistantIndex; i >= 0; i--) {
     if (messages[i].role === 'assistant') {
       previousTurnAssistantMessages.unshift(messages[i]);

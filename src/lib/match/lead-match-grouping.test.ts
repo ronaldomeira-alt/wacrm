@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { MatchStatus, LeadMatchGroup, MatchRecord } from './types';
+import type { MatchStatus } from './types';
 
 describe('Central Match Redesign UX — Grouping & Counters', () => {
   it('agrupa múltiplos matches de um mesmo lead em 1 único objeto LeadMatchGroup', () => {
@@ -42,10 +42,10 @@ describe('Central Match Redesign UX — Grouping & Counters', () => {
     // Lógica de agrupamento por lead (idêntica à implementada no endpoint /api/match)
     const groupsMap = new Map<string, {
       leadId: string;
-      lead: any;
+      lead: (typeof mockMatches)[number]['lead'];
       profileMaturity: number;
       aiScore: number;
-      matches: any[];
+      matches: typeof mockMatches;
     }>();
 
     for (const m of mockMatches) {
@@ -61,7 +61,7 @@ describe('Central Match Redesign UX — Grouping & Counters', () => {
       groupsMap.get(m.leadId)!.matches.push(m);
     }
 
-    const groups: LeadMatchGroup[] = Array.from(groupsMap.values()).map((g) => {
+    const groups = Array.from(groupsMap.values()).map((g) => {
       const sorted = [...g.matches].sort((a, b) => b.matchScore - a.matchScore);
       return {
         leadId: g.leadId,

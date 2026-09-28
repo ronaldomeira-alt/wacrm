@@ -36,7 +36,7 @@ export async function GET(
 
     // 2. Busca dados dos imóveis referenciados nos shares
     const propIds = [...new Set((shares || []).map((s) => s.property_id))];
-    let propertyMap = new Map<string, { title: string; neighborhood: string; coverUrl?: string }>();
+  const propertyMap = new Map<string, { title: string; neighborhood: string; coverUrl?: string }>();
     if (propIds.length > 0) {
       const { data: props } = await ctx.supabase
         .from('property_match_projections')
@@ -102,7 +102,7 @@ export async function GET(
 
     // Busca os dados completos de projeção dos imóveis compatíveis
     const matchPropIds = [...new Set((leadMatches || []).map((m) => m.property_id))];
-    let matchPropertiesMap = new Map<string, Record<string, unknown>>();
+  const matchPropertiesMap = new Map<string, Record<string, unknown>>();
     if (matchPropIds.length > 0) {
       const { data: mProps } = await ctx.supabase
         .from('property_match_projections')
@@ -244,7 +244,7 @@ export async function PATCH(
     }
 
     const now = new Date().toISOString();
-    let updates: Record<string, unknown> = { updated_at: now };
+  const updates: Record<string, unknown> = { updated_at: now };
 
     if (body.action === 'pause') {
       updates.paused_at = now;
