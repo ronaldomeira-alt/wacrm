@@ -23,6 +23,7 @@ declare module "opus-recorder" {
     constructor(config?: RecorderConfig);
     /** Fired with the encoded audio bytes (full Ogg/Opus file when streamPages is false). */
     ondataavailable: ((data: Uint8Array) => void) | null;
+    onerror?: ((error: unknown) => void) | null;
     start(): Promise<void>;
     stop(): Promise<void>;
     /** Closes the AudioContext, destroys the encoder worker, and releases

@@ -60,6 +60,7 @@ import {
 } from "@/lib/inbox/use-resolved-media-src";
 import { stopAllAudioPlayback } from "@/lib/inbox/audio-playback-coordinator";
 import { forensic } from "@/lib/media/forensic-tracer";
+import { TimeoutError, withTimeout } from "@/lib/net/with-timeout";
 
 /** Media content types an agent can send from the composer. */
 export type ComposerMediaKind = "image" | "video" | "document" | "audio";
@@ -74,6 +75,9 @@ export const MEDIA_CAPTION_MAX = 1024;
 /** Hard cap on a single voice recording so it can't blow the upload/
  *  transcode limits — auto-stops the recorder when reached. */
 const MAX_RECORDING_SECONDS = 5 * 60;
+const CAPTURE_READY_TIMEOUT_MS = 12_000;
+const RECORDER_STOP_TIMEOUT_MS = 12_000;
+const RECORDER_CLOSE_TIMEOUT_MS = 3_000;
 
 export interface SendMediaPayload {
   kind: ComposerMediaKind;
@@ -488,6 +492,8 @@ export function MessageComposer({
   // and the recorder ends up starting *after* the UI already moved past
   // "recording" with nothing left to ever stop it.
   const captureReadyRef = useRef<Promise<void> | null>(null);
+  const recordingTraceIdRef = useRef<string | null>(null);
+  const finalizationInFlightRef = useRef(false);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Id of the pending-audio-db.ts record backing the current "paused" or
@@ -1036,17 +1042,28 @@ export function MessageComposer({
   // itself now never awaits the network, so it always returns fast.
   const finalizeRecording = useCallback(
     async (bytes: Uint8Array) => {
+      const traceId = recordingTraceIdRef.current;
+      if (finalizationInFlightRef.current) {
+        audioLog("recording:dataavailable:duplicate", { traceId, sizeBytes: bytes.byteLength });
+        return;
+      }
+      finalizationInFlightRef.current = true;
+      audioLog("recording:dataavailable", { traceId, sizeBytes: bytes.byteLength });
       // Uint8Array is a valid BlobPart at runtime; the cast sidesteps the
       // lib.dom ArrayBufferLike-vs-ArrayBuffer generic mismatch.
       const file = new File([bytes as unknown as BlobPart], `voice-${Date.now()}.ogg`, {
         type: "audio/ogg",
       });
-      audioLog("recording:stopped", { sizeBytes: file.size });
+      audioLog("recording:file-created", { traceId, sizeBytes: file.size, mimeType: file.type });
+      audioLog("recording:stopped", { traceId, sizeBytes: file.size });
       if (file.size === 0) {
         // Cancelled / empty take — nothing to do.
         sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
+        finalizationInFlightRef.current = false;
+        recordingTraceIdRef.current = null;
+        audioLog("recording:error", { traceId, reason: "empty-file" });
         return;
       }
       if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
@@ -1054,6 +1071,9 @@ export function MessageComposer({
         sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
+        finalizationInFlightRef.current = false;
+        recordingTraceIdRef.current = null;
+        audioLog("recording:error", { traceId, reason: "file-too-large", sizeBytes: file.size });
         return;
       }
 
@@ -1079,7 +1099,7 @@ export function MessageComposer({
         // the upload hangs, gets interrupted, or the PWA is killed a
         // moment later, the recording itself is never lost.
         await putPendingAudio(record);
-        audioLog("recording:saved-local", { id });
+        audioLog("recording:saved-local", { id, traceId });
       } catch (err) {
         // IndexedDB itself failing (private browsing, quota, disabled) —
         // rare, but don't let it strand the recording: fall through and
@@ -1096,6 +1116,9 @@ export function MessageComposer({
         setLocked(false);
         onRecordAudio(id, replyTo?.id);
         onClearReply?.();
+        audioLog("recording:finalized", { id, traceId, mode: "send-on-stop" });
+        finalizationInFlightRef.current = false;
+        recordingTraceIdRef.current = null;
         return;
       }
 
@@ -1104,6 +1127,9 @@ export function MessageComposer({
       pendingRecordIdRef.current = id;
       setMicPhase("paused");
       setLocked(false);
+      audioLog("recording:finalized", { id, traceId, mode: "paused" });
+      finalizationInFlightRef.current = false;
+      recordingTraceIdRef.current = null;
     },
     [conversationId, onRecordAudio, replyTo?.id, onClearReply, t],
   );
@@ -1143,6 +1169,17 @@ export function MessageComposer({
         if (cancelledRef.current) return;
         void finalizeRecording(bytes);
       };
+      recorder.onerror = (error) => {
+        audioLogError("recording:error", error, {
+          traceId: recordingTraceIdRef.current,
+          reason: "recorder-error",
+        });
+        cancelledRef.current = true;
+        finalizationInFlightRef.current = false;
+        clearTimer();
+        setMicPhase("failed");
+        setLocked(false);
+      };
       recorderRef.current = recorder;
       await recorder.start();
     } catch {
@@ -1158,6 +1195,8 @@ export function MessageComposer({
         .then(() => recorder.close())
         .catch(() => {});
       clearTimer();
+      cancelledRef.current = true;
+      finalizationInFlightRef.current = false;
       setMicPhase("idle");
       setLocked(false);
       toast.error(t("recordingPermissionDenied"));
@@ -1179,24 +1218,75 @@ export function MessageComposer({
   // many can be alive at once, so after enough recordings in one PWA
   // session the next one would silently hang (audioContext never
   // resumes, ondataavailable never fires, upload never starts).
-  const stopRecorder = useCallback(async () => {
+  const stopRecorder = useCallback(async (): Promise<boolean> => {
+    const traceId = recordingTraceIdRef.current;
+    audioLog("recording:cleanup:start", { traceId });
     try {
-      await captureReadyRef.current;
-    } catch {
-      // beginCapture() never actually rejects (it handles its own failure
-      // path internally) — guarded anyway so a stop request can't hang.
+      if (captureReadyRef.current) {
+        audioLog("recording:capture-ready-wait:start", { traceId });
+        await withTimeout(captureReadyRef.current, CAPTURE_READY_TIMEOUT_MS, "audio capture initialization");
+        audioLog("recording:capture-ready-wait:success", { traceId });
+      }
+    } catch (error) {
+      audioLogError(
+        error instanceof TimeoutError ? "recording:capture-ready-wait:timeout" : "recording:error",
+        error,
+        { traceId, reason: "capture-ready" },
+      );
+      const recorder = recorderRef.current;
+      recorderRef.current = null;
+      try {
+        if (recorder) await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
+      } catch (closeError) {
+        audioLogError("recording:error", closeError, { traceId, reason: "close-after-capture-failure" });
+      }
+      clearTimer();
+      setMicPhase("failed");
+      setLocked(false);
+      finalizationInFlightRef.current = false;
+      audioLog("recording:cleanup:complete", { traceId, result: "capture-failure" });
+      return false;
     }
+
     const recorder = recorderRef.current;
-    if (!recorder) return;
-    try {
-      await recorder.stop();
-    } catch {
-      // stop() rejecting doesn't change that close() below still needs
-      // to run to release the AudioContext.
+    if (!recorder) {
+      audioLog("recording:cleanup:complete", { traceId, result: "no-recorder" });
+      return false;
     }
-    void recorder.close().catch(() => {});
+    try {
+      audioLog("recording:recorder-stop:start", { traceId });
+      await withTimeout(recorder.stop(), RECORDER_STOP_TIMEOUT_MS, "audio recorder stop");
+      audioLog("recording:recorder-stop:success", { traceId });
+    } catch (error) {
+      audioLogError(
+        error instanceof TimeoutError ? "recording:recorder-stop:timeout" : "recording:error",
+        error,
+        { traceId, reason: "recorder-stop" },
+      );
+      cancelledRef.current = true;
+      clearTimer();
+      setMicPhase("failed");
+      setLocked(false);
+      finalizationInFlightRef.current = false;
+      try {
+        await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
+      } catch (closeError) {
+        audioLogError("recording:error", closeError, { traceId, reason: "close-after-stop-failure" });
+      }
+      if (recorderRef.current === recorder) recorderRef.current = null;
+      audioLog("recording:cleanup:complete", { traceId, result: "stop-failure" });
+      return false;
+    }
+
+    try {
+      await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
+    } catch (error) {
+      audioLogError("recording:error", error, { traceId, reason: "recorder-close" });
+    }
     if (recorderRef.current === recorder) recorderRef.current = null;
-  }, []);
+    audioLog("recording:cleanup:complete", { traceId, result: "stopped" });
+    return true;
+  }, [clearTimer]);
 
   // ---- Mic pointer gesture ---------------------------------------------
   //
@@ -1215,6 +1305,11 @@ export function MessageComposer({
   // duplicate request from a second event is always a no-op.
   const startRecordingGesture = useCallback(() => {
     if (micPhase !== "idle") return;
+    recordingTraceIdRef.current =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `audio-trace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    finalizationInFlightRef.current = false;
     stopAllAudioPlayback();
     setLocked(false);
     setRecordSeconds(0);
@@ -1369,6 +1464,8 @@ export function MessageComposer({
   }, [micPhase, clearTimer, stopRecorder]);
 
   const handleSendRecording = useCallback(() => {
+    if (finalizationInFlightRef.current) return;
+    audioLog("recording:send-click", { traceId: recordingTraceIdRef.current });
     if (micPhase === "recording") {
       // Only reachable while locked (send isn't shown unless the bar is
       // up, and the bar only stays up hands-free once locked). Stop the
