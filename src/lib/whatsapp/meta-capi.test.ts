@@ -27,6 +27,11 @@ function fakeDb(opts: FakeDbOptions) {
               }),
             }),
           }),
+          update: () => ({
+            eq: () => ({
+              eq: () => Promise.resolve({ error: null }),
+            }),
+          }),
         }
       }
       if (table === 'whatsapp_config') {

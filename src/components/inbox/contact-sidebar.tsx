@@ -37,6 +37,7 @@ import { useLeadPipelineStage } from "@/hooks/use-lead-pipeline-stage";
 import { useFollowupGate } from "@/hooks/use-followup-gate";
 import { FollowupRequirementDialog } from "@/components/action-items/followup-requirement-dialog";
 import { SearchProfileTag } from "@/components/contacts/search-profile-tag";
+import { MetaCapiQualifyButton } from "@/components/contacts/meta-capi-qualify-button";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -370,6 +371,18 @@ export function ContactSidebar({ contact, conversation }: ContactSidebarProps) {
             <p className="mt-1 px-1 text-[11px] text-muted-foreground">
               {tSidebar(`aiScoreBand.${aiScoreBand(aiScore)}`)}
             </p>
+
+            {/* Conversão Manual Meta (CAPI) */}
+            <div className="mt-3">
+              <MetaCapiQualifyButton
+                conversationId={conversation?.id}
+                contactId={contact.id}
+                initialQualifiedAt={conversation?.meta_capi_qualified_at}
+                hasCtwaClid={Boolean(
+                  (conversation?.ctwa_referral as { ctwa_clid?: string } | null)?.ctwa_clid
+                )}
+              />
+            </div>
           </div>
 
           {/* Divider */}

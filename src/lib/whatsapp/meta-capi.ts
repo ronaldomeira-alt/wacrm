@@ -110,5 +110,13 @@ export async function sendQualifiedLeadEvent(
     return { sent: false, reason: 'graph_api_error', detail: json?.error?.message ?? `HTTP ${res.status}` }
   }
 
+  // Record timestamp on conversation for tracking and UI feedback
+  await db
+    .from('conversations')
+    .update({ meta_capi_qualified_at: new Date().toISOString() })
+    .eq('id', conversationId)
+    .eq('account_id', accountId)
+
   return { sent: true }
 }
+

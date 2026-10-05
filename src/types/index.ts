@@ -444,6 +444,11 @@ export interface Conversation {
    */
   ctwa_referral?: CtwaReferral | null;
   /**
+   * Data/hora em que o evento QualifiedLead foi enviado à Meta Conversions API
+   * (migration 20261004213900_conversation_meta_capi_qualified_at.sql).
+   */
+  meta_capi_qualified_at?: string | null;
+  /**
    * CTWA Free Entry Point 72h clock (migration 059) — independent of
    * the 24h service window. `ctwa_fep_started_at`/`ctwa_fep_active`
    * are a historical record ("was the benefit ever granted"), set once

@@ -15,6 +15,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { SearchProfileTag } from '@/components/contacts/search-profile-tag';
+import { MetaCapiQualifyButton } from '@/components/contacts/meta-capi-qualify-button';
 import { LeadMatchesModal } from '@/components/match/lead-matches-modal';
 import { SendWhatsAppModal } from '@/components/match/send-whatsapp-modal';
 import type { LeadMatchGroup, MatchRecord } from '@/lib/match/types';
@@ -461,6 +462,12 @@ export default function LeadMatchProfilePage() {
                 <Archive className="size-3.5" />
                 Arquivar
               </Button>
+            )}
+
+            {data?.lead.id && (
+              <div className="w-48">
+                <MetaCapiQualifyButton contactId={data.lead.id} />
+              </div>
             )}
 
             <Button

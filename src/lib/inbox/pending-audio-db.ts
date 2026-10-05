@@ -41,6 +41,8 @@ export interface PendingAudioRecord {
   /** Set once the storage upload succeeds. */
   mediaUrl?: string;
   path?: string;
+  /** Missing on existing records, which remain backed by Supabase Storage. */
+  storageProvider?: "supabase" | "r2";
   attempts: number;
   lastError?: string;
 }

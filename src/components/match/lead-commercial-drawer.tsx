@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { SearchProfileTag } from '@/components/contacts/search-profile-tag';
+import { MetaCapiQualifyButton } from '@/components/contacts/meta-capi-qualify-button';
 import { toast } from 'sonner';
 import {
   User,
@@ -295,6 +296,15 @@ export function LeadCommercialDrawer({
                     : '⏳ Em amadurecimento (< 70%)'}
                 </p>
               </div>
+            </div>
+
+            {/* Conversão Meta (Lead Qualificado CAPI) */}
+            <div className="rounded-xl border border-border bg-card p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">Conversão Meta Ads</span>
+                <span className="text-[10px] text-muted-foreground">Conversions API (CAPI)</span>
+              </div>
+              <MetaCapiQualifyButton contactId={data.lead.id} />
             </div>
 
             {/* Tags e Origem Visual Azul / Verde (FASE 2) */}

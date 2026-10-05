@@ -93,6 +93,7 @@ export async function presignAndUpload(
   purpose: MediaPurpose,
   kind: MediaKind,
   file: File,
+  options: { preferSameOriginProxy?: boolean } = {},
 ): Promise<PresignAndUploadResult> {
   const sha256 = await sha256Hex(file);
   const contentType = resolveClientFileMime(file);
@@ -176,7 +177,7 @@ export async function presignAndUpload(
   // attempt direct PUT to R2 first.
   const directAllowed = isOriginDirectR2Allowed();
 
-  if (directAllowed && presign.uploadUrl) {
+  if (!options.preferSameOriginProxy && directAllowed && presign.uploadUrl) {
     let directOk = false;
     forensic.log(18, "PUT/fallback", "info", {
       route: "direct-r2-put",

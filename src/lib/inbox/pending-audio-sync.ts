@@ -23,6 +23,8 @@ import {
 import { audioLog, audioLogError } from "./pending-audio-log";
 import { retryAsync, withTimeout } from "@/lib/net/with-timeout";
 import { uploadAccountMedia, deleteAccountMedia, CHAT_MEDIA_BUCKET } from "@/lib/storage/upload-media";
+import { presignAndUpload, deleteR2Media } from "@/lib/storage/upload-media-r2";
+import { isIPhoneSafariPwa } from "./audio-upload-target";
 
 /** Generous for a voice note (opus VOIP encoding keeps these small — a
  *  few hundred KB even at the 5-minute cap) but still finite: the whole
@@ -63,11 +65,18 @@ async function ensureUploaded(
   await patchPendingAudio(record.id, { status: "uploading" });
   audioLog("upload:start", { id: record.id, sizeBytes: record.sizeBytes });
   const file = buildAudioFile(record);
+  const useR2 = isIPhoneSafariPwa();
 
   const result = await retryAsync(
     (attempt) => {
-      audioLog("upload:attempt", { id: record.id, attempt: attempt + 1 });
-      return withTimeout(uploadAccountMedia(CHAT_MEDIA_BUCKET, file), UPLOAD_TIMEOUT_MS, "voice-note upload");
+      audioLog("upload:attempt", { id: record.id, attempt: attempt + 1, provider: useR2 ? "r2" : "supabase" });
+      const upload = useR2
+        ? presignAndUpload("chat-attachment", "audio", file, { preferSameOriginProxy: true }).then((result) => ({
+            publicUrl: result.key,
+            path: result.key,
+          }))
+        : uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
+      return withTimeout(upload, UPLOAD_TIMEOUT_MS, "voice-note upload");
     },
     {
       retries: UPLOAD_RETRIES,
@@ -81,6 +90,7 @@ async function ensureUploaded(
     status: "uploaded",
     mediaUrl: result.publicUrl,
     path: result.path,
+    storageProvider: useR2 ? "r2" : "supabase",
   });
   cb?.onMediaUrl?.(result.publicUrl);
   cb?.onStatus?.("uploaded");
@@ -177,7 +187,10 @@ export async function runPendingAudio(
 export async function discardPendingAudio(id: string): Promise<void> {
   const record = await getPendingAudio(id);
   if (record?.path) {
-    void deleteAccountMedia(CHAT_MEDIA_BUCKET, record.path).catch((err) =>
+    const remove = record.storageProvider === "r2"
+      ? deleteR2Media(record.path)
+      : deleteAccountMedia(CHAT_MEDIA_BUCKET, record.path);
+    void remove.catch((err) =>
       audioLogError("discard:gc-failed", err, { id }),
     );
   }
