@@ -1237,7 +1237,7 @@ export function PropertyKnowledgeDetailDialog({
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                       <div>
                         <Label className="text-xs font-medium text-foreground">
-                          ID do Anúncio (source_id Meta) <span className="text-destructive">*</span>
+                          ID do anúncio <span className="text-destructive">*</span>
                         </Label>
                         <Input
                           placeholder="Ex: 120251178888720493"
