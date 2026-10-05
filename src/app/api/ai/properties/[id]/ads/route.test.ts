@@ -80,7 +80,8 @@ describe('Ads API Route: /api/ai/properties/[id]/ads', () => {
       }),
       storage: {
         from: vi.fn().mockReturnValue({
-          getPublicUrl: vi.fn().mockReturnValue({ data: { publicUrl: '' } }),
+          list: vi.fn().mockResolvedValue({ data: [], error: null }),
+          getPublicUrl: vi.fn().mockReturnValue({ data: { publicUrl: 'https://storage/nonexistent.jpg' } }),
         }),
       },
     }
@@ -105,6 +106,7 @@ describe('Ads API Route: /api/ai/properties/[id]/ads', () => {
 
     // Second ad has no image (placeholder state, not property gallery)
     expect(json.mappings[1].image_url).toBeNull()
+    expect(json.mappings[1].verified).toBe(false)
   })
 
   it('POST links an ad and queries Meta Graph API for the creative', async () => {

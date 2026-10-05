@@ -88,6 +88,15 @@ export async function POST(request: Request, { params }: Params) {
       console.warn('[property/ads/validate] Graph API check skipped/failed:', err)
     }
 
+    if (metaCreativeResult?.invalid_object) {
+      return NextResponse.json({
+        valid: false,
+        confirmed: false,
+        status: 'invalid_object',
+        message: metaCreativeResult.raw_error,
+      })
+    }
+
     if (metaCreativeResult && metaCreativeResult.success) {
       return NextResponse.json({
         valid: true,

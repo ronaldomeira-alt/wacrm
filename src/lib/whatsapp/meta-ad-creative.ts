@@ -29,6 +29,7 @@ export interface MetaAdCreativeResult {
   headline: string | null
   body: string | null
   source_url: string | null
+  invalid_object?: boolean
   raw_error?: string | null
 }
 
@@ -148,7 +149,7 @@ export async function fetchMetaAdCreative(
 
       if (fallbackRes.ok && fallbackData?.id && !fallbackData.error) {
         return {
-          success: true,
+          success: false,
           ad_source_id: cleanAdId,
           ad_name: fallbackData.name || null,
           campaign_name: fallbackData.name || null,
@@ -161,6 +162,8 @@ export async function fetchMetaAdCreative(
           headline: null,
           body: null,
           source_url: null,
+          invalid_object: true,
+          raw_error: 'Este ID é de uma campanha ou conjunto, não de um anúncio. Informe o ID do anúncio Meta (Ad ID).',
         }
       }
 
@@ -372,6 +375,7 @@ export async function fetchMetaAdCreative(
       }
     }
 
+    thumbnailUrl = thumbnailUrl || creative.thumbnail_url || null
     const resolvedImage = imageUrl || thumbnailUrl || null
 
     return {

@@ -225,3 +225,31 @@ describe('meta-ad-creative service', () => {
     }
   })
 })
+
+
+describe('Meta creative regressions', () => {
+  it('rejects a campaign that the old fallback incorrectly verified as an ad', async () => {
+    const spy = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(Response.json({ error: { message: 'Nonexisting field creative on node Campaign' } }, { status: 400 }))
+      .mockResolvedValueOnce(Response.json({ id: '120251644356340493', name: 'Miguel Arcanjo Locação', objective: 'OUTCOME_ENGAGEMENT' }))
+    try {
+      const result = await fetchMetaAdCreative('120251644356340493', 'token')
+      expect(result.success).toBe(false)
+      expect(result.invalid_object).toBe(true)
+      expect(result.raw_error).toContain('ID do anúncio')
+    } finally { spy.mockRestore() }
+  })
+
+  it('uses a standalone creative thumbnail for a static ad without image_url', async () => {
+    const spy = vi.spyOn(global, 'fetch').mockResolvedValue(Response.json({
+      id: '120251644356320493',
+      creative: { id: '1436106695149673', thumbnail_url: 'https://fbcdn.net/static.png' },
+    }))
+    try {
+      const result = await fetchMetaAdCreative('120251644356320493', 'token')
+      expect(result.success).toBe(true)
+      expect(result.creative_image_url).toBe('https://fbcdn.net/static.png')
+      expect(result.creative_thumbnail_url).toBe('https://fbcdn.net/static.png')
+    } finally { spy.mockRestore() }
+  })
+})

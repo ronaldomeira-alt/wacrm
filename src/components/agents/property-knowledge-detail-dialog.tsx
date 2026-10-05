@@ -151,6 +151,7 @@ export function PropertyKnowledgeDetailDialog({
 
   // CTWA Ad Mappings
   const [adMappings, setAdMappings] = useState<AdMapping[]>([])
+  const [failedAdImages, setFailedAdImages] = useState<Record<string, string>>({})
   const [adSort, setAdSort] = useState<'recent' | 'oldest' | 'name'>('recent')
   const [loadingAds, setLoadingAds] = useState(false)
   const [showAddAd, setShowAddAd] = useState(false)
@@ -1511,11 +1512,12 @@ export function PropertyKnowledgeDetailDialog({
                           <div className="flex flex-col md:flex-row items-stretch">
                             {/* Left Column: Real Creative Image or Honest Placeholder */}
                             <div className="relative w-full md:w-[260px] lg:w-[280px] shrink-0 bg-muted/40 aspect-16/10 md:aspect-auto md:max-h-[300px] overflow-hidden border-b md:border-b-0 md:border-r border-border/60">
-                              {ad.image_url ? (
+                              {ad.image_url && failedAdImages[ad.id] !== ad.image_url ? (
                                 <div className="relative w-full h-full min-h-[220px] group/img">
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
                                   <img
                                     src={ad.image_url}
+                                    onError={() => setFailedAdImages((previous) => ({ ...previous, [ad.id]: ad.image_url! }))}
                                     alt={ad.ad_name || 'Criativo do Anúncio Meta'}
                                     className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-103"
                                     loading="lazy"
@@ -1567,7 +1569,7 @@ export function PropertyKnowledgeDetailDialog({
                                       </h4>
                                       <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                                         <CheckCircle2 className="h-3 w-3" />
-                                        Vínculo verificado
+                                        {ad.verified ? 'Vínculo verificado' : 'Vínculo não confirmado'}
                                       </span>
                                     </div>
                                     <p className="text-xs text-muted-foreground">

@@ -39,7 +39,7 @@ export async function GET(request: Request, { params }: Params) {
         let leadSourceUrl: string | null = null
         let hasLeadTelemetry = false
 
-        // 1. Storage Cached Image (if saved in DB or standard storage path)
+        // getPublicUrl only builds a URL; it does not establish that a file exists.
         const possiblePaths = [
           m.creative_storage_path,
           `account-${accountId}/ad-creatives/${m.ad_source_id}.jpg`,
@@ -48,16 +48,22 @@ export async function GET(request: Request, { params }: Params) {
         ].filter(Boolean) as string[]
 
         for (const path of possiblePaths) {
+          // Keep cached previews within this account's creative folder.
+          if (!path.startsWith(`account-${accountId}/ad-creatives/`)) continue
           try {
-            const { data: storageData } = supabase.storage
-              .from(PROPERTY_MEDIA_BUCKET)
-              .getPublicUrl(path)
-            if (storageData?.publicUrl) {
-              finalImageUrl = storageData.publicUrl
+            const slash = path.lastIndexOf('/')
+            const filename = path.slice(slash + 1)
+            const bucket = supabase.storage.from(PROPERTY_MEDIA_BUCKET)
+            const { data: files, error: listError } = await bucket.list(path.slice(0, slash), {
+              search: filename,
+              limit: 100,
+            })
+            if (!listError && files?.some((file) => file.name === filename && file.id)) {
+              finalImageUrl = bucket.getPublicUrl(path).data.publicUrl
               break
             }
           } catch {
-            // keep looking
+            // Missing or unreadable cache: continue to Meta/referral resolution.
           }
         }
 
@@ -90,6 +96,19 @@ export async function GET(request: Request, { params }: Params) {
                 } else {
                   finalImageUrl = resolved.creative_image_url
                 }
+                const { error: saveError } = await supabase
+                  .from('property_ad_mappings')
+                  .update({
+                    creative_id: resolved.creative_id,
+                    creative_image_url: resolved.creative_image_url,
+                    creative_thumbnail_url: resolved.creative_thumbnail_url,
+                    creative_storage_path: cached?.storagePath || null,
+                    creative_type: resolved.creative_type,
+                    creative_synced_at: new Date().toISOString(),
+                  })
+                  .eq('account_id', accountId)
+                  .eq('id', m.id)
+                if (saveError) console.warn('[property/ads] Creative cache persistence failed:', saveError.code)
               }
             }
           } catch (autoErr) {
@@ -147,7 +166,7 @@ export async function GET(request: Request, { params }: Params) {
           has_lead_telemetry: hasLeadTelemetry,
           creative_synced_at: m.creative_synced_at || null,
           created_at: m.created_at,
-          verified: true,
+          verified: Boolean(m.creative_id || hasLeadTelemetry),
           platform: 'Meta Ads · Click to WhatsApp',
           image_origin_label: finalImageUrl ? 'Criativo Meta' : null,
         }
@@ -228,6 +247,10 @@ export async function POST(request: Request, { params }: Params) {
       metaCreativeResult?.ad_name ||
       metaCreativeResult?.campaign_name ||
       null
+
+    if (metaCreativeResult?.invalid_object) {
+      return NextResponse.json({ error: metaCreativeResult.raw_error }, { status: 400 })
+    }
 
     // Upsert mapping for this account and ad_source_id
     const upsertPayload: Record<string, unknown> = {
