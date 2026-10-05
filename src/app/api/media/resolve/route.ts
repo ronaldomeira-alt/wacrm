@@ -7,7 +7,7 @@ import { getR2Bucket, getR2Client, isR2MediaKey } from "@/lib/storage/r2-client"
 
 /** 24h TTL — allows browser caching, keeps URLs stable across conversation
  *  navigation and long-duration CRM sessions without breaking previews. */
-export const RESOLVE_TTL_SECONDS = 24 * 60 * 60;
+const RESOLVE_TTL_SECONDS = 24 * 60 * 60;
 
 const MAX_KEYS_PER_REQUEST = 50;
 
