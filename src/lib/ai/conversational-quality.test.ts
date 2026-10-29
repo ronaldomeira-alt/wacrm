@@ -86,12 +86,12 @@ describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', (
       propertyKnowledge: ['Live Park no Bessa, studios de 19 a 39 m², entrega junho de 2030.'],
     });
 
-    expect(prompt).toContain('REGRA ANTI-LOOPING');
-    expect(prompt).toContain('PERGUNTA FINAL NÃO É OBRIGATÓRIA (CONDUZIR ≠ PERGUNTAR SEMPRE)');
-    expect(prompt).toContain('AUTONOMIA NO TERRITÓRIO LIVRE (ATENDER ≠ TRANSFERIR SEMPRE)');
-    expect(prompt).toContain('VARIAÇÃO NATURAL DE LINGUAGEM (SEM TEMPLATES)');
-    expect(prompt).toContain('RESPONDER PRIMEIRO');
-    expect(prompt).toContain('NUNCA repita nem reformule por sinônimos perguntas cujas respostas o cliente já informou');
+    expect(prompt).toContain('não repita perguntas respondidas');
+    expect(prompt).toContain('Uma resposta suficiente pode terminar sem pergunta ou oferta');
+    expect(prompt).toContain('Transfira quando a solicitação exigir decisão humana');
+    expect(prompt).toContain('Fale de forma calorosa, atenta, simples e natural');
+    expect(prompt).toContain('Responda primeiro ao pedido');
+    expect(prompt).toContain('não repita perguntas respondidas');
   });
 
   // 2. Fronteiras Rígidas Preservadas
