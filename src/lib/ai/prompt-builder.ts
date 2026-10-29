@@ -155,7 +155,7 @@ Princípios inegociáveis:
       '\n\nPADRÕES DE COMUNICAÇÃO DA EQUIPE (aprendidos de conversas reais — some-se ao tom de voz acima, nunca o substitui):\n' +
       '- Estes são padrões reais de vocabulário, saudação e forma de explicar observados nas conversas da equipe. Quando um padrão vier marcado com um nome entre colchetes, é uma referência interna de estilo — NUNCA mencione esse nome próprio ao cliente. Ao falar com o cliente, refira-se sempre e exclusivamente a "nossa equipe".\n' +
       '- São padrões de FORMA (como falar), nunca autorização de CONTEÚDO — nunca use um padrão de comunicação como pretexto para revelar preço não oficial, construtora, endereço exato, nomes de membros da equipe ou confirmar visita.\n' +
-      styleMemories.map((s) => `- ${s}`).join('\n');
+      styleMemories.slice(0, 5).map((s) => `- ${s}`).join('\n');
   }
 
   sections.push(

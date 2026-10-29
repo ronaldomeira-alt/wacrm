@@ -77,6 +77,20 @@ const mockDb = {
 } as unknown as SupabaseClient;
 
 describe('FASE 3 — Qualidade Conversacional e Refinamento de Comportamento', () => {
+  it('limits style memories to the five highest-priority patterns in the prompt', () => {
+    const prompt = buildConversationalSystemPrompt({
+      config: BASE_CONFIG,
+      mode: 'auto_reply',
+      styleMemories: Array.from({ length: 8 }, (_, index) => `STYLE-PATTERN-${index + 1}`),
+    });
+
+    for (let index = 1; index <= 5; index += 1) {
+      expect(prompt).toContain(`STYLE-PATTERN-${index}`);
+    }
+    expect(prompt).not.toContain('STYLE-PATTERN-6');
+    expect(prompt).not.toContain('STYLE-PATTERN-7');
+    expect(prompt).not.toContain('STYLE-PATTERN-8');
+  });
   // 1. Verificação das Diretrizes no System Prompt
   it('1. prompt builder includes anti-looping, optional question, and free territory autonomy rules', () => {
     const prompt = buildConversationalSystemPrompt({
