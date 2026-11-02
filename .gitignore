@@ -48,3 +48,9 @@ next-env.d.ts
 .claude/
 .tmp.driveupload/
 scratch/
+
+# local pinger
+cron-pinger.log
+scripts/cron-pinger-daemon.mjs
+scripts/run-pinger.cmd
+scripts/start-pinger-silent.vbs

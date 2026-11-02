@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { LeadSearchProfile, InfoProvenance, DeliveryStatus, PropertyOperation } from './types';
 
-interface ContactRow {
+export interface ContactRow {
   id: string;
   account_id: string;
   name: string | null;
@@ -11,7 +11,7 @@ interface ContactRow {
   archived_at: string | null;
 }
 
-interface TagWithJoin {
+export interface TagWithJoin {
   source: string;
   originally_from_ctwa: boolean;
   tags: {
@@ -64,6 +64,20 @@ export async function buildLeadSearchProfile(
 
   if (!contact) return null;
 
+  return buildProfileFromData(contact, intelligence, contactTags, conversation);
+}
+
+/**
+ * Constrói o LeadSearchProfile a partir de registros já carregados em memória.
+ * Permite processamento em lote de múltiplos contatos sem incorrer em N+1 queries.
+ */
+export function buildProfileFromData(
+  contact: ContactRow,
+  intelligence: { summary?: Record<string, unknown> } | null,
+  contactTags: TagWithJoin[] | null,
+  conversation: { ctwa_referral?: Record<string, unknown> | null } | null
+): LeadSearchProfile {
+  const accountId = contact.account_id;
   const rawSummary = (intelligence?.summary || {}) as Record<string, unknown>;
   const ctwaReferral = conversation?.ctwa_referral || null;
 

@@ -104,20 +104,21 @@ export async function GET(
     const matchPropIds = [...new Set((leadMatches || []).map((m) => m.property_id))];
     const matchPropertiesMap = new Map<string, Record<string, unknown>>();
     if (matchPropIds.length > 0) {
-      let mPropsQuery = ctx.supabase
-        .from('property_match_projections')
-        .select('*')
-        .eq('account_id', ctx.accountId);
+      const chunkSize = 50;
+      for (let i = 0; i < matchPropIds.length; i += chunkSize) {
+        const chunk = matchPropIds.slice(i, i + chunkSize);
+        const { data: mProps, error: mPropsErr } = await ctx.supabase
+          .from('property_match_projections')
+          .select(
+            'property_id, status, title, code, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, area_min, area_max, delivery_status, cover_url, public_url, features'
+          )
+          .eq('account_id', ctx.accountId)
+          .in('property_id', chunk);
 
-      if (matchPropIds.length <= 50) {
-        mPropsQuery = mPropsQuery.in('property_id', matchPropIds);
-      }
-
-      const { data: mProps, error: mPropsErr } = await mPropsQuery;
-
-      if (!mPropsErr && mProps) {
-        for (const p of mProps) {
-          matchPropertiesMap.set(p.property_id, p);
+        if (!mPropsErr && mProps) {
+          for (const p of mProps) {
+            matchPropertiesMap.set(p.property_id, p);
+          }
         }
       }
     }

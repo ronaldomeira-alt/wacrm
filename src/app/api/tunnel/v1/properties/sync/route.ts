@@ -1,6 +1,7 @@
 import { NextResponse, after } from 'next/server';
 import { authenticateTunnelRequest, ensurePropertyUuid } from '@/lib/tunnel/auth';
 import { recalculateMatchesForProperty } from '@/lib/match/service';
+import { isMatchRelevantProjectionChange } from '@/lib/match/change-detection';
 
 function parseNum(val: unknown, fallback: number | null = null): number | null {
   if (typeof val === 'number' && !Number.isNaN(val)) return val;
@@ -89,6 +90,24 @@ export async function POST(request: Request) {
     updated_at: new Date().toISOString(),
   };
 
+  // 1. Inspeciona a projeção existente para saber se houve alteração em critérios de Match
+  const { data: existingProjection } = await db
+    .from('property_match_projections')
+    .select(
+      'status, operation, property_type, neighborhood, city, price_min, price_max, area_min, area_max, bedrooms_min, bedrooms_max, delivery_status, delivery_deadline, features'
+    )
+    .eq('account_id', accountId)
+    .eq('property_id', canonicalPropertyId)
+    .maybeSingle();
+
+  const isNewProperty = !existingProjection;
+  const isRelevantChange =
+    isNewProperty ||
+    isMatchRelevantProjectionChange(
+      existingProjection as Record<string, unknown>,
+      upsertData as Record<string, unknown>
+    );
+
   const { error } = await db
     .from('property_match_projections')
     .upsert(upsertData, { onConflict: 'account_id,property_id' });
@@ -98,19 +117,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Erro ao persistir projeção' }, { status: 500 });
   }
 
-  // Recalcula os Matches para os leads ativos e elegíveis em segundo plano
-  // liberando a resposta HTTP de imediato para evitar timeouts e travamentos no PWA (iPhone / Windows)
-  after(async () => {
-    try {
-      await recalculateMatchesForProperty(db, accountId, canonicalPropertyId);
-    } catch (err) {
-      console.error('[POST /api/tunnel/v1/properties/sync] Erro ao recalcular matches em background:', err);
-    }
-  });
+  // Recalcula os Matches para os leads ativos e elegíveis em segundo plano apenas se:
+  // 1. O imóvel for novo na projeção; OU
+  // 2. Houver alteração real em campos utilizados pelo algoritmo de Match (preço, bairro, quartos, status, etc.).
+  // Alterações em fotos (cover_url), links (public_url), título ou código NÃO disparam recálculo.
+  if (isRelevantChange) {
+    after(async () => {
+      try {
+        await recalculateMatchesForProperty(db, accountId, canonicalPropertyId);
+      } catch (err) {
+        console.error('[POST /api/tunnel/v1/properties/sync] Erro ao recalcular matches em background:', err);
+      }
+    });
+  }
 
   return NextResponse.json({
     success: true,
     action: 'upserted',
     property_id: canonicalPropertyId,
+    recalculated: isRelevantChange,
   });
 }

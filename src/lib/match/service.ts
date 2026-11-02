@@ -1,5 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { buildLeadSearchProfile } from './profile-builder';
+import {
+  buildLeadSearchProfile,
+  buildProfileFromData,
+  type ContactRow,
+  type TagWithJoin,
+} from './profile-builder';
 import { calculateProfileMaturity } from './maturity';
 import { evaluateMatch } from './engine';
 import { calculateCommercialPriority } from './priority';
@@ -132,6 +137,21 @@ export async function recalculateMatchesForLead(
   let matchesCount = 0;
   let strongMatchesCount = 0;
   const newStrongMatchesToNotify: { propertyTitle: string; score: number }[] = [];
+  const matchesToUpsert: Array<{
+    account_id: string;
+    lead_id: string;
+    property_id: string;
+    match_score: number;
+    score_breakdown: unknown;
+    profile_maturity: number;
+    commercial_priority: unknown;
+    match_status: MatchStatus;
+    suppressed: boolean;
+    origin: MatchOrigin;
+    updated_at: string;
+  }> = [];
+
+  const nowIso = new Date().toISOString();
 
   for (const prop of properties) {
     const existing = existingMap.get(prop.propertyId);
@@ -162,38 +182,48 @@ export async function recalculateMatchesForLead(
     // Preserva o estado se já estava 'enviado', 'pausado' ou 'arquivado'
     const matchStatus: MatchStatus = existing?.match_status || 'novo';
 
-    const { error: upsertErr } = await db.from('lead_property_matches').upsert(
-      {
-        account_id: accountId,
-        lead_id: contactId,
-        property_id: prop.propertyId,
-        match_score: evaluation.matchScore,
-        score_breakdown: evaluation.scoreBreakdown,
-        profile_maturity: maturityEval.maturity,
-        commercial_priority: priority,
-        match_status: matchStatus,
-        suppressed: false,
-        origin,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'account_id,lead_id,property_id' }
-    );
+    matchesToUpsert.push({
+      account_id: accountId,
+      lead_id: contactId,
+      property_id: prop.propertyId,
+      match_score: evaluation.matchScore,
+      score_breakdown: evaluation.scoreBreakdown,
+      profile_maturity: maturityEval.maturity,
+      commercial_priority: priority,
+      match_status: matchStatus,
+      suppressed: false,
+      origin,
+      updated_at: nowIso,
+    });
 
-    if (!upsertErr) {
-      matchesCount++;
-      if (evaluation.isStrongMatch) {
-        strongMatchesCount++;
-        // Só notifica se for novo match forte, a maturidade estiver >= 70% e NÃO for a origem do CTWA
-        if (
-          maturityEval.meetsThreshold &&
-          !isCtwaOrigin &&
-          (!existing || existing.match_score < 85)
-        ) {
-          newStrongMatchesToNotify.push({
-            propertyTitle: prop.title,
-            score: evaluation.matchScore,
-          });
-        }
+    if (evaluation.isStrongMatch) {
+      strongMatchesCount++;
+      // Só notifica se for novo match forte, a maturidade estiver >= 70% e NÃO for a origem do CTWA
+      if (
+        maturityEval.meetsThreshold &&
+        !isCtwaOrigin &&
+        (!existing || existing.match_score < 85)
+      ) {
+        newStrongMatchesToNotify.push({
+          propertyTitle: prop.title,
+          score: evaluation.matchScore,
+        });
+      }
+    }
+  }
+
+  // Grava todos os matches calculados em lote, eliminando o gargalo de N upserts HTTP
+  if (matchesToUpsert.length > 0) {
+    for (let i = 0; i < matchesToUpsert.length; i += 100) {
+      const chunk = matchesToUpsert.slice(i, i + 100);
+      const { error: upsertErr } = await db.from('lead_property_matches').upsert(
+        chunk,
+        { onConflict: 'account_id,lead_id,property_id' }
+      );
+      if (!upsertErr) {
+        matchesCount += chunk.length;
+      } else {
+        console.error('[match-service] Falha ao salvar lote de matches do lead:', upsertErr);
       }
     }
   }
@@ -282,78 +312,174 @@ export async function recalculateMatchesForProperty(
     status: propRow.status,
   };
 
-  // Busca leads ativos (não pausados e não arquivados)
+  // 1. Busca leads ativos (não pausados e não arquivados) com seus dados básicos
   const { data: activeContacts } = await db
     .from('contacts')
-    .select('id')
+    .select('id, account_id, name, phone, ai_score, paused_at, archived_at')
     .eq('account_id', accountId)
     .is('paused_at', null)
-    .is('archived_at', null);
+    .is('archived_at', null)
+    .returns<ContactRow[]>();
+
+  const contactsList = activeContacts || [];
+  if (contactsList.length === 0) {
+    return { totalLeadsEvaluated: 0, strongMatchesCount: 0 };
+  }
+
+  const contactIds = contactsList.map((c) => c.id);
+
+  // 2. Carrega inteligência, tags, conversas e matches pré-existentes em lote
+  // Eliminando as N queries individuais por lead
+  const [
+    { data: allIntelligence },
+    { data: allTags },
+    { data: allConversations },
+    { data: allExistingMatches },
+  ] = await Promise.all([
+    db
+      .from('lead_intelligence')
+      .select('contact_id, summary')
+      .eq('account_id', accountId)
+      .in('contact_id', contactIds),
+    db
+      .from('contact_tags')
+      .select('contact_id, source, originally_from_ctwa, tags!inner(id, name, category)')
+      .in('contact_id', contactIds),
+    db
+      .from('conversations')
+      .select('contact_id, ctwa_referral')
+      .eq('account_id', accountId)
+      .in('contact_id', contactIds)
+      .order('created_at', { ascending: false }),
+    db
+      .from('lead_property_matches')
+      .select('lead_id, suppressed, match_status, origin')
+      .eq('account_id', accountId)
+      .eq('property_id', propertyId),
+  ]);
+
+  // Indexa dados em Maps para resolução O(1) em memória
+  const intelligenceMap = new Map<string, { summary: Record<string, unknown> }>();
+  for (const intel of (allIntelligence || []) as Array<{ contact_id: string; summary: Record<string, unknown> }>) {
+    if (intel.contact_id) {
+      intelligenceMap.set(intel.contact_id, intel);
+    }
+  }
+
+  const tagsMap = new Map<string, TagWithJoin[]>();
+  for (const ct of (allTags || []) as unknown as Array<TagWithJoin & { contact_id: string }>) {
+    const list = tagsMap.get(ct.contact_id) || [];
+    list.push({
+      source: ct.source,
+      originally_from_ctwa: ct.originally_from_ctwa,
+      tags: ct.tags,
+    });
+    tagsMap.set(ct.contact_id, list);
+  }
+
+  // Como está ordenado por created_at desc, o primeiro que encontramos é a conversa mais recente
+  const conversationMap = new Map<string, { ctwa_referral: Record<string, unknown> | null }>();
+  for (const conv of (allConversations || []) as Array<{ contact_id: string; ctwa_referral: Record<string, unknown> | null }>) {
+    if (conv.contact_id && !conversationMap.has(conv.contact_id)) {
+      conversationMap.set(conv.contact_id, conv);
+    }
+  }
+
+  const existingMap = new Map<string, {
+    suppressed: boolean;
+    match_status: MatchStatus;
+    origin: MatchOrigin;
+  }>();
+  for (const m of (allExistingMatches || []) as Array<{
+    lead_id: string;
+    suppressed: boolean;
+    match_status: MatchStatus;
+    origin: MatchOrigin;
+  }>) {
+    if (m.lead_id) {
+      existingMap.set(m.lead_id, m);
+    }
+  }
 
   let strongMatchesCount = 0;
   let evaluated = 0;
+  const matchesToUpsert: Array<{
+    account_id: string;
+    lead_id: string;
+    property_id: string;
+    match_score: number;
+    score_breakdown: unknown;
+    profile_maturity: number;
+    commercial_priority: unknown;
+    match_status: MatchStatus;
+    suppressed: boolean;
+    origin: MatchOrigin;
+    updated_at: string;
+  }> = [];
 
-  // Processa leads em lotes paralelos controlados (BATCH_SIZE = 6) para evitar contenção
-  // e acelerar o recálculo em até 5x-6x sem sobrecarregar o pool de conexões.
-  const contactsList = activeContacts || [];
-  const BATCH_SIZE = 6;
-  for (let i = 0; i < contactsList.length; i += BATCH_SIZE) {
-    const chunk = contactsList.slice(i, i + BATCH_SIZE);
-    await Promise.all(
-      chunk.map(async (c) => {
-        const profile = await buildLeadSearchProfile(db, accountId, c.id);
-        if (!profile) return;
+  const nowIso = new Date().toISOString();
 
-        const maturityEval = calculateProfileMaturity(profile);
-        // Desconsidera leads totalmente vazios (sem nenhuma informação extraída na conversa ou tags)
-        if (maturityEval.maturity < 20) return;
-
-        // Checa supressão prévia
-        const { data: existing } = await db
-          .from('lead_property_matches')
-          .select('id, suppressed, match_status, origin')
-          .eq('account_id', accountId)
-          .eq('lead_id', c.id)
-          .eq('property_id', propertyId)
-          .maybeSingle();
-
-        if (existing?.suppressed) return;
-
-        const evaluation = evaluateMatch(profile, property);
-        if (!evaluation.eligible) return;
-
-        evaluated++;
-        const priority = calculateCommercialPriority({
-          matchScore: evaluation.matchScore,
-          aiScore: profile.aiScore,
-          profileMaturity: maturityEval.maturity,
-        });
-
-        const matchStatus: MatchStatus = existing?.match_status || 'novo';
-        const origin: MatchOrigin = existing?.origin || 'match_automatico';
-
-        await db.from('lead_property_matches').upsert(
-          {
-            account_id: accountId,
-            lead_id: c.id,
-            property_id: propertyId,
-            match_score: evaluation.matchScore,
-            score_breakdown: evaluation.scoreBreakdown,
-            profile_maturity: maturityEval.maturity,
-            commercial_priority: priority,
-            match_status: matchStatus,
-            suppressed: false,
-            origin,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'account_id,lead_id,property_id' }
-        );
-
-        if (evaluation.isStrongMatch && maturityEval.meetsThreshold) {
-          strongMatchesCount++;
-        }
-      })
+  // Avaliação 100% em memória
+  for (const contact of contactsList) {
+    const profile = buildProfileFromData(
+      contact,
+      intelligenceMap.get(contact.id) || null,
+      tagsMap.get(contact.id) || null,
+      conversationMap.get(contact.id) || null
     );
+
+    const maturityEval = calculateProfileMaturity(profile);
+    // Desconsidera leads totalmente vazios (sem nenhuma informação extraída na conversa ou tags)
+    if (maturityEval.maturity < 20) continue;
+
+    // Checa supressão prévia
+    const existing = existingMap.get(contact.id);
+    if (existing?.suppressed) continue;
+
+    const evaluation = evaluateMatch(profile, property);
+    if (!evaluation.eligible) continue;
+
+    evaluated++;
+    const priority = calculateCommercialPriority({
+      matchScore: evaluation.matchScore,
+      aiScore: profile.aiScore,
+      profileMaturity: maturityEval.maturity,
+    });
+
+    const matchStatus: MatchStatus = existing?.match_status || 'novo';
+    const origin: MatchOrigin = existing?.origin || 'match_automatico';
+
+    matchesToUpsert.push({
+      account_id: accountId,
+      lead_id: contact.id,
+      property_id: propertyId,
+      match_score: evaluation.matchScore,
+      score_breakdown: evaluation.scoreBreakdown,
+      profile_maturity: maturityEval.maturity,
+      commercial_priority: priority,
+      match_status: matchStatus,
+      suppressed: false,
+      origin,
+      updated_at: nowIso,
+    });
+
+    if (evaluation.isStrongMatch && maturityEval.meetsThreshold) {
+      strongMatchesCount++;
+    }
+  }
+
+  // Salva em lote (chunks de 100)
+  if (matchesToUpsert.length > 0) {
+    for (let i = 0; i < matchesToUpsert.length; i += 100) {
+      const chunk = matchesToUpsert.slice(i, i + 100);
+      const { error: upsertErr } = await db.from('lead_property_matches').upsert(
+        chunk,
+        { onConflict: 'account_id,lead_id,property_id' }
+      );
+      if (upsertErr) {
+        console.error('[match-service] Falha ao salvar lote de matches para o imóvel:', upsertErr);
+      }
+    }
   }
 
   // FASE 18: Notificação CONSOLIDADA para imóvel novo/atualizado
