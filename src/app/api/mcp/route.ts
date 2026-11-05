@@ -66,24 +66,47 @@ export async function GET(request: Request) {
     );
   }
 
-  // Handshake SSE para clientes legados compatíveis com transporte de eventos
+  // Handshake SSE para clientes legados e modernos compatíveis com transporte de eventos
   if (isSse) {
     const encoder = new TextEncoder();
     const currentUrl = new URL(request.url);
     const endpointPath = `${currentUrl.pathname}${currentUrl.search}`;
+
+    let intervalId: NodeJS.Timeout | undefined;
+
     const stream = new ReadableStream({
       start(controller) {
+        // 1. Handshake inicial com o caminho completo do endpoint
         controller.enqueue(encoder.encode(`event: endpoint\ndata: ${endpointPath}\n\n`));
-        controller.close();
+
+        // 2. Heartbeat periódico para manter o canal SSE aberto no LiteSpeed / Hostinger
+        intervalId = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': ping\n\n'));
+          } catch {
+            if (intervalId) clearInterval(intervalId);
+          }
+        }, 15000);
+      },
+      cancel() {
+        if (intervalId) clearInterval(intervalId);
       },
     });
+
+    if (request.signal) {
+      request.signal.addEventListener('abort', () => {
+        if (intervalId) clearInterval(intervalId);
+      });
+    }
 
     return new Response(stream, {
       status: 200,
       headers: {
         ...mcpHeaders,
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
       },
     });
   }

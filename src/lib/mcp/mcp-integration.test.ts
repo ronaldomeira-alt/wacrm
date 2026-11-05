@@ -525,7 +525,7 @@ describe('WACRM MCP Client Integration Suite (OpenBot Simulation)', () => {
     const initJson = await init2024Res.json();
     expect(initJson.result.protocolVersion).toBe('2024-10-07');
 
-    // D. Preservação de ?token= no handshake SSE
+    // D. Preservação de ?token= e canal contínuo no handshake SSE
     const sseReq = new Request(
       `https://crmronaldomeira.com/api/mcp?token=${DEDICATED_KEY_FULL}`,
       {
@@ -537,7 +537,14 @@ describe('WACRM MCP Client Integration Suite (OpenBot Simulation)', () => {
     );
     const sseRes = await GET(sseReq);
     expect(sseRes.status).toBe(200);
-    const sseText = await sseRes.text();
+    expect(sseRes.headers.get('content-type')).toContain('text/event-stream');
+    expect(sseRes.headers.get('x-accel-buffering')).toBe('no');
+
+    const reader = sseRes.body?.getReader();
+    expect(reader).toBeDefined();
+    const { value } = await reader!.read();
+    const sseText = new TextDecoder().decode(value);
     expect(sseText).toContain(`event: endpoint\ndata: /api/mcp?token=${DEDICATED_KEY_FULL}\n\n`);
+    await reader!.cancel();
   });
 });
