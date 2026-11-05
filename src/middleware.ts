@@ -12,7 +12,8 @@ export async function middleware(request: NextRequest) {
     pathname === '/api/health' ||
     pathname.startsWith('/api/envios/') ||
     pathname.startsWith('/api/automations/') ||
-    pathname.startsWith('/api/whatsapp/webhook')
+    pathname.startsWith('/api/whatsapp/webhook') ||
+    pathname.startsWith('/api/mcp')
   ) {
     return NextResponse.next({ request })
   }

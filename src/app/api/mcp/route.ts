@@ -69,9 +69,11 @@ export async function GET(request: Request) {
   // Handshake SSE para clientes legados compatíveis com transporte de eventos
   if (isSse) {
     const encoder = new TextEncoder();
+    const currentUrl = new URL(request.url);
+    const endpointPath = `${currentUrl.pathname}${currentUrl.search}`;
     const stream = new ReadableStream({
       start(controller) {
-        controller.enqueue(encoder.encode(`event: endpoint\ndata: /api/mcp\n\n`));
+        controller.enqueue(encoder.encode(`event: endpoint\ndata: ${endpointPath}\n\n`));
         controller.close();
       },
     });
@@ -142,8 +144,10 @@ export async function POST(request: Request) {
     );
   }
 
+  const mcpContext = auth.context;
+
   // 2. Validação geral de permissões de leitura MCP
-  if (!hasMcpReadPermission(auth.context)) {
+  if (!hasMcpReadPermission(mcpContext)) {
     return NextResponse.json(
       {
         jsonrpc: '2.0',
@@ -160,10 +164,45 @@ export async function POST(request: Request) {
     );
   }
 
-  // 3. Leitura e validação do payload JSON-RPC
-  let body: JsonRpcRequest;
+  // 3. Leitura e parsing flexível do payload JSON-RPC
+  let rawText = '';
   try {
-    body = await request.json();
+    rawText = await request.text();
+  } catch (err) {
+    rawText = '';
+  }
+
+  // Probe / Ping sem corpo: responder 200 com status e catálogo de ferramentas
+  if (!rawText || rawText.trim() === '') {
+    return NextResponse.json(
+      {
+        jsonrpc: '2.0',
+        id: null,
+        status: 'online',
+        tools: WACRM_MCP_TOOLS,
+        result: {
+          serverInfo: {
+            name: MCP_SERVER_NAME,
+            version: MCP_SERVER_VERSION,
+          },
+          protocolVersion: DEFAULT_PROTOCOL_VERSION,
+          status: 'online',
+          tools: WACRM_MCP_TOOLS,
+        },
+      },
+      {
+        status: 200,
+        headers: {
+          ...mcpHeaders,
+          'MCP-Protocol-Version': DEFAULT_PROTOCOL_VERSION,
+        },
+      }
+    );
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
   } catch (err: any) {
     return NextResponse.json(
       {
@@ -181,39 +220,61 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!body || body.jsonrpc !== '2.0' || !body.method) {
-    return NextResponse.json(
-      {
-        jsonrpc: '2.0',
-        id: body?.id || null,
-        error: {
-          code: MCP_ERROR_CODES.INVALID_REQUEST,
-          message: 'Requisição inválida. Deve seguir o padrão JSON-RPC 2.0 (jsonrpc: "2.0", method: string).',
+  // Suporte a Lotes JSON-RPC (Batch Requests: [ { ... }, { ... } ])
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) {
+      return NextResponse.json(
+        {
+          jsonrpc: '2.0',
+          id: null,
+          error: {
+            code: MCP_ERROR_CODES.INVALID_REQUEST,
+            message: 'Lote JSON-RPC não pode ser vazio.',
+          },
         },
-      },
-      {
-        status: 400,
-        headers: mcpHeaders,
-      }
+        { status: 400, headers: mcpHeaders }
+      );
+    }
+
+    const responses = await Promise.all(
+      parsed.map(async (item) => {
+        const itemReq: JsonRpcRequest = {
+          jsonrpc: '2.0',
+          id: item?.id ?? null,
+          method: item?.method || 'tools/list',
+          params: item?.params || {},
+        };
+        return handleMcpRpc(itemReq, mcpContext);
+      })
     );
+
+    return NextResponse.json(responses, {
+      status: 200,
+      headers: {
+        ...mcpHeaders,
+        'MCP-Protocol-Version': DEFAULT_PROTOCOL_VERSION,
+      },
+    });
   }
 
-  // 4. Resolução e validação da versão do protocolo MCP
-  const declaredVersion =
-    request.headers.get('mcp-protocol-version') ||
-    (body.params?.protocolVersion as string) ||
-    ((body as any)?._meta?.['io.modelcontextprotocol/protocolVersion'] as string) ||
-    ((body.params as any)?._meta?.['io.modelcontextprotocol/protocolVersion'] as string) ||
-    null;
+  // Normalização do corpo JSON-RPC 2.0 individual
+  const body: JsonRpcRequest = {
+    jsonrpc: '2.0',
+    id: parsed?.id ?? null,
+    method: parsed?.method || (parsed?.action === 'list' ? 'tools/list' : 'tools/list'),
+    params: parsed?.params || {},
+  };
 
-  if (declaredVersion && !(SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(declaredVersion)) {
+  // 4. Resolução e validação da versão do protocolo MCP
+  const headerVersion = request.headers.get('mcp-protocol-version');
+  if (headerVersion && !(SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(headerVersion)) {
     return NextResponse.json(
       {
         jsonrpc: '2.0',
         id: body?.id || null,
         error: {
           code: -32022,
-          message: `Versão do protocolo MCP não suportada: "${declaredVersion}". Versões suportadas: ${SUPPORTED_PROTOCOL_VERSIONS.join(', ')}.`,
+          message: `Versão do protocolo MCP não suportada: "${headerVersion}". Versões suportadas: ${SUPPORTED_PROTOCOL_VERSIONS.join(', ')}.`,
           data: {
             supportedProtocolVersions: SUPPORTED_PROTOCOL_VERSIONS,
           },
@@ -226,7 +287,18 @@ export async function POST(request: Request) {
     );
   }
 
-  const negotiatedVersion = declaredVersion || DEFAULT_PROTOCOL_VERSION;
+  const declaredVersion =
+    headerVersion ||
+    (body.params?.protocolVersion as string) ||
+    (parsed?._meta?.['io.modelcontextprotocol/protocolVersion'] as string) ||
+    ((body.params as any)?._meta?.['io.modelcontextprotocol/protocolVersion'] as string) ||
+    null;
+
+  const negotiatedVersion =
+    declaredVersion && (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(declaredVersion)
+      ? declaredVersion
+      : DEFAULT_PROTOCOL_VERSION;
+
   const responseHeaders = {
     ...mcpHeaders,
     'MCP-Protocol-Version': negotiatedVersion,
@@ -238,7 +310,7 @@ export async function POST(request: Request) {
     body.method === 'initialized';
 
   if (isNotification) {
-    await handleMcpRpc(body, auth.context);
+    await handleMcpRpc(body, mcpContext);
     return new Response(null, {
       status: 202,
       headers: responseHeaders,
@@ -246,7 +318,7 @@ export async function POST(request: Request) {
   }
 
   // 6. Executa roteador MCP com contexto autenticado
-  const response = await handleMcpRpc(body, auth.context);
+  const response = await handleMcpRpc(body, mcpContext);
 
   return NextResponse.json(response, {
     status: 200,

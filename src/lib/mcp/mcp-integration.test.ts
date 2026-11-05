@@ -469,4 +469,75 @@ describe('WACRM MCP Client Integration Suite (OpenBot Simulation)', () => {
     expect(lastAudit.tool_name).toBe('consultar_estado_lead');
     expect(lastAudit.payload.api_key).toBe('[REDACTED]');
   });
+
+  it('10. Compatibilidade OpenBot: probe sem corpo, lote array JSON-RPC e preservação de token SSE', async () => {
+    // A. Probe POST com corpo vazio
+    const emptyProbeReq = new Request('https://crmronaldomeira.com/api/mcp', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${DEDICATED_KEY_FULL}`,
+      },
+      body: '',
+    });
+    const emptyProbeRes = await POST(emptyProbeReq);
+    expect(emptyProbeRes.status).toBe(200);
+    const probeJson = await emptyProbeRes.json();
+    expect(probeJson.status).toBe('online');
+    expect(probeJson.tools).toHaveLength(5);
+
+    // B. Lote Array JSON-RPC ([ { method: "tools/list" } ])
+    const batchReq = new Request('https://crmronaldomeira.com/api/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DEDICATED_KEY_FULL}`,
+      },
+      body: JSON.stringify([
+        { jsonrpc: '2.0', id: 'batch-1', method: 'tools/list' },
+        { jsonrpc: '2.0', id: 'batch-2', method: 'ping' },
+      ]),
+    });
+    const batchRes = await POST(batchReq);
+    expect(batchRes.status).toBe(200);
+    const batchJson = await batchRes.json();
+    expect(Array.isArray(batchJson)).toBe(true);
+    expect(batchJson).toHaveLength(2);
+    expect(batchJson[0].result.tools).toHaveLength(5);
+
+    // C. Negociação de versão 2024-10-07
+    const init2024Req = new Request('https://crmronaldomeira.com/api/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DEDICATED_KEY_FULL}`,
+        'MCP-Protocol-Version': '2024-10-07',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'init-old',
+        method: 'initialize',
+        params: { protocolVersion: '2024-10-07' },
+      }),
+    });
+    const init2024Res = await POST(init2024Req);
+    expect(init2024Res.status).toBe(200);
+    expect(init2024Res.headers.get('mcp-protocol-version')).toBe('2024-10-07');
+    const initJson = await init2024Res.json();
+    expect(initJson.result.protocolVersion).toBe('2024-10-07');
+
+    // D. Preservação de ?token= no handshake SSE
+    const sseReq = new Request(
+      `https://crmronaldomeira.com/api/mcp?token=${DEDICATED_KEY_FULL}`,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+        },
+      }
+    );
+    const sseRes = await GET(sseReq);
+    expect(sseRes.status).toBe(200);
+    const sseText = await sseRes.text();
+    expect(sseText).toContain(`event: endpoint\ndata: /api/mcp?token=${DEDICATED_KEY_FULL}\n\n`);
+  });
 });

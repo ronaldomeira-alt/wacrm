@@ -24,20 +24,29 @@ export interface McpAuthResult {
  * 3. Parâmetro de query ?token=<token> ou ?apiKey=<token> (suporte para OpenBot e clientes MCP)
  */
 export function extractTokenFromRequest(request: Request): string | null {
-  const authHeader = request.headers.get('authorization') || '';
+  const authHeader = (request.headers.get('authorization') || '').trim();
   if (authHeader.toLowerCase().startsWith('bearer ')) {
     const token = authHeader.slice(7).trim();
     if (token) return token;
+  } else if (authHeader && !authHeader.includes(' ')) {
+    return authHeader;
   }
 
-  const apiKeyHeader = request.headers.get('x-api-key');
+  const apiKeyHeader =
+    request.headers.get('x-api-key') ||
+    request.headers.get('api-key') ||
+    request.headers.get('x-token');
   if (apiKeyHeader?.trim()) {
     return apiKeyHeader.trim();
   }
 
   try {
     const url = new URL(request.url);
-    const queryToken = url.searchParams.get('token') || url.searchParams.get('apiKey');
+    const queryToken =
+      url.searchParams.get('token') ||
+      url.searchParams.get('apiKey') ||
+      url.searchParams.get('api_key') ||
+      url.searchParams.get('access_token');
     if (queryToken?.trim()) {
       return queryToken.trim();
     }
