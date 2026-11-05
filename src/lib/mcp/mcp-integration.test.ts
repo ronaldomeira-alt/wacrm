@@ -275,14 +275,14 @@ describe('WACRM MCP Client Integration Suite (OpenBot Simulation)', () => {
     const revoked = await callMcp(DEDICATED_KEY_REVOKED, { jsonrpc: '2.0', id: 4, method: 'tools/list' });
     expect(revoked.status).toBe(401);
 
-    // Rejeição estrita de token passado via query string (?token=)
+    // Aceitação de token passado via query string (?token=) para compatibilidade com OpenBot
     const queryReq = new Request(`https://crmronaldomeira.com/api/mcp?token=${DEDICATED_KEY_FULL}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/list' }),
     });
     const queryRes = await POST(queryReq);
-    expect(queryRes.status).toBe(401);
+    expect(queryRes.status).toBe(200);
   });
 
   it('2. Inicialização e negociação de versão do protocolo MCP (2024-11-05 e 2025-03-26)', async () => {

@@ -18,8 +18,10 @@ export interface McpAuthResult {
 }
 
 /**
- * Extracts Bearer token strictly from Authorization or X-Api-Key headers.
- * Query string token authentication is intentionally disabled for security.
+ * Extrai o token de autenticação a partir de:
+ * 1. Cabeçalho Authorization: Bearer <token>
+ * 2. Cabeçalho X-Api-Key: <token>
+ * 3. Parâmetro de query ?token=<token> ou ?apiKey=<token> (suporte para OpenBot e clientes MCP)
  */
 export function extractTokenFromRequest(request: Request): string | null {
   const authHeader = request.headers.get('authorization') || '';
@@ -31,6 +33,16 @@ export function extractTokenFromRequest(request: Request): string | null {
   const apiKeyHeader = request.headers.get('x-api-key');
   if (apiKeyHeader?.trim()) {
     return apiKeyHeader.trim();
+  }
+
+  try {
+    const url = new URL(request.url);
+    const queryToken = url.searchParams.get('token') || url.searchParams.get('apiKey');
+    if (queryToken?.trim()) {
+      return queryToken.trim();
+    }
+  } catch {
+    // URL malformada
   }
 
   return null;

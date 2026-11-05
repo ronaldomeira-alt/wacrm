@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleMcpRpc } from './server';
 import { WACRM_MCP_TOOLS } from './tools';
-import { authenticateMcpRequest, hasMcpReadPermission, validateToolScope } from './auth';
+import { authenticateMcpRequest, extractTokenFromRequest, hasMcpReadPermission, validateToolScope } from './auth';
 import { GET, POST, OPTIONS } from '@/app/api/mcp/route';
 import type { McpContext } from './types';
 
@@ -247,8 +247,8 @@ describe('WACRM MCP Authentication & Permissions', () => {
     })).toBe(true);
   });
 
-  it('6. Rejeita token via query param (?token=) exigindo cabeçalho Authorization: Bearer', async () => {
-    const req = new Request('https://crmronaldomeira.com/api/mcp?token=test-token-secret-12345', {
+  it('6. Suporta extração de token via query param (?token= e ?apiKey=) para clientes MCP como OpenBot', async () => {
+    const reqToken = new Request('https://crmronaldomeira.com/api/mcp?token=test-token-secret-12345', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -256,8 +256,13 @@ describe('WACRM MCP Authentication & Permissions', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 20, method: 'tools/list' }),
     });
 
-    const res = await POST(req);
-    expect(res.status).toBe(401);
+    expect(extractTokenFromRequest(reqToken)).toBe('test-token-secret-12345');
+
+    const reqApiKey = new Request('https://crmronaldomeira.com/api/mcp?apiKey=api-key-test-abc', {
+      method: 'GET',
+    });
+
+    expect(extractTokenFromRequest(reqApiKey)).toBe('api-key-test-abc');
   });
 
   it('6.1. Desabilita token de ambiente em produção (NODE_ENV === production)', async () => {
