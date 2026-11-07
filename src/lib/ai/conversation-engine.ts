@@ -199,7 +199,7 @@ export function parseStructuredDecision(rawText: string): AiDecision {
   // 1. Try to extract JSON from code block or raw string
   let candidateJson = rawText.trim();
 
-  const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)(?:```|$)/i);
   if (fenceMatch && fenceMatch[1]) {
     candidateJson = fenceMatch[1].trim();
   } else {
@@ -349,13 +349,58 @@ export function parseStructuredDecision(rawText: string): AiDecision {
       };
     }
   } catch {
-    // Fallback if model responded in free text
+    // If candidateJson was truncated or malformed, attempt to salvage response_text and send_media
+    const respMatch = candidateJson.match(/"(?:response_text|responseText|reply|message|text)"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+    let extractedResponseText: string | null = null;
+    if (respMatch && respMatch[1]) {
+      try {
+        extractedResponseText = JSON.parse(`"${respMatch[1]}"`);
+      } catch {
+        extractedResponseText = respMatch[1];
+      }
+    }
+
+    const extractedMedia: AiMediaSendAction[] = [];
+    const mediaIdRegex = /"media_id"\s*:\s*"([^"]+)"/g;
+    let mMatch: RegExpExecArray | null;
+    while ((mMatch = mediaIdRegex.exec(candidateJson)) !== null) {
+      extractedMedia.push({
+        media_id: mMatch[1].trim(),
+        caption: null,
+      });
+    }
+
+    if (extractedResponseText && extractedResponseText.trim().length > 0) {
+      const respTrimmed = extractedResponseText.trim();
+      const transferReq = isHandoffDeclaredInText(respTrimmed);
+      return {
+        response_text: respTrimmed,
+        transfer_required: transferReq,
+        boundary_type: transferReq ? inferBoundaryTypeFromText(respTrimmed) : null,
+        reason: transferReq ? 'Transferência indicada no atendimento' : null,
+        context_summary: null,
+        suggested_next_action: transferReq ? 'Atendimento humano para continuidade' : null,
+        send_media: extractedMedia.length > 0 ? extractedMedia.slice(0, MAX_AI_MEDIA_PER_TURN) : null,
+      };
+    }
   }
 
   const hasSentinel = rawText.includes(HANDOFF_SENTINEL);
   const textDeclaredHandoff = isHandoffDeclaredInText(rawText);
   const isTransfer = hasSentinel || textDeclaredHandoff;
-  const cleanText = rawText.split(HANDOFF_SENTINEL).join('').trim();
+
+  // Defensive Sanitization: Ensure raw markdown code fences, JSON objects,
+  // or structural tokens NEVER leak as text to the lead on WhatsApp.
+  let cleanText = rawText
+    .split(HANDOFF_SENTINEL)
+    .join('')
+    .replace(/```(?:json)?[\s\S]*?(?:```|$)/gi, '')
+    .replace(/\{\s*"(?:response_text|responseText|send_media)"[\s\S]*$/gi, '')
+    .trim();
+
+  if (!cleanText && rawText.trim().length > 0) {
+    cleanText = rawText.split(HANDOFF_SENTINEL).join('').trim();
+  }
   const inferredBoundary = isTransfer ? inferBoundaryTypeFromText(cleanText) : null;
 
   return {
@@ -505,12 +550,16 @@ export function detectOfferedMediaKind(
 // arbitrary positive sentences ("gostei", "legal") as consent, which would
 // reopen the old bug of sending photos on any vague sign of interest.
 const CONFIRMATION_AFFIRMATIVE =
-  '(?:sim|ok|okay|certo|claro|com\\s*certeza|perfeito|beleza|blz|t[aá]\\s*bom|tudo\\s*bem|fechado|gostaria|quero\\s*ver|quero(?:\\s*sim)?|aguardo|fico\\s*no\\s*aguardo|por\\s*favor|fique\\s*[aà]\\s*vontade)';
+  '(?:sim|ok|okay|certo|claro|com\\s*certeza|perfeito|beleza|blz|t[aá]\\s*bom|tudo\\s*bem|fechado|aguardo|fico\\s*no\\s*aguardo|por\\s*favor|fique\\s*[aà]\\s*vontade)';
+const CONFIRMATION_GOSTARIA =
+  '(?:gostaria(?:\\s*sim|\\s*muito|\\s*por\\s*favor)?(?:\\s+de\\s+(?:ver|receber|conhecer|olhar))?(?:\\s+que\\s+(?:voc[eê]\\s+)?(?:me\\s+)?(?:envie|envi\\w+|mand\\w+|mostr\\w+))?)';
+const CONFIRMATION_QUERO =
+  '(?:quero(?:\\s*sim|\\s*muito|\\s*por\\s*favor)?(?:\\s+(?:de\\s+)?(?:ver|receber|conhecer|olhar))?(?:\\s+que\\s+(?:voc[eê]\\s+)?(?:me\\s+)?(?:envie|envi\\w+|mand\\w+|mostr\\w+))?)';
 const CONFIRMATION_ACTION =
-  '(?:pode(?:\\s*(?:mandar|enviar|ser|mostrar|sim))?|manda(?:r)?(?:\\s*(?:a[ií]|sim|por\\s*favor))?|envia(?:r)?(?:\\s*(?:a[ií]|sim|por\\s*favor))?|mostr(?:a|e|ar)|mande)';
-const CONFIRMATION_TOKEN = `(?:${CONFIRMATION_AFFIRMATIVE}|${CONFIRMATION_ACTION})`;
+  '(?:(?:por\\s*favor\\s+)?(?:pode(?:\\s*ser)?\\s+)?(?:me\\s+)?(?:mandar?|mande|mandasse|enviar?|envie|enviasse|mostrar?|mostre|mostrasse)(?:\\s*(?:a[ií]|sim|por\\s*favor))?|pode(?:\\s*(?:mandar|enviar|ser|mostrar|sim))?)';
+const CONFIRMATION_TOKEN = `(?:${CONFIRMATION_AFFIRMATIVE}|${CONFIRMATION_GOSTARIA}|${CONFIRMATION_QUERO}|${CONFIRMATION_ACTION})`;
 const CONFIRMATION_REGEX = new RegExp(
-  `^${CONFIRMATION_TOKEN}(?:\\s*[,e]?\\s*${CONFIRMATION_TOKEN})*(?:\\s*(?:as\\s*)?fotos?)?$`,
+  `^${CONFIRMATION_TOKEN}(?:\\s*[,e]?\\s*${CONFIRMATION_TOKEN})*(?:\\s*(?:as|os)?\\s*(?:fotos?|imagens?|v[ií]deos?))?(?:\\s*por\\s*favor)?$`,
   'i',
 );
 
@@ -983,6 +1032,8 @@ export async function executeConversationalTurn(
     systemPrompt,
     messages,
     timeoutMs,
+    structuredOutputRequired: true,
+    maxOutputTokens: 2048,
   };
 
   let rawResult;

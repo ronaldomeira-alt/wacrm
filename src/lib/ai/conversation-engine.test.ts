@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   executeConversationalTurn,
   parseStructuredDecision,
+  isAffirmativeConfirmation,
 } from './conversation-engine';
 import { buildConversationalSystemPrompt } from './prompt-builder';
 import { getLeadContext } from './lead-context';
@@ -89,6 +90,55 @@ describe('Stage 4 — Behavioral Engine, Boundaries and Decision Engine', () => 
       expect(decision.transfer_required).toBe(true);
       expect(decision.response_text).toBe('Vou transferir seu atendimento para o corretor responsável.');
       expect(decision.boundary_type).toBe('commercial_decision');
+    });
+
+    it('recovers response_text and send_media from truncated or malformed JSON blocks without leaking json artifacts to WhatsApp', () => {
+      const brokenRawText = 'O rooftop com vista para o mar é o ponto alto. Como você pediu, ```json\n{ "response_text": "O rooftop com vista para o mar é o ponto alto. Como você pediu, ", "send_media": [ { "property_id": "eb5ef903-b45b-401e-890a-ab61c1294ac3", "media_id": "63a619f6-6a4a-4113-9985-f6ed14301986", "caption": null }, { "property_id": "eb5';
+      const decision = parseStructuredDecision(brokenRawText);
+
+      expect(decision.response_text).toContain('O rooftop com vista para o mar');
+      expect(decision.response_text).not.toContain('```json');
+      expect(decision.response_text).not.toContain('"send_media"');
+      expect(decision.response_text).not.toContain('{ "response_text":');
+      expect(decision.send_media).toBeDefined();
+      expect(decision.send_media).toHaveLength(1);
+      expect(decision.send_media![0].media_id).toBe('63a619f6-6a4a-4113-9985-f6ed14301986');
+    });
+
+    it('sanitizes fallback plain text so that unparseable code blocks or JSON tokens never leak to the customer', () => {
+      const rawTextWithUnparseableGarbage = 'Aqui está uma resposta normal ```json { invalid json';
+      const decision = parseStructuredDecision(rawTextWithUnparseableGarbage);
+
+      expect(decision.response_text).toBe('Aqui está uma resposta normal');
+      expect(decision.response_text).not.toContain('```');
+      expect(decision.response_text).not.toContain('invalid json');
+    });
+  });
+
+  describe('isAffirmativeConfirmation', () => {
+    it('accepts natural Brazilian Portuguese confirmations in response to an assistant media offer', () => {
+      expect(isAffirmativeConfirmation('Gostaria que me enviasse')).toBe(true);
+      expect(isAffirmativeConfirmation('gostaria que me mandasse')).toBe(true);
+      expect(isAffirmativeConfirmation('gostaria que enviasse')).toBe(true);
+      expect(isAffirmativeConfirmation('gostaria de ver')).toBe(true);
+      expect(isAffirmativeConfirmation('gostaria')).toBe(true);
+      expect(isAffirmativeConfirmation('gostaria sim')).toBe(true);
+      expect(isAffirmativeConfirmation('quero que me envie')).toBe(true);
+      expect(isAffirmativeConfirmation('pode me enviar')).toBe(true);
+      expect(isAffirmativeConfirmation('pode me mandar')).toBe(true);
+      expect(isAffirmativeConfirmation('envie por favor')).toBe(true);
+      expect(isAffirmativeConfirmation('por favor envie')).toBe(true);
+      expect(isAffirmativeConfirmation('manda')).toBe(true);
+      expect(isAffirmativeConfirmation('sim, pode mandar')).toBe(true);
+    });
+
+    it('rejects questions or non-confirmations', () => {
+      expect(isAffirmativeConfirmation('quanto custa?')).toBe(false);
+      expect(isAffirmativeConfirmation('onde fica?')).toBe(false);
+      expect(isAffirmativeConfirmation('gostaria de saber o valor')).toBe(false);
+      expect(isAffirmativeConfirmation('gostaria de saber mais sobre a entrega')).toBe(false);
+      expect(isAffirmativeConfirmation('legal')).toBe(false);
+      expect(isAffirmativeConfirmation('não quero')).toBe(false);
     });
   });
 
