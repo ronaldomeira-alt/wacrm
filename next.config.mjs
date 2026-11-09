@@ -63,7 +63,7 @@ const SECURITY_HEADERS = [
       "form-action 'self'",
     ].join("; "),
   },
-] as const;
+];
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
