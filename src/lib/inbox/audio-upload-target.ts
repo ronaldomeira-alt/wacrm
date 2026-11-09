@@ -8,6 +8,14 @@ export function shouldUseIPhonePwaAudioUpload(input: {
   return isIPhone && isSafari && input.standalone;
 }
 
+export function isSafariOrIOS(userAgent?: string): boolean {
+  if (typeof window === "undefined" && !userAgent) return false;
+  const ua = userAgent || (typeof window !== "undefined" ? window.navigator.userAgent : "");
+  const isIOS = /iPad|iPhone|iPod/i.test(ua);
+  const isSafari = /Safari/i.test(ua) && !/(Chrome|CriOS|Firefox|FxiOS|Edg|OPR)/i.test(ua);
+  return isIOS || isSafari;
+}
+
 export function isIPhoneSafariPwa(): boolean {
   if (typeof window === "undefined") return false;
   const standalone =

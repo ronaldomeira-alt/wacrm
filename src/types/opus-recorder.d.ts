@@ -17,6 +17,8 @@ declare module "opus-recorder" {
     encoderBitRate?: number;
     /** When false (default), ondataavailable fires once with the full file. */
     streamPages?: boolean;
+    /** Optional existing AudioNode to encode from instead of requesting mic via getUserMedia. */
+    sourceNode?: AudioNode;
   }
 
   export default class Recorder {
