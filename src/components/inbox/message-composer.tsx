@@ -52,7 +52,6 @@ import {
 } from "@/lib/inbox/pending-audio-db";
 import { discardPendingAudio } from "@/lib/inbox/pending-audio-sync";
 import { audioLog, audioLogError } from "@/lib/inbox/pending-audio-log";
-import { isSafariOrIOS } from "@/lib/inbox/audio-upload-target";
 import { pollNormalizationStatus } from "@/lib/media/batch-upload-pool";
 import {
   registerLocalMediaBlob,
@@ -76,9 +75,9 @@ export const MEDIA_CAPTION_MAX = 1024;
 /** Hard cap on a single voice recording so it can't blow the upload/
  *  transcode limits — auto-stops the recorder when reached. */
 const MAX_RECORDING_SECONDS = 5 * 60;
-const CAPTURE_READY_TIMEOUT_MS = 6_000;
-const RECORDER_STOP_TIMEOUT_MS = 3_500;
-const RECORDER_CLOSE_TIMEOUT_MS = 2_000;
+const CAPTURE_READY_TIMEOUT_MS = 12_000;
+const RECORDER_STOP_TIMEOUT_MS = 12_000;
+const RECORDER_CLOSE_TIMEOUT_MS = 3_000;
 
 export interface SendMediaPayload {
   kind: ComposerMediaKind;
@@ -327,12 +326,6 @@ export function MessageComposer({
     }
   }, [initialText]);
 
-  // Pre-warm the opus-recorder module in the background so beginCapture
-  // doesn't have to wait on a cold dynamic import when the user taps the mic.
-  useEffect(() => {
-    void import("opus-recorder").catch(() => {});
-  }, []);
-
   // ---- "/shortcut" quick-reply autocomplete ---------------------------
   //
   // Only `kind === "text"` replies are eligible: their content is a plain
@@ -521,10 +514,6 @@ export function MessageComposer({
   // check above) — both null whenever no long-press is currently pending.
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
-  const recordedPagesRef = useRef<Uint8Array[]>([]);
-  const totalBytesRef = useRef(0);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const customAudioContextRef = useRef<AudioContext | null>(null);
 
   // Viewers (read-only role) can browse the inbox but never send.
   // For solo users this is always true — single-owner accounts pass
@@ -1052,27 +1041,17 @@ export function MessageComposer({
   // entirely outside this component's render lifecycle. This function
   // itself now never awaits the network, so it always returns fast.
   const finalizeRecording = useCallback(
-    async (audioData?: Blob | Uint8Array) => {
+    async (bytes: Uint8Array) => {
       const traceId = recordingTraceIdRef.current;
       if (finalizationInFlightRef.current) {
-        audioLog("recording:dataavailable:duplicate", { traceId });
+        audioLog("recording:dataavailable:duplicate", { traceId, sizeBytes: bytes.byteLength });
         return;
       }
       finalizationInFlightRef.current = true;
-
-      let blob: Blob;
-      if (audioData instanceof Blob) {
-        blob = audioData;
-      } else if (audioData instanceof Uint8Array) {
-        blob = new Blob([audioData as unknown as BlobPart], { type: "audio/ogg" });
-      } else if (recordedPagesRef.current.length > 0) {
-        blob = new Blob(recordedPagesRef.current as unknown as BlobPart[], { type: "audio/ogg" });
-      } else {
-        blob = new Blob([], { type: "audio/ogg" });
-      }
-
-      audioLog("recording:dataavailable", { traceId, sizeBytes: blob.size });
-      const file = new File([blob], `voice-${Date.now()}.ogg`, {
+      audioLog("recording:dataavailable", { traceId, sizeBytes: bytes.byteLength });
+      // Uint8Array is a valid BlobPart at runtime; the cast sidesteps the
+      // lib.dom ArrayBufferLike-vs-ArrayBuffer generic mismatch.
+      const file = new File([bytes as unknown as BlobPart], `voice-${Date.now()}.ogg`, {
         type: "audio/ogg",
       });
       audioLog("recording:file-created", { traceId, sizeBytes: file.size, mimeType: file.type });
@@ -1169,102 +1148,45 @@ export function MessageComposer({
       return;
     }
     try {
+      // Lazy-load the encoder (≈400 KB worker) only when the user records,
+      // keeping it out of the main bundle.
       const { default: Recorder } = await import("opus-recorder");
-
-      // 1. Construct AudioContext at 48000 Hz to align with Opus's native sample rate
-      // and eliminate real-time SpeexDSP software resampling latency on mobile devices.
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      let rawAudioContext: AudioContext;
-      try {
-        rawAudioContext = new AudioCtx({ sampleRate: 48000 });
-      } catch {
-        rawAudioContext = new AudioCtx();
-      }
-      customAudioContextRef.current = rawAudioContext;
-
-      if (rawAudioContext.state === "suspended") {
-        await rawAudioContext.resume().catch(() => {});
-      }
-
-      // 2. On Safari / iOS WebKit, AudioWorkletNode with numberOfOutputs: 0 suffers from
-      // WebKit's pull-architecture power-saving bug where process() stops mid-take.
-      // Masking audioWorklet causes opus-recorder to fall back to its battle-tested
-      // createScriptProcessor + dedicated Web Worker path, which connects to destination
-      // and runs reliably without being killed by WebKit's audio thread supervisor.
-      const isApple = isSafariOrIOS();
-      const contextForRecorder = isApple
-        ? new Proxy(rawAudioContext, {
-            get(target, prop, receiver) {
-              if (prop === "audioWorklet") return undefined;
-              const val = Reflect.get(target, prop, receiver);
-              return typeof val === "function" ? val.bind(target) : val;
-            },
-          })
-        : rawAudioContext;
-
-      // 3. Acquire microphone stream with active voice DSP
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      micStreamRef.current = stream;
-
-      // 4. Create source node and shadow .context with our proxy
-      const sourceNode = rawAudioContext.createMediaStreamSource(stream);
-      Object.defineProperty(sourceNode, "context", {
-        value: contextForRecorder,
-        configurable: true,
-        writable: true,
-      });
-
       const recorder = new Recorder({
         encoderPath: OPUS_ENCODER_PATH,
         numberOfChannels: 1,
         encoderApplication: 2048, // VOIP — tuned for speech
         encoderSampleRate: 48000,
-        streamPages: true, // Stream pages continuously so no recorded audio is lost if interrupted
-        sourceNode,
+        streamPages: false, // one callback with the complete file on stop
+        mediaTrackConstraints: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+        },
       });
-
       cancelledRef.current = false;
-      recordedPagesRef.current = [];
-      totalBytesRef.current = 0;
-
-      recorder.ondataavailable = (page: Uint8Array) => {
+      recorder.ondataavailable = (bytes) => {
         if (cancelledRef.current) return;
-        if (page && page.byteLength > 0) {
-          recordedPagesRef.current.push(page);
-          totalBytesRef.current += page.byteLength;
-        }
+        void finalizeRecording(bytes);
       };
-
       recorder.onerror = (error) => {
         audioLogError("recording:error", error, {
           traceId: recordingTraceIdRef.current,
           reason: "recorder-error",
         });
+        cancelledRef.current = true;
+        finalizationInFlightRef.current = false;
         clearTimer();
-        // If we already collected audio pages, never drop them — finalize and save!
-        if (recordedPagesRef.current.length > 0) {
-          void finalizeRecording();
-        } else {
-          cancelledRef.current = true;
-          finalizationInFlightRef.current = false;
-          setMicPhase("failed");
-          setLocked(false);
-        }
+        setMicPhase("failed");
+        setLocked(false);
       };
-
       recorderRef.current = recorder;
       await recorder.start();
-    } catch (err) {
-      audioLogError("recording:beginCapture-failed", err, { traceId: recordingTraceIdRef.current });
+    } catch {
+      // Same AudioContext leak as stopRecorder() below, just on the
+      // failure path (e.g. start() rejects because the mic permission was
+      // denied) — close() releases it too, chained so it still runs even
+      // if stop() itself rejects.
       const recorder = recorderRef.current;
       recorderRef.current = null;
       void recorder
@@ -1272,14 +1194,6 @@ export function MessageComposer({
         .catch(() => {})
         .then(() => recorder.close())
         .catch(() => {});
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach((track) => track.stop());
-        micStreamRef.current = null;
-      }
-      if (customAudioContextRef.current && customAudioContextRef.current.state !== "closed") {
-        void customAudioContextRef.current.close().catch(() => {});
-        customAudioContextRef.current = null;
-      }
       clearTimer();
       cancelledRef.current = true;
       finalizationInFlightRef.current = false;
@@ -1339,19 +1253,29 @@ export function MessageComposer({
       audioLog("recording:cleanup:complete", { traceId, result: "no-recorder" });
       return false;
     }
-
-    let stopSuccess = false;
     try {
       audioLog("recording:recorder-stop:start", { traceId });
       await withTimeout(recorder.stop(), RECORDER_STOP_TIMEOUT_MS, "audio recorder stop");
       audioLog("recording:recorder-stop:success", { traceId });
-      stopSuccess = true;
     } catch (error) {
       audioLogError(
         error instanceof TimeoutError ? "recording:recorder-stop:timeout" : "recording:error",
         error,
         { traceId, reason: "recorder-stop" },
       );
+      cancelledRef.current = true;
+      clearTimer();
+      setMicPhase("failed");
+      setLocked(false);
+      finalizationInFlightRef.current = false;
+      try {
+        await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
+      } catch (closeError) {
+        audioLogError("recording:error", closeError, { traceId, reason: "close-after-stop-failure" });
+      }
+      if (recorderRef.current === recorder) recorderRef.current = null;
+      audioLog("recording:cleanup:complete", { traceId, result: "stop-failure" });
+      return false;
     }
 
     try {
@@ -1360,43 +1284,9 @@ export function MessageComposer({
       audioLogError("recording:error", error, { traceId, reason: "recorder-close" });
     }
     if (recorderRef.current === recorder) recorderRef.current = null;
-
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((track) => track.stop());
-      micStreamRef.current = null;
-    }
-    if (customAudioContextRef.current && customAudioContextRef.current.state !== "closed") {
-      void customAudioContextRef.current.close().catch(() => {});
-      customAudioContextRef.current = null;
-    }
-
-    clearTimer();
-
-    // If stop succeeded or if we buffered streamed pages during the take, finalize!
-    if (recordedPagesRef.current.length > 0 && totalBytesRef.current > 0) {
-      audioLog("recording:finalizing-collected-pages", {
-        traceId,
-        pageCount: recordedPagesRef.current.length,
-        totalBytes: totalBytesRef.current,
-        stopSuccess,
-      });
-      await finalizeRecording();
-      audioLog("recording:cleanup:complete", { traceId, result: "stopped" });
-      return true;
-    }
-
-    if (!stopSuccess) {
-      cancelledRef.current = true;
-      setMicPhase("failed");
-      setLocked(false);
-      finalizationInFlightRef.current = false;
-      audioLog("recording:cleanup:complete", { traceId, result: "stop-failure" });
-      return false;
-    }
-
     audioLog("recording:cleanup:complete", { traceId, result: "stopped" });
     return true;
-  }, [clearTimer, finalizeRecording]);
+  }, [clearTimer]);
 
   // ---- Mic pointer gesture ---------------------------------------------
   //
@@ -1420,8 +1310,6 @@ export function MessageComposer({
         ? crypto.randomUUID()
         : `audio-trace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     finalizationInFlightRef.current = false;
-    recordedPagesRef.current = [];
-    totalBytesRef.current = 0;
     stopAllAudioPlayback();
     setLocked(false);
     setRecordSeconds(0);
@@ -1467,9 +1355,7 @@ export function MessageComposer({
       // still pending (micPhase only flips once the timer actually fires).
       if (micPhase !== "idle" || longPressTimerRef.current !== null) return;
       e.preventDefault();
-      try {
-        micButtonRef.current?.setPointerCapture(e.pointerId);
-      } catch {}
+      micButtonRef.current?.setPointerCapture(e.pointerId);
       gestureRef.current = { startY: e.clientY };
       longPressStartRef.current = { x: e.clientX, y: e.clientY };
       longPressTimerRef.current = setTimeout(() => {
@@ -1535,9 +1421,7 @@ export function MessageComposer({
     (e: React.PointerEvent<HTMLButtonElement>) => {
       if (e.pointerType === "mouse") return;
       e.preventDefault();
-      try {
-        micButtonRef.current?.releasePointerCapture(e.pointerId);
-      } catch {}
+      micButtonRef.current?.releasePointerCapture(e.pointerId);
       gestureRef.current = null;
       if (longPressTimerRef.current !== null) {
         clearLongPressTimer();
@@ -1603,12 +1487,9 @@ export function MessageComposer({
       if (id) {
         onRecordAudio(id, replyTo?.id);
         onClearReply?.();
-      } else if (micPhase === "failed") {
-        // If there was no pending record, tapping retry starts a fresh recording take
-        startRecordingGesture();
       }
     }
-  }, [micPhase, clearTimer, onRecordAudio, replyTo?.id, onClearReply, stopRecorder, startRecordingGesture]);
+  }, [micPhase, clearTimer, onRecordAudio, replyTo?.id, onClearReply, stopRecorder]);
 
   // Auto-stop at the cap so a forgotten recording can't blow the upload
   // size limit — pauses exactly like an unlocked release (keeps what was
@@ -1780,7 +1661,7 @@ export function MessageComposer({
               // centered within its own box) on the same line regardless
               // of how tall its box is.
               "flex items-center gap-2",
-              micActive && "opacity-0 pointer-events-none absolute inset-0",
+              micActive && "invisible absolute inset-0",
             )}
           >
             {/* Left — attach media: photo / video / document. */}
@@ -1990,7 +1871,7 @@ export function MessageComposer({
               onPointerMove={handleMicPointerMove}
               onPointerUp={handleMicPointerEnd}
               onPointerCancel={handleMicPointerEnd}
-              className="flex h-[47px] w-[47px] shrink-0 touch-none select-none [-webkit-touch-callout:none] items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-[47px] w-[47px] shrink-0 touch-none select-none items-center justify-center rounded-md p-0 text-muted-foreground transition-[transform,border-radius,background-color] duration-150 ease-out hover:text-foreground active:scale-[0.97] active:rounded-full active:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Mic className="h-[21px] w-[21px]" />
             </button>
