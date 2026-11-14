@@ -485,6 +485,18 @@ export function MessageComposer({
   const [locked, setLocked] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const recorderRef = useRef<import("opus-recorder").default | null>(null);
+  // Pre-load opus-recorder constructor on mount so recording starts synchronously
+  // within the active user gesture token without waiting on an async dynamic import.
+  const recorderModuleRef = useRef<{ new (options: unknown): import("opus-recorder").default } | null>(null);
+  useEffect(() => {
+    import("opus-recorder")
+      .then((m) => {
+        recorderModuleRef.current = m.default as unknown as { new (options: unknown): import("opus-recorder").default };
+      })
+      .catch((err) => {
+        console.warn("[audio] Failed to pre-warm opus-recorder:", err);
+      });
+  }, []);
   // The in-flight beginCapture() promise. Any stop request awaits this
   // before touching recorderRef — otherwise a stop arriving while the
   // recorder is still being constructed (dynamic import + getUserMedia +
@@ -1056,14 +1068,14 @@ export function MessageComposer({
       });
       audioLog("recording:file-created", { traceId, sizeBytes: file.size, mimeType: file.type });
       audioLog("recording:stopped", { traceId, sizeBytes: file.size });
-      if (file.size === 0) {
-        // Cancelled / empty take — nothing to do.
+      if (file.size < 200) {
+        // Cancelled / empty take (< 200 bytes has no audio frames) — clean reset without phantom bubble
         sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
         finalizationInFlightRef.current = false;
         recordingTraceIdRef.current = null;
-        audioLog("recording:error", { traceId, reason: "empty-file" });
+        audioLog("recording:error", { traceId, reason: "empty-file", sizeBytes: file.size });
         return;
       }
       if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
@@ -1148,9 +1160,8 @@ export function MessageComposer({
       return;
     }
     try {
-      // Lazy-load the encoder (≈400 KB worker) only when the user records,
-      // keeping it out of the main bundle.
-      const { default: Recorder } = await import("opus-recorder");
+      // Use pre-warmed constructor if available to execute synchronously within user gesture
+      const Recorder = recorderModuleRef.current || (await import("opus-recorder")).default;
       const recorder = new Recorder({
         encoderPath: OPUS_ENCODER_PATH,
         numberOfChannels: 1,
@@ -1182,18 +1193,19 @@ export function MessageComposer({
       };
       recorderRef.current = recorder;
       await recorder.start();
-    } catch {
-      // Same AudioContext leak as stopRecorder() below, just on the
-      // failure path (e.g. start() rejects because the mic permission was
-      // denied) — close() releases it too, chained so it still runs even
-      // if stop() itself rejects.
+    } catch (err) {
+      audioLogError("recording:error", err, { reason: "start-failed" });
       const recorder = recorderRef.current;
       recorderRef.current = null;
-      void recorder
-        ?.stop()
-        .catch(() => {})
-        .then(() => recorder.close())
-        .catch(() => {});
+      if (recorder) {
+        try {
+          const stream = (recorder as unknown as { stream?: MediaStream }).stream;
+          stream?.getTracks?.().forEach((t) => {
+            try { t.stop(); } catch {}
+          });
+          void recorder.stop().catch(() => {}).then(() => recorder.close()).catch(() => {});
+        } catch {}
+      }
       clearTimer();
       cancelledRef.current = true;
       finalizationInFlightRef.current = false;
@@ -1253,6 +1265,15 @@ export function MessageComposer({
       audioLog("recording:cleanup:complete", { traceId, result: "no-recorder" });
       return false;
     }
+
+    // Forcefully stop MediaStream audio tracks on iOS Safari to extinguish the red recording dot
+    try {
+      const stream = (recorder as unknown as { stream?: MediaStream }).stream;
+      stream?.getTracks?.().forEach((track) => {
+        try { track.stop(); } catch {}
+      });
+    } catch {}
+
     try {
       audioLog("recording:recorder-stop:start", { traceId });
       await withTimeout(recorder.stop(), RECORDER_STOP_TIMEOUT_MS, "audio recorder stop");

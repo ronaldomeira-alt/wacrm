@@ -54,6 +54,7 @@ import {
   markConversationRead,
   toggleConversationPinned,
 } from "@/lib/inbox/conversations";
+import { getPlatformProfile } from "@/lib/platform/platform-profile";
 
 interface ConversationListProps {
   activeConversationId: string | null;
@@ -225,10 +226,17 @@ export function ConversationList({
     let cancelled = false;
 
     (async () => {
-      const { data, error } = await supabase
+      const profile = getPlatformProfile();
+      let query = supabase
         .from("conversations")
         .select(CONVERSATION_SELECT)
         .order("last_message_at", { ascending: false });
+
+      if (profile.maxInboxLeads) {
+        query = query.limit(profile.maxInboxLeads);
+      }
+
+      const { data, error } = await query;
 
       if (cancelled) return;
 

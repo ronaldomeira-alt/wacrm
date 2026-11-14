@@ -129,6 +129,12 @@ export async function middleware(request: NextRequest) {
     )
   }
 
+  // Protect all non-static dynamic responses from edge/proxy/Safari RSC caching
+  if (!pathname.startsWith('/_next') && !pathname.startsWith('/api')) {
+    supabaseResponse.headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0, must-revalidate')
+    supabaseResponse.headers.set('Vary', 'Accept, RSC, Next-Router-State-Tree, Next-Router-Prefetch')
+  }
+
   return supabaseResponse
 }
 

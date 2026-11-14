@@ -238,13 +238,46 @@ const nextConfig = {
         source: "/api/:path*",
         headers: [{ key: "Cache-Control", value: "no-store" }],
       },
+      // Authenticated and dynamic dashboard routes must NEVER be cached by intermediate
+      // proxies (Hostinger/LiteSpeed, Cloudflare, edge caches) or Safari's HTTP disk cache.
+      // Explicit `Vary: Accept, RSC, Next-Router-State-Tree, Next-Router-Prefetch` ensures
+      // that Next.js client-side prefetch/RSC Flight responses are never mixed with HTML documents.
+      {
+        source: "/:path(inbox|dashboard|contacts|pipelines|campaigns|automations|settings)/:subpath*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "private, no-cache, no-store, max-age=0, must-revalidate",
+          },
+          {
+            key: "Vary",
+            value: "Accept, RSC, Next-Router-State-Tree, Next-Router-Prefetch",
+          },
+        ],
+      },
+      {
+        source: "/:path(inbox|dashboard|contacts|pipelines|campaigns|automations|settings)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "private, no-cache, no-store, max-age=0, must-revalidate",
+          },
+          {
+            key: "Vary",
+            value: "Accept, RSC, Next-Router-State-Tree, Next-Router-Prefetch",
+          },
+        ],
+      },
       {
         source: "/:path((?!_next/static|_next/image|api).*)",
         headers: [
           {
             key: "Cache-Control",
-            value:
-              "public, max-age=0, s-maxage=300, stale-while-revalidate=86400",
+            value: "private, no-cache, no-store, max-age=0, must-revalidate",
+          },
+          {
+            key: "Vary",
+            value: "Accept, RSC, Next-Router-State-Tree, Next-Router-Prefetch",
           },
         ],
       },

@@ -109,6 +109,15 @@ export function AudioMessagePlayer({
     return () => {
       window.removeEventListener(PAUSE_ALL_AUDIO_EVENT, handlePauseAll);
       window.removeEventListener(AUDIO_PLAYING_EVENT, handleOtherPlaying);
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+          audioRef.current.removeAttribute("src");
+          audioRef.current.load();
+        } catch {
+          // Ignore unmount error
+        }
+      }
     };
   }, []);
 

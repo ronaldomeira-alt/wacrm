@@ -25,7 +25,9 @@ import {
   appendCachedMessage,
   updateCachedMessage,
   removeCachedMessage,
+  releaseConversationResources,
 } from "@/lib/inbox/message-cache";
+import { getPlatformProfile } from "@/lib/platform/platform-profile";
 import { isR2MediaKey } from "@/lib/storage/media-url-kind";
 import { prefetchMediaKeys } from "@/lib/inbox/use-resolved-media-src";
 import { reconcileOptimisticMessages } from "@/lib/inbox/optimistic-album";
@@ -352,7 +354,9 @@ function InboxPageInner() {
               : c,
           );
         }
-        return [fetched, ...prev];
+        const profile = getPlatformProfile();
+        const next = [fetched, ...prev];
+        return profile.maxInboxLeads ? next.slice(0, profile.maxInboxLeads) : next;
       });
     } finally {
       hydratingConvIdsRef.current.delete(convId);
@@ -569,7 +573,9 @@ function InboxPageInner() {
           knownConvIdsRef.current.add(conv.id);
           setConversations((prev) => {
             if (prev.some((c) => c.id === conv.id)) return prev;
-            return [conv, ...prev];
+            const profile = getPlatformProfile();
+            const next = [conv, ...prev];
+            return profile.maxInboxLeads ? next.slice(0, profile.maxInboxLeads) : next;
           });
           hydrateConversation(conv.id);
         }
@@ -669,9 +675,14 @@ function InboxPageInner() {
   // Deselect the active conversation and optionally update the browser URL
   const handleCloseConversation = useCallback(
     (options?: { updateHistory?: boolean }) => {
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current);
+        leaveTimerRef.current = null;
+      }
       setActiveConversation(null);
       setActiveContact(null);
       setMessages([]);
+      releaseConversationResources();
       autoSelectedForDeepLinkRef.current = null;
       if (options?.updateHistory !== false && typeof window !== "undefined") {
         window.history.replaceState(null, "", buildInboxUrl(null));
@@ -690,20 +701,29 @@ function InboxPageInner() {
       const params = new URLSearchParams(window.location.search);
       const convIdFromUrl = params.get("c");
 
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current);
+        leaveTimerRef.current = null;
+      }
+
       if (!convIdFromUrl) {
         // User navigated back to /inbox list (Safari edge swipe, browser Back, or history.back())
         hasHistoryEntryRef.current = false;
         if (activeConversationIdRef.current) {
-          if (shouldAnimateTransition()) {
+          const isIOS = typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent);
+          // On iOS WebKit, Safari's native edge-swipe gesture ALREADY visually swiped the screen.
+          // Triggering a second 500ms slide animation causes stutter and holds activeConversation
+          // alive in memory, creating race conditions if a chat is tapped immediately.
+          if (shouldAnimateTransition() && !isIOS) {
             setInboxTransition("leave");
-            if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
             leaveTimerRef.current = setTimeout(() => {
               handleCloseConversation({ updateHistory: false });
               setInboxTransition("idle");
               leaveTimerRef.current = null;
-            }, 500);
+            }, 300);
           } else {
             handleCloseConversation({ updateHistory: false });
+            setInboxTransition("idle");
           }
         }
       } else {
@@ -770,6 +790,13 @@ function InboxPageInner() {
     (conv: Conversation) => {
       // Re-clicking the already-active conversation is a no-op
       if (activeConversation?.id === conv.id) return;
+
+      // Clear any pending leave timer from a previous back-navigation so it doesn't fire
+      // and close this newly selected conversation
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current);
+        leaveTimerRef.current = null;
+      }
 
       const isFirstOpen = !activeConversation;
       const nextUrl = buildInboxUrl(conv.id);

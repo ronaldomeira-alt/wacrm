@@ -1,12 +1,12 @@
 import type { Message } from '@/types';
+import { getPlatformProfile } from '@/lib/platform/platform-profile';
 
 /**
- * In-memory LRU cache for conversation messages (session-scoped).
- * Keeps the latest 10 visited conversations in memory so returning
- * to a conversation renders immediately (0ms wait) while fresh
- * data revalidates in the background (stale-while-revalidate).
+ * Platform-aware in-memory LRU cache for conversation messages.
+ * - iPhone/Mobile: capped to at most 3 conversations and at most 30 messages each
+ *   to avoid Safari/WebKit mobile memory exhaustion and crashes.
+ * - Windows/Desktop: keeps 10 conversations and complete message history.
  */
-const MAX_CACHED_CONVERSATIONS = 10;
 const messageCache = new Map<string, Message[]>();
 
 export function getCachedMessages(conversationId: string): Message[] | undefined {
@@ -23,14 +23,24 @@ export function setCachedMessages(
   conversationId: string,
   messages: Message[]
 ): void {
+  const profile = getPlatformProfile();
+  const maxConvs = profile.maxCachedConversations;
+  const maxMsgsPerConv = profile.maxCachedMessagesPerConv;
+
+  // Enforce message limit per conversation if defined (iPhone = 30)
+  const storedMessages =
+    maxMsgsPerConv && messages.length > maxMsgsPerConv
+      ? messages.slice(-maxMsgsPerConv)
+      : messages;
+
   if (messageCache.has(conversationId)) {
     messageCache.delete(conversationId);
-  } else if (messageCache.size >= MAX_CACHED_CONVERSATIONS) {
+  } else if (messageCache.size >= maxConvs) {
     // Evict oldest entry (first key in map iterator)
     const oldestKey = messageCache.keys().next().value;
     if (oldestKey) messageCache.delete(oldestKey);
   }
-  messageCache.set(conversationId, messages);
+  messageCache.set(conversationId, storedMessages);
 }
 
 export function appendCachedMessage(
@@ -39,6 +49,9 @@ export function appendCachedMessage(
 ): void {
   const cached = messageCache.get(conversationId);
   if (!cached) return;
+
+  const profile = getPlatformProfile();
+  const maxMsgsPerConv = profile.maxCachedMessagesPerConv;
 
   // 1. If already present by id, update in-place
   const idIdx = cached.findIndex((m) => m.id === newMsg.id);
@@ -78,7 +91,11 @@ export function appendCachedMessage(
     }
   }
 
-  messageCache.set(conversationId, [...cached, newMsg]);
+  let next = [...cached, newMsg];
+  if (maxMsgsPerConv && next.length > maxMsgsPerConv) {
+    next = next.slice(-maxMsgsPerConv);
+  }
+  messageCache.set(conversationId, next);
 }
 
 export function updateCachedMessage(
@@ -107,4 +124,50 @@ export function removeCachedMessage(
 
 export function clearMessageCache(): void {
   messageCache.clear();
+}
+
+/**
+ * Releases unneeded resources when leaving or switching conversations.
+ * On mobile/iPhone, prunes memory down aggressively so WebKit stays lightweight.
+ */
+export function releaseConversationResources(closedConversationId?: string): void {
+  const profile = getPlatformProfile();
+  if (profile.aggressiveResourceCleanup) {
+    // If specific conversation closed, evict it if cache exceeds small limit
+    if (closedConversationId && messageCache.size > profile.maxCachedConversations) {
+      messageCache.delete(closedConversationId);
+    }
+    // Prune cache down to maxCachedConversations (3)
+    while (messageCache.size > profile.maxCachedConversations) {
+      const oldestKey = messageCache.keys().next().value;
+      if (oldestKey) messageCache.delete(oldestKey);
+      else break;
+    }
+
+    // Trigger cleanup of active media playback
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('wacrm:pause-all-audio'));
+    }
+  }
+}
+
+/**
+ * Diagnostics helper to inspect cache usage.
+ */
+export function getMessageCacheStats(): {
+  conversationCount: number;
+  totalMessages: number;
+  conversations: { id: string; messageCount: number }[];
+} {
+  let total = 0;
+  const list: { id: string; messageCount: number }[] = [];
+  messageCache.forEach((msgs, id) => {
+    total += msgs.length;
+    list.push({ id, messageCount: msgs.length });
+  });
+  return {
+    conversationCount: messageCache.size,
+    totalMessages: total,
+    conversations: list,
+  };
 }

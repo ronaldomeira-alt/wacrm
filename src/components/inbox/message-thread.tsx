@@ -111,7 +111,12 @@ import { useFollowupGate } from '@/hooks/use-followup-gate';
 import {
   getCachedMessages,
   setCachedMessages,
+  releaseConversationResources,
 } from '@/lib/inbox/message-cache';
+import {
+  getPlatformProfile,
+  usePlatformProfile,
+} from '@/lib/platform/platform-profile';
 
 interface ReplyDraft {
   id: string;
@@ -499,6 +504,7 @@ export function MessageThread({
   // thread is scrolled. This wrapper never scrolls, so an absolutely
   // positioned child of it always lines up with what's actually visible.
   const messagesAreaRef = useRef<HTMLDivElement>(null);
+  const platformProfile = usePlatformProfile();
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
 
   // BLOCO 3/4 — a follow-up draft primed from the Central de IA
@@ -722,18 +728,29 @@ export function MessageThread({
     let cancelled = false;
 
     (async () => {
-      const { data, error } = await supabase
+      const profile = getPlatformProfile();
+      let query = supabase
         .from('messages')
         .select('*')
-        .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true });
+        .eq('conversation_id', conversationId);
+
+      if (profile.maxInitialMessages) {
+        query = query
+          .order('created_at', { ascending: false })
+          .limit(profile.maxInitialMessages);
+      } else {
+        query = query.order('created_at', { ascending: true });
+      }
+
+      const { data, error } = await query;
 
       if (cancelled) return;
 
       if (error) {
         console.error('Failed to fetch messages:', error);
       } else {
-        const loaded = data ?? [];
+        const rawList = data ?? [];
+        const loaded = profile.maxInitialMessages ? rawList.reverse() : rawList;
 
         // Pre-resolve any uncached R2 media keys in batch BEFORE exposing messages to UI
         const uncachedR2Keys = loaded
@@ -762,6 +779,7 @@ export function MessageThread({
 
     return () => {
       cancelled = true;
+      releaseConversationResources(conversationId);
     };
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus —
@@ -1011,8 +1029,38 @@ export function MessageThread({
     });
   }, [markProgrammaticScroll, writeOwnScrollTop]);
 
-  // All messages of the conversation are rendered stably to prevent layout shifts/jumps
-  const visibleMessages = messages;
+  // ── Message Windowing / Virtualization for Memory & Jetsam Protection ──
+  // Limits active DOM nodes to recent messages (default: 40) to prevent WebKit Jetsam OOM crashes
+  // on iOS Safari when viewing conversations with 100+ messages.
+  const INITIAL_VISIBLE_MESSAGES = 40;
+  const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
+
+  // Reset window when switching conversations
+  useEffect(() => {
+    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
+  }, [conversationId]);
+
+  const hasMorePreviousMessages = messages.length > visibleMessageCount;
+  const visibleMessages = useMemo(() => {
+    if (!hasMorePreviousMessages) return messages;
+    return messages.slice(messages.length - visibleMessageCount);
+  }, [messages, hasMorePreviousMessages, visibleMessageCount]);
+
+  const handleLoadMorePrevious = useCallback(() => {
+    const el = scrollRef.current;
+    const prevScrollHeight = el?.scrollHeight ?? 0;
+    const prevScrollTop = el?.scrollTop ?? 0;
+
+    setVisibleMessageCount((prev) => Math.min(prev + 40, messages.length));
+
+    // Preserve scroll position relative to content so user does not jump
+    requestAnimationFrame(() => {
+      if (el) {
+        const heightDiff = el.scrollHeight - prevScrollHeight;
+        el.scrollTop = prevScrollTop + heightDiff;
+      }
+    });
+  }, [messages.length]);
 
   // Track user touch/pointer/wheel interaction to never fight user gestures
   useEffect(() => {
@@ -3641,6 +3689,17 @@ export function MessageThread({
             </div>
           ) : (
             <div ref={contentRef} className="space-y-4">
+              {hasMorePreviousMessages && platformProfile.allowOlderHistoryLoad && (
+                <div className="flex justify-center pt-2 pb-1">
+                  <button
+                    type="button"
+                    onClick={handleLoadMorePrevious}
+                    className="flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/80 hover:bg-muted px-4 py-1.5 text-xs font-medium text-muted-foreground transition-colors shadow-sm"
+                  >
+                    <span>Carregar mensagens anteriores ({messages.length - visibleMessageCount} restantes)</span>
+                  </button>
+                </div>
+              )}
               {messageGroups.map((group) => (
                 <div key={group.date}>
                   {/* Date separator */}
