@@ -44,6 +44,7 @@ interface HeaderProps {
   onOpenSidebar?: () => void;
 }
 
+import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 
 export function Header({ onOpenSidebar }: HeaderProps) {
@@ -51,6 +52,11 @@ export function Header({ onOpenSidebar }: HeaderProps) {
   const pathname = usePathname();
   const { profile, signOut } = useAuth();
   const titleKey = getPageTitleKey(pathname);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const initial =
     profile?.full_name?.charAt(0)?.toUpperCase() ??
@@ -58,35 +64,28 @@ export function Header({ onOpenSidebar }: HeaderProps) {
     "U";
 
   return (
-    // `min-h-[var(--header-content-height)]` (not a fixed `h-`) plus a
-    // safe-area-inset-top padding-top below: the inset adds to the box's height
-    // instead of eating into the content row, so the logo/hamburger/
-    // avatar stay a consistent size and just sit lower on notch/
-    // Dynamic-Island devices. `env()` resolves to 0 elsewhere (desktop,
-    // older phones), so this is a no-op there.
-    //
-    // `--header-content-height` (globals.css) is the ONE place this
-    // 3.5rem is defined. Nothing else needs to duplicate it — pages
-    // below this header size themselves from `<main>`'s own rendered
-    // height (dashboard-shell.tsx), which already excludes whatever
-    // this header ends up measuring.
     <header
-      className="flex min-h-[var(--header-content-height)] shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 pt-[env(safe-area-inset-top)] lg:px-6"
+      data-app-header
+      className="relative z-20 shrink-0 border-b border-border bg-background pt-[env(safe-area-inset-top,44px)]"
     >
-      <div className="flex min-w-0 items-center gap-2">
-        {/* Hamburger — mobile only. 44×44 hit target per Apple HIG. */}
-        <button
-          type="button"
-          onClick={onOpenSidebar}
-          aria-label={t("openMenu")}
-          className="flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:hidden"
-        >
-          <Menu className="h-5 w-5" />
-        </button>
-        <h1 className="truncate text-base font-semibold text-foreground sm:text-lg">
-          {t(titleKey as string)}
-        </h1>
-      </div>
+      <div className="flex h-[var(--header-content-height)] items-center justify-between gap-3 px-4 lg:px-6">
+        <div className="flex min-w-0 items-center gap-2">
+          {/* Hamburger — mobile only. 44×44 hit target per Apple HIG. */}
+          <button
+            type="button"
+            onClick={onOpenSidebar}
+            aria-label={t("openMenu")}
+            className="flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:hidden"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          <h1
+            key={mounted ? "mounted" : "init"}
+            className="text-base font-semibold text-foreground sm:text-lg"
+          >
+            {t(titleKey as string)}
+          </h1>
+        </div>
 
       <div className="flex items-center gap-1 sm:gap-2">
         <ModeToggle />
@@ -157,6 +156,7 @@ export function Header({ onOpenSidebar }: HeaderProps) {
           </DropdownMenuItem>
         </DropdownMenuContent>
         </DropdownMenu>
+        </div>
       </div>
     </header>
   );

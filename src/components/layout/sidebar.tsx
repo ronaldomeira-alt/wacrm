@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, type RefObject } from "react";
+import { useState, useEffect, type RefObject } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useTotalUnread } from "@/hooks/use-total-unread";
@@ -128,6 +128,11 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
   const { profile, profileLoading, account, accountRole, signOut } = useAuth();
   const totalUnread = useTotalUnread();
   const pendingActionItems = usePendingActionItemsCount();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   // Only surface the account-name strip when it actually carries
   // information. A solo user's personal account is named after them
   // (the 017 signup trigger seeds it from `full_name`), so showing it
@@ -181,10 +186,10 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
         aria-label={t("closeMenu")}
         onClick={onClose}
         className={cn(
-          "fixed inset-0 z-30 bg-background/70 backdrop-blur-sm transition-opacity lg:hidden",
+          "fixed inset-0 z-30 bg-background/70 transition-opacity lg:hidden",
           open
-            ? "pointer-events-auto opacity-100"
-            : "pointer-events-none opacity-0",
+            ? "pointer-events-auto opacity-100 backdrop-blur-sm"
+            : "pointer-events-none opacity-0 hidden",
         )}
       />
 
@@ -195,8 +200,8 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
           // "settled state + non-gesture transition" story as the
           // backdrop above — useDrawerGesture drives `style.transform`
           // directly during an active drag via `asideRef`.
-          "fixed inset-y-0 left-0 z-40 flex h-full w-64 flex-col border-r border-border bg-card",
-          "transition-transform duration-200 ease-out will-change-transform",
+          "fixed inset-y-0 left-0 z-40 isolate flex h-full w-64 flex-col border-r border-border bg-card",
+          "transition-transform duration-200 ease-out",
           open ? "translate-x-0" : "-translate-x-full",
           // Desktop: static, always visible — reset all the mobile framing.
           "lg:static lg:z-0 lg:w-60 lg:translate-x-0 lg:transition-none",
@@ -209,23 +214,25 @@ export function Sidebar({ open = false, onClose, asideRef, backdropRef }: Sideba
             fixed, full-height panel starting at the very top of the
             screen, so it needs its own inset-top padding independent of
             the main Header (they're siblings, not nested). */}
-        <div className="flex min-h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4 pt-[env(safe-area-inset-top)]">
-          <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <MessageSquare className="h-4 w-4" />
-            </div>
-            <span className="text-sm font-semibold text-foreground">
-              {t("title")}
-            </span>
-          </Link>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t("closeMenu")}
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
-          >
-            <X className="h-5 w-5" />
-          </button>
+        <div key={mounted ? "mounted" : "init"} className="shrink-0 border-b border-border bg-card pt-[env(safe-area-inset-top,44px)]">
+          <div className="flex h-14 items-center justify-between gap-2 px-4">
+            <Link href="/dashboard" className="flex items-center gap-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <MessageSquare className="h-4 w-4" />
+              </div>
+              <span className="text-sm font-semibold text-foreground">
+                {t("title")}
+              </span>
+            </Link>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t("closeMenu")}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Main navigation */}

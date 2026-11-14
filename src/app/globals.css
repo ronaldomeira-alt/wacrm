@@ -332,6 +332,14 @@ html[data-theme="rose"] {
   --header-content-height: 3.5rem;
 }
 
+/* Header crispness on Safari iOS (iPhone PWA / Safari). */
+@supports (-webkit-touch-callout: none) {
+  header[data-app-header] {
+    -webkit-transform: none !important;
+    transform: none !important;
+  }
+}
+
 /* Tiny "audio capturing" equalizer bars — Inbox voice-note recorder
    (message-composer.tsx). Needs to live in global CSS rather than a
    component-scoped `<style jsx>` block: styled-jsx auto-renames
