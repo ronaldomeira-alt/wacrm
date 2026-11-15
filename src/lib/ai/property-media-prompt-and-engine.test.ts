@@ -143,4 +143,38 @@ describe('Property Media Prompt Building & Engine Decision Parsing', () => {
     const decision = parseStructuredDecision(modelOutput)
     expect(decision.send_media).toBeNull()
   })
+
+  it('getSentMediaIdsFromHistory matches storage URL slug even when file_name differs', async () => {
+    const { getSentMediaIdsFromHistory } = await import('./conversation-engine')
+
+    const availableMedia = [
+      {
+        id: 'media-0',
+        type: 'image' as const,
+        description: 'Fachada',
+        file_name: 'FACHADA 01.jpeg',
+        is_cover: true,
+        url: 'https://example.supabase.co/storage/v1/object/public/property-media/acc/prop/1793311341000-FACHADA_01.jpg',
+      },
+      {
+        id: 'media-1',
+        type: 'image' as const,
+        description: 'Rooftop',
+        file_name: 'ROOFTOP 01.jpeg',
+        is_cover: false,
+        url: 'https://example.supabase.co/storage/v1/object/public/property-media/acc/prop/1793311342000-ROOFTOP_01.jpg',
+      },
+    ]
+
+    const messages = [
+      {
+        role: 'assistant' as const,
+        content: '[Assistente enviou uma imagem: "1793311342000-ROOFTOP_01.jpg"]',
+      },
+    ]
+
+    const sentIds = getSentMediaIdsFromHistory(messages, availableMedia)
+    expect(sentIds.has('media-1')).toBe(true)
+    expect(sentIds.has('media-0')).toBe(false)
+  })
 })

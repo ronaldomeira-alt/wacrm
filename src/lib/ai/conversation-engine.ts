@@ -617,10 +617,14 @@ export function getSentMediaIdsFromHistory(
 
     let matchedSpecific = false;
     for (const media of availableMedia) {
+      const urlSlug = media.url ? media.url.split('/').pop()?.split('?')[0] : null;
       if (media.file_name && text.includes(media.file_name)) {
         sentIds.add(media.id);
         matchedSpecific = true;
       } else if (media.url && text.includes(media.url)) {
+        sentIds.add(media.id);
+        matchedSpecific = true;
+      } else if (urlSlug && urlSlug.length >= 4 && text.includes(urlSlug)) {
         sentIds.add(media.id);
         matchedSpecific = true;
       }
