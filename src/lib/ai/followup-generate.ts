@@ -208,7 +208,7 @@ export async function generateFollowupSuggestions(
             : await generateAnthropic(providerArgs)
       scored++
 
-      void logAiUsage(db, {
+      await logAiUsage(db, {
         accountId,
         conversationId,
         mode: 'followup',

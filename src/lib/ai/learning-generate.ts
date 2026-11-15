@@ -246,7 +246,7 @@ export async function generateLearningSuggestions(
         : config.provider === 'deepseek'
           ? await generateDeepSeek(providerArgs)
           : await generateAnthropic(providerArgs)
-    void logAiUsage(db, {
+    await logAiUsage(db, {
       accountId,
       conversationId: null,
       mode: 'learning',

@@ -531,7 +531,7 @@ interface ConversationLookupRow {
       .eq('id', conversationId)
 
     if (usage) {
-      void logAiUsage(db, {
+      await logAiUsage(db, {
         accountId: conv.account_id,
         conversationId: conv.id,
         mode: 'auto_reply',

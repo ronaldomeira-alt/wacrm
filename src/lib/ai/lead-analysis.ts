@@ -524,7 +524,7 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
       return
     }
 
-    void logAiUsage(db, {
+    await logAiUsage(db, {
       accountId,
       conversationId,
       mode: 'lead_analysis',

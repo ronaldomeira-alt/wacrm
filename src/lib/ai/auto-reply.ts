@@ -90,7 +90,7 @@ export async function dispatchInboundToAiReply(
     if ((initialConv as Record<string, unknown>).ai_reactivation_status === 'scheduled') {
       convUpdatePayload.ai_reactivation_status = 'cancelled'
     }
-    void db
+    await db
       .from('conversations')
       .update(convUpdatePayload)
       .eq('id', conversationId)
@@ -206,13 +206,13 @@ export async function dispatchInboundToAiReply(
       let effectivePropertyId = conv.property_id || null
       if (resolution.propertyId && resolution.propertyId !== conv.property_id) {
         effectivePropertyId = resolution.propertyId
-        void db
+        await db
           .from('conversations')
           .update({ property_id: effectivePropertyId })
           .eq('id', conversationId)
       } else if (!effectivePropertyId && resolution.propertyId) {
         effectivePropertyId = resolution.propertyId
-        void db
+        await db
           .from('conversations')
           .update({ property_id: effectivePropertyId })
           .eq('id', conversationId)
@@ -312,7 +312,7 @@ export async function dispatchInboundToAiReply(
       }
 
       // 10. RECORD USAGE
-      void logAiUsage(db, {
+      await logAiUsage(db, {
         accountId,
         conversationId,
         mode: 'auto_reply',
@@ -414,7 +414,7 @@ export async function dispatchInboundToAiReply(
           console.error('[ai auto-reply] push notification failed:', err)
         })
       } else {
-        void db
+        await db
           .from('conversations')
           .update({ ai_last_turn_processed_at: new Date().toISOString() })
           .eq('id', conversationId)

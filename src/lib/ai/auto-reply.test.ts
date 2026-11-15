@@ -18,6 +18,11 @@ const h = vi.hoisted(() => ({
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
+    useLazyPersistence: false as boolean,
+    updateThenCalls: 0,
+    updateSettled: false,
+    usageThenCalls: 0,
+    usageSettled: false,
   },
 }))
 
@@ -58,7 +63,26 @@ vi.mock('./admin-client', () => ({
       }
       if (table === 'ai_usage_log') {
         return {
-          insert: () => Promise.resolve({ error: null }),
+          insert: () => {
+            if (!h.state.useLazyPersistence) {
+              return Promise.resolve({ error: null })
+            }
+            // Mimics Supabase PostgrestBuilder: lazy thenable that only executes when awaited.
+            return {
+              then(
+                onFulfilled?: (v: { error: null }) => unknown,
+                onRejected?: (r: unknown) => unknown,
+              ) {
+                h.state.usageThenCalls += 1
+                return new Promise<{ error: null }>((resolve) => {
+                  setTimeout(() => {
+                    h.state.usageSettled = true
+                    resolve({ error: null })
+                  }, 5)
+                }).then(onFulfilled, onRejected)
+              },
+            }
+          },
         }
       }
       if (table === 'messages') {
@@ -85,7 +109,27 @@ vi.mock('./admin-client', () => ({
         }),
         update: (payload: Record<string, unknown>) => {
           h.state.updatePayload = payload
-          return { eq: () => Promise.resolve({ error: null }) }
+          return {
+            eq: () => {
+              if (!h.state.useLazyPersistence) {
+                return Promise.resolve({ error: null })
+              }
+              return {
+                then(
+                  onFulfilled?: (v: { error: null }) => unknown,
+                  onRejected?: (r: unknown) => unknown,
+                ) {
+                  h.state.updateThenCalls += 1
+                  return new Promise<{ error: null }>((resolve) => {
+                    setTimeout(() => {
+                      h.state.updateSettled = true
+                      resolve({ error: null })
+                    }, 5)
+                  }).then(onFulfilled, onRejected)
+                },
+              }
+            },
+          }
         },
       }
     },
@@ -142,6 +186,11 @@ beforeEach(() => {
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
+  h.state.useLazyPersistence = false
+  h.state.updateThenCalls = 0
+  h.state.updateSettled = false
+  h.state.usageThenCalls = 0
+  h.state.usageSettled = false
 
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'Olá!' }])
@@ -303,5 +352,28 @@ describe('Stage 6 — Integration with Real Flow, Handoff & Concurrency Safety',
 
     expect(h.executeConversationalTurn).not.toHaveBeenCalled()
     expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('9. Persistence await guarantee: awaits Supabase lazy thenables before resolving', async () => {
+    h.state.useLazyPersistence = true
+    h.executeConversationalTurn.mockResolvedValueOnce({
+      responseText: 'Vou transferir você para um de nossos especialistas.',
+      handoff: true,
+      decision: {
+        transfer_required: true,
+        boundary_type: 'price',
+        reason: 'Solicitou proposta formal',
+        context_summary: 'Lead interessado em valores',
+        suggested_next_action: 'Enviar proposta',
+      },
+      usage: { promptTokens: 150, completionTokens: 35, totalTokens: 185 },
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.state.updateThenCalls).toBeGreaterThan(0)
+    expect(h.state.updateSettled).toBe(true)
+    expect(h.state.usageThenCalls).toBeGreaterThan(0)
+    expect(h.state.usageSettled).toBe(true)
   })
 })

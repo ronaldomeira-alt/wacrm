@@ -9,6 +9,8 @@ import {
 } from './shared'
 
 const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions'
+const JSON_RETRY_ENFORCEMENT =
+  '[INSTRUÇÃO ESTRUTURAL DE SISTEMA: Responda EXCLUSIVAMENTE com um objeto JSON válido contendo as chaves response_text, transfer_required, boundary_type, reason, context_summary, suggested_next_action e send_media, iniciando com { e terminando com }, sem blocos markdown e sem texto fora do JSON.]'
 
 interface DeepSeekResponse {
   choices?: {
@@ -46,19 +48,22 @@ export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResu
     })
   }
 
+  const mergedMessages = mergeConsecutive(messages)
+  const headers = {
+    Authorization: `Bearer ${apiKey.trim()}`,
+    'Content-Type': 'application/json',
+  }
+
   let res: Response
   try {
     res = await fetch(DEEPSEEK_URL, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey.trim()}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model: model || 'deepseek-flash',
         messages: [
           { role: 'system', content: systemPrompt },
-          ...mergeConsecutive(messages),
+          ...mergedMessages,
         ],
         max_tokens: maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         ...(structuredOutputRequired ? { response_format: { type: 'json_object' } } : {}),
@@ -73,9 +78,52 @@ export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResu
     throw await providerHttpError('DeepSeek', res)
   }
 
-  const data = (await res.json().catch(() => null)) as DeepSeekResponse | null
+  let data = (await res.json().catch(() => null)) as DeepSeekResponse | null
   const choice = data?.choices?.[0]?.message
-  const text = choice?.content || choice?.reasoning_content
+  let text = structuredOutputRequired
+    ? (choice?.content ?? '')
+    : (choice?.content || choice?.reasoning_content || '')
+
+  if (structuredOutputRequired && (!text || typeof text !== 'string' || !text.trim())) {
+    console.warn(
+      '[deepseek] Empty content with json_object response_format; retrying without response_format and with strict JSON enforcement.',
+    )
+    const retryMessages = mergedMessages.map((m) => ({ ...m }))
+    const lastIdx = retryMessages.length - 1
+    if (lastIdx >= 0 && retryMessages[lastIdx].role === 'user') {
+      retryMessages[lastIdx].content = `${retryMessages[lastIdx].content}\n\n${JSON_RETRY_ENFORCEMENT}`
+    } else {
+      retryMessages.push({ role: 'user', content: JSON_RETRY_ENFORCEMENT })
+    }
+
+    let retryRes: Response
+    try {
+      retryRes = await fetch(DEEPSEEK_URL, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: model || 'deepseek-flash',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...retryMessages,
+          ],
+          max_tokens: maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+    } catch (err) {
+      throw toNetworkError(err)
+    }
+
+    if (!retryRes.ok) {
+      throw await providerHttpError('DeepSeek', retryRes)
+    }
+
+    const retryData = (await retryRes.json().catch(() => null)) as DeepSeekResponse | null
+    data = retryData
+    text = retryData?.choices?.[0]?.message?.content ?? ''
+  }
+
   if (!text || typeof text !== 'string' || !text.trim()) {
     throw new AiError('DeepSeek returned an empty response.', {
       code: 'empty_response',

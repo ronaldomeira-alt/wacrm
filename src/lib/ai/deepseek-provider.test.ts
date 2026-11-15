@@ -215,6 +215,117 @@ describe('DeepSeek Provider Integration (DeepSeek V4.1 Flash-1017)', () => {
         expect(aiErr.message).toContain('DeepSeek rejected the API key')
       }
     })
+
+    it('retries once without response_format when structuredOutputRequired gets whitespace content', async () => {
+      const recoveredJson = JSON.stringify({
+        response_text: 'Posso te enviar os detalhes do empreendimento.',
+        transfer_required: false,
+        boundary_type: null,
+      })
+
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: '   \n\n  ',
+                    reasoning_content: 'thinking',
+                  },
+                },
+              ],
+              usage: { prompt_tokens: 100, completion_tokens: 20 },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: recoveredJson,
+                  },
+                },
+              ],
+              usage: { prompt_tokens: 110, completion_tokens: 35 },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+
+      try {
+        const result = await generateDeepSeek({
+          apiKey: 'sk-secret-deepseek-123',
+          model: 'deepseek-chat',
+          systemPrompt: 'sys',
+          messages: [{ role: 'user', content: 'oi' }],
+          timeoutMs: 5000,
+          structuredOutputRequired: true,
+        })
+
+        expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+        const firstBody = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))
+        const secondBody = JSON.parse(String(fetchSpy.mock.calls[1][1]?.body))
+
+        expect(firstBody.response_format).toBeDefined()
+        expect(secondBody.response_format).toBeUndefined()
+
+        const secondLastUserMsg = [...secondBody.messages]
+          .reverse()
+          .find((m: { role: string }) => m.role === 'user')
+        expect(secondLastUserMsg?.content).toContain('[INSTRUÇÃO ESTRUTURAL DE SISTEMA:')
+
+        expect(result.text).toBe(recoveredJson)
+      } finally {
+        fetchSpy.mockRestore()
+      }
+    })
+
+    it('throws AiError empty_response when structuredOutputRequired gets empty content on both attempts', async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '  \n ', reasoning_content: 'thinking' } }],
+              usage: { prompt_tokens: 90, completion_tokens: 10 },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '' } }],
+              usage: { prompt_tokens: 100, completion_tokens: 0 },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+        )
+
+      try {
+        await expect(
+          generateDeepSeek({
+            apiKey: 'sk-secret-deepseek-123',
+            model: 'deepseek-chat',
+            systemPrompt: 'sys',
+            messages: [{ role: 'user', content: 'oi' }],
+            timeoutMs: 5000,
+            structuredOutputRequired: true,
+          }),
+        ).rejects.toMatchObject({
+          code: 'empty_response',
+        })
+        expect(fetchSpy).toHaveBeenCalledTimes(2)
+      } finally {
+        fetchSpy.mockRestore()
+      }
+    })
   })
 
   describe('generateReply via DeepSeek provider', () => {
