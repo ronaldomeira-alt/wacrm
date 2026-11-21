@@ -472,7 +472,11 @@ export interface Conversation {
 // Notifications (migration 027)
 // ============================================================
 
-export type NotificationType = 'conversation_assigned';
+export type NotificationType =
+  | 'conversation_assigned'
+  | 'match_created'
+  | 'match_reopened'
+  | 'match_interest';
 
 export interface Notification {
   id: string;
@@ -486,6 +490,7 @@ export interface Notification {
   actor_user_id?: string;
   title: string;
   body?: string;
+  metadata?: Record<string, unknown> | null;
   read_at?: string;
   created_at: string;
 }

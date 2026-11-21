@@ -35,13 +35,18 @@ import {
   ExternalLink,
   PauseCircle,
   Archive,
-  Trash2,
   CheckCircle2,
   AlertTriangle,
   Loader2,
   Phone,
   Bed,
+  Eye,
+  EyeOff,
+  Clock,
+  RotateCcw,
 } from 'lucide-react';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import { toast } from 'sonner';
 import type { LeadMatchGroup, MatchStatus } from '@/lib/match/types';
 import type { MatchCardItem } from '@/components/match/match-card';
@@ -50,6 +55,7 @@ interface LeadMatchesModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   group: LeadMatchGroup | null;
+  highlightPropertyId?: string | null;
   onOpenSendModal: (match: MatchCardItem) => void;
   onMatchUpdated: () => void;
 }
@@ -68,6 +74,7 @@ export function LeadMatchesModal({
   open,
   onOpenChange,
   group,
+  highlightPropertyId,
   onOpenSendModal,
   onMatchUpdated,
 }: LeadMatchesModalProps) {
@@ -499,26 +506,37 @@ export function LeadMatchesModal({
                 </div>
               ) : (
                 filteredMatches.map((m) => {
-                const isSelected = selectedIds.includes(m.id);
-                const score = Math.round(m.match_score);
-                const prop = m.property;
-                const formattedPrice = prop?.priceMin
-                  ? new Intl.NumberFormat('pt-BR', {
-                      style: 'currency',
-                      currency: 'BRL',
-                      maximumFractionDigits: 0,
-                    }).format(prop.priceMin)
-                  : 'Sob consulta';
+                  const isSelected = selectedIds.includes(m.id);
+                  const isHighlighted =
+                    Boolean(highlightPropertyId) && m.property_id === highlightPropertyId;
+                  const score = Math.round(m.match_score);
+                  const prop = m.property;
+                  const mAny = m as unknown as {
+                    created_at?: string;
+                    reopen_reason?: string | null;
+                  };
+                  const createdLabel = mAny.created_at
+                    ? format(new Date(mAny.created_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })
+                    : null;
+                  const formattedPrice = prop?.priceMin
+                    ? new Intl.NumberFormat('pt-BR', {
+                        style: 'currency',
+                        currency: 'BRL',
+                        maximumFractionDigits: 0,
+                      }).format(prop.priceMin)
+                    : 'Sob consulta';
 
-                return (
-                  <div
-                    key={m.id}
-                    className={`flex items-center justify-between gap-3 p-2.5 rounded-lg transition-colors border ${
-                      isSelected
-                        ? 'bg-primary/5 border-primary/30'
-                        : 'bg-card/40 border-border/40 hover:bg-muted/30 hover:border-border/80'
-                    }`}
-                  >
+                  return (
+                    <div
+                      key={m.id}
+                      className={`flex items-center justify-between gap-3 p-2.5 rounded-lg transition-colors border ${
+                        isHighlighted
+                          ? 'bg-primary/10 border-primary ring-1 ring-primary/40'
+                          : isSelected
+                          ? 'bg-primary/5 border-primary/30'
+                          : 'bg-card/40 border-border/40 hover:bg-muted/30 hover:border-border/80'
+                      }`}
+                    >
                     {/* Checkbox + Thumbnail */}
                     <div className="flex items-center gap-3 shrink-0">
                       <Checkbox
@@ -575,7 +593,19 @@ export function LeadMatchesModal({
                         )}
 
                         <span className="capitalize">{prop?.deliveryStatus?.replace('_', ' ')}</span>
+
+                        {createdLabel && (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80">
+                            <Clock className="size-2.5" />
+                            {createdLabel}
+                          </span>
+                        )}
                       </div>
+                      {mAny.reopen_reason && (
+                        <p className="text-[10px] text-amber-400 mt-0.5 truncate">
+                          Reaberto: {mAny.reopen_reason}
+                        </p>
+                      )}
                     </div>
 
                     {/* Preço + Ações */}
@@ -628,6 +658,16 @@ export function LeadMatchesModal({
                             </DropdownMenuItem>
                           )}
 
+                          {m.match_status !== 'em_analise' && (
+                            <DropdownMenuItem
+                              onClick={() => handleStatusChange(m.id, 'em_analise')}
+                              className="gap-2 cursor-pointer"
+                            >
+                              <Eye className="size-3.5 text-blue-400" />
+                              Mover para Em análise
+                            </DropdownMenuItem>
+                          )}
+
                           {m.match_status !== 'pausado' ? (
                             <DropdownMenuItem
                               onClick={() => handleStatusChange(m.id, 'pausado')}
@@ -659,20 +699,30 @@ export function LeadMatchesModal({
                               onClick={() => handleStatusChange(m.id, 'novo')}
                               className="gap-2 cursor-pointer"
                             >
-                              <CheckCircle2 className="size-3.5 text-emerald-500" />
-                              Desarquivar
+                              <RotateCcw className="size-3.5 text-emerald-500" />
+                              Restaurar de Arquivados
                             </DropdownMenuItem>
                           )}
 
                           <DropdownMenuSeparator />
 
-                          <DropdownMenuItem
-                            onClick={() => handleDiscard(m.id)}
-                            className="gap-2 text-rose-500 focus:text-rose-500 cursor-pointer"
-                          >
-                            <Trash2 className="size-3.5" />
-                            Descartar match
-                          </DropdownMenuItem>
+                          {m.match_status !== 'ignorado' ? (
+                            <DropdownMenuItem
+                              onClick={() => handleDiscard(m.id)}
+                              className="gap-2 text-rose-500 focus:text-rose-500 cursor-pointer"
+                            >
+                              <EyeOff className="size-3.5" />
+                              Ignorar / Descartar match
+                            </DropdownMenuItem>
+                          ) : (
+                            <DropdownMenuItem
+                              onClick={() => handleStatusChange(m.id, 'novo')}
+                              className="gap-2 text-emerald-500 cursor-pointer"
+                            >
+                              <RotateCcw className="size-3.5" />
+                              Restaurar match ignorado
+                            </DropdownMenuItem>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>

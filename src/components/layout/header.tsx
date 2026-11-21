@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ModeToggle } from "@/components/layout/mode-toggle";
+import { AssignedNotificationsPopover } from "@/components/action-items/assigned-notifications-popover";
 
 const pageTitles: Record<string, string> = {
   "/dashboard": "dashboard",
@@ -44,7 +45,7 @@ interface HeaderProps {
   onOpenSidebar?: () => void;
 }
 
-import { useState, useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 
 export function Header({ onOpenSidebar }: HeaderProps) {
@@ -52,10 +53,75 @@ export function Header({ onOpenSidebar }: HeaderProps) {
   const pathname = usePathname();
   const { profile, signOut } = useAuth();
   const titleKey = getPageTitleKey(pathname);
-  const [mounted, setMounted] = useState(false);
+  const statusBarShieldRef = useRef<HTMLDivElement>(null);
+  const blurCoverRef = useRef<HTMLDivElement>(null);
+  const blurPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMounted(true);
+    const isIOS =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    if (!isIOS) return;
+
+    const isStandalone =
+      window.matchMedia?.("(display-mode: standalone)").matches ||
+      Boolean(
+        (window.navigator as Navigator & { standalone?: boolean }).standalone,
+      );
+    if (!isStandalone) return;
+
+    let rafId = 0;
+    let slideOutTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Triggers a brief offscreen-to-viewport CSS transform on a full-height fixed
+    // layer on launch and foreground resume (e.g., returning from WhatsApp) so
+    // iOS WKWebView switches its top scroll pocket away from live blur while the
+    // panel remains parked offscreen in the DOM.
+    const suppressTopBlur = () => {
+      const cover = blurCoverRef.current;
+      const panel = blurPanelRef.current;
+      if (!cover || !panel) return;
+
+      if (rafId) cancelAnimationFrame(rafId);
+      if (slideOutTimer) clearTimeout(slideOutTimer);
+
+      cover.style.display = "none";
+      panel.style.webkitTransform = "translateX(110%)";
+      panel.style.transform = "translateX(110%)";
+      void panel.offsetWidth;
+
+      rafId = requestAnimationFrame(() => {
+        cover.style.display = "block";
+        panel.style.webkitTransform = "translateX(0%)";
+        panel.style.transform = "translateX(0%)";
+
+        slideOutTimer = setTimeout(() => {
+          cover.style.display = "none";
+          panel.style.webkitTransform = "translateX(110%)";
+          panel.style.transform = "translateX(110%)";
+          slideOutTimer = null;
+        }, 350);
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        suppressTopBlur();
+      }
+    };
+
+    suppressTopBlur();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pageshow", suppressTopBlur);
+    window.addEventListener("focus", suppressTopBlur);
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      if (slideOutTimer) clearTimeout(slideOutTimer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pageshow", suppressTopBlur);
+      window.removeEventListener("focus", suppressTopBlur);
+    };
   }, []);
 
   const initial =
@@ -68,6 +134,21 @@ export function Header({ onOpenSidebar }: HeaderProps) {
       data-app-header
       className="relative z-20 shrink-0 border-b border-border bg-background pt-[env(safe-area-inset-top,44px)]"
     >
+      <div
+        ref={statusBarShieldRef}
+        data-ios-status-bar-shield
+        aria-hidden="true"
+      />
+      <div
+        ref={blurCoverRef}
+        data-ios-blur-cover
+        aria-hidden="true"
+      />
+      <div
+        ref={blurPanelRef}
+        data-ios-blur-panel
+        aria-hidden="true"
+      />
       <div className="flex h-[var(--header-content-height)] items-center justify-between gap-3 px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2">
           {/* Hamburger — mobile only. 44×44 hit target per Apple HIG. */}
@@ -79,15 +160,13 @@ export function Header({ onOpenSidebar }: HeaderProps) {
           >
             <Menu className="h-5 w-5" />
           </button>
-          <h1
-            key={mounted ? "mounted" : "init"}
-            className="text-base font-semibold text-foreground sm:text-lg"
-          >
+          <h1 className="text-base font-semibold text-foreground sm:text-lg">
             {t(titleKey as string)}
           </h1>
         </div>
 
       <div className="flex items-center gap-1 sm:gap-2">
+        <AssignedNotificationsPopover />
         <ModeToggle />
 
         <DropdownMenu>

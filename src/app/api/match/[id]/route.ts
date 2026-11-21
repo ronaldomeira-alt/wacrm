@@ -1,7 +1,30 @@
 import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
-import { updateMatchStatus } from '@/lib/match/service';
+import {
+  applyMatchLifecycleAction,
+  updateMatchStatus,
+  type MatchLifecycleAction,
+} from '@/lib/match/service';
 import type { MatchStatus } from '@/lib/match/types';
+
+const ALLOWED_STATUSES: MatchStatus[] = [
+  'novo',
+  'em_analise',
+  'enviado',
+  'pausado',
+  'arquivado',
+  'ignorado',
+];
+
+const ALLOWED_ACTIONS: MatchLifecycleAction[] = [
+  'view',
+  'mark_viewed',
+  'ignore',
+  'archive',
+  'pause',
+  'send',
+  'restore',
+];
 
 export async function PATCH(
   request: Request,
@@ -13,11 +36,37 @@ export async function PATCH(
 
     const body = (await request.json().catch(() => null)) as {
       status?: MatchStatus;
+      action?: MatchLifecycleAction;
+      leadId?: string;
+      matchIds?: string[];
+      currentStatusFilter?: MatchStatus;
     } | null;
 
-    if (!body?.status || !['novo', 'enviado', 'pausado', 'arquivado'].includes(body.status)) {
+    if (body?.action && ALLOWED_ACTIONS.includes(body.action)) {
+      const success = await applyMatchLifecycleAction(ctx.supabase, ctx.accountId, {
+        matchId: body.leadId || body.matchIds ? undefined : matchId,
+        leadId: body.leadId,
+        matchIds: body.matchIds,
+        currentStatusFilter: body.currentStatusFilter,
+        action: body.action,
+      });
+
+      if (!success) {
+        return NextResponse.json(
+          { error: 'Falha ao executar ação de ciclo de vida do Match' },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({ ok: true, action: body.action });
+    }
+
+    if (!body?.status || !ALLOWED_STATUSES.includes(body.status)) {
       return NextResponse.json(
-        { error: 'Status inválido. Deve ser novo, enviado, pausado ou arquivado.' },
+        {
+          error:
+            'Status inválido. Deve ser novo, em_analise, enviado, pausado, arquivado ou ignorado.',
+        },
         { status: 400 }
       );
     }
@@ -34,8 +83,8 @@ export async function PATCH(
 }
 
 /**
- * DELETE = Descartar Match (FASE 11: Supressão).
- * Marca o Match como suppressed = true no banco de dados. Nunca remove fisicamente.
+ * DELETE = Descartar / Ignorar Match (FASE 11: Supressão com Snapshot).
+ * Marca o Match como suppressed = true e salva snapshot para só reabrir em caso de mudança material.
  */
 export async function DELETE(
   request: Request,
@@ -45,21 +94,16 @@ export async function DELETE(
     const ctx = await requireRole('agent');
     const { id: matchId } = await params;
 
-    const { error } = await ctx.supabase
-      .from('lead_property_matches')
-      .update({
-        suppressed: true,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', matchId)
-      .eq('account_id', ctx.accountId);
+    const success = await applyMatchLifecycleAction(ctx.supabase, ctx.accountId, {
+      matchId,
+      action: 'ignore',
+    });
 
-    if (error) {
-      console.error('[DELETE /api/match/:id] Erro ao suprimir match:', error);
+    if (!success) {
       return NextResponse.json({ error: 'Falha ao descartar match' }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, suppressed: true });
+    return NextResponse.json({ ok: true, suppressed: true, status: 'ignorado' });
   } catch (err) {
     return toErrorResponse(err);
   }

@@ -1,4 +1,4 @@
-import { NextResponse, after } from 'next/server';
+import { NextResponse } from 'next/server';
 import { authenticateTunnelRequest, ensurePropertyUuid } from '@/lib/tunnel/auth';
 import { recalculateMatchesForProperty } from '@/lib/match/service';
 import { isMatchRelevantProjectionChange } from '@/lib/match/change-detection';
@@ -117,18 +117,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Erro ao persistir projeção' }, { status: 500 });
   }
 
-  // Recalcula os Matches para os leads ativos e elegíveis em segundo plano apenas se:
+  // Recalcula os Matches para os leads ativos e elegíveis apenas se:
   // 1. O imóvel for novo na projeção; OU
   // 2. Houver alteração real em campos utilizados pelo algoritmo de Match (preço, bairro, quartos, status, etc.).
   // Alterações em fotos (cover_url), links (public_url), título ou código NÃO disparam recálculo.
+  let matchesRecalculated = 0;
+  let strongMatchesCount = 0;
+  let reopenedCount = 0;
+
   if (isRelevantChange) {
-    after(async () => {
-      try {
-        await recalculateMatchesForProperty(db, accountId, canonicalPropertyId);
-      } catch (err) {
-        console.error('[POST /api/tunnel/v1/properties/sync] Erro ao recalcular matches em background:', err);
-      }
-    });
+    try {
+      const recalc = await recalculateMatchesForProperty(db, accountId, canonicalPropertyId);
+      matchesRecalculated = recalc.totalLeadsEvaluated;
+      strongMatchesCount = recalc.strongMatchesCount;
+      reopenedCount = recalc.reopenedCount || 0;
+    } catch (err) {
+      console.error('[POST /api/tunnel/v1/properties/sync] Erro ao recalcular matches:', err);
+    }
   }
 
   return NextResponse.json({
@@ -136,5 +141,8 @@ export async function POST(request: Request) {
     action: 'upserted',
     property_id: canonicalPropertyId,
     recalculated: isRelevantChange,
+    matches_recalculated: matchesRecalculated,
+    strong_matches_count: strongMatchesCount,
+    reopened_count: reopenedCount,
   });
 }

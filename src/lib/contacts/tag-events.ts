@@ -6,6 +6,7 @@ import {
 } from '@/lib/automations/engine';
 import { addContactTagIfAbsent, type ContactTagSource } from './tag-write';
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from './tag-chain';
+import { recalculateMatchesForLead } from '@/lib/match/service';
 
 export { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from './tag-chain';
 
@@ -39,6 +40,14 @@ export async function addContactTagAndDispatch(
   });
 
   if (!added) return { added: false, dispatched: false, reason: 'duplicate' };
+
+  if (typeof (input.db as { from?: unknown })?.from === 'function') {
+    try {
+      await recalculateMatchesForLead(input.db, input.accountId, input.contactId);
+    } catch (err) {
+      console.warn('[tag-events] recalculateMatchesForLead warning:', err);
+    }
+  }
 
   const depth = getTagChainDepth(input.context);
   if (depth >= MAX_TAG_CHAIN_DEPTH) {

@@ -31,17 +31,33 @@ export async function POST(request: Request) {
       )
     }
 
-    const { error } = await ctx.supabase.from('push_subscriptions').upsert(
+    let { error } = await ctx.supabase.from('push_subscriptions').upsert(
       {
         account_id: ctx.accountId,
         user_id: ctx.userId,
         endpoint,
         p256dh,
         auth_key: authKey,
+        auth: authKey,
         user_agent: request.headers.get('user-agent') ?? null,
       },
       { onConflict: 'endpoint' },
     )
+
+    if (error) {
+      const retry = await ctx.supabase.from('push_subscriptions').upsert(
+        {
+          account_id: ctx.accountId,
+          user_id: ctx.userId,
+          endpoint,
+          p256dh,
+          auth_key: authKey,
+          user_agent: request.headers.get('user-agent') ?? null,
+        },
+        { onConflict: 'endpoint' },
+      )
+      error = retry.error
+    }
 
     if (error) {
       console.error('[POST /api/push/subscribe] insert error:', error)

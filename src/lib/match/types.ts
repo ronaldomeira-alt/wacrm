@@ -5,8 +5,45 @@
 
 export type InfoProvenance = 'ctwa' | 'conversation' | 'manual';
 
-export type MatchStatus = 'novo' | 'enviado' | 'pausado' | 'arquivado';
+export type MatchStatus =
+  | 'novo'
+  | 'em_analise'
+  | 'enviado'
+  | 'pausado'
+  | 'arquivado'
+  | 'ignorado';
 export type MatchOrigin = 'match_automatico' | 'envio_manual' | 'origem_ctwa';
+
+/**
+ * Snapshot dos atributos relevantes no momento em que o corretor ignora ou arquiva
+ * um Match. Usado para avaliar de forma objetiva e determinística se houve mudança
+ * material capaz de justificar a reabertura da oportunidade.
+ */
+export interface MatchDecisionSnapshot {
+  decidedAt: string;
+  decidedStatus: 'ignorado' | 'arquivado';
+  matchScore: number;
+  propertyPriceMin: number;
+  propertyPriceMax: number;
+  propertyNeighborhood: string;
+  propertyBedroomsMin?: number | null;
+  propertyDeliveryStatus?: string;
+  leadPriceMax?: number | null;
+  leadMaturity: number;
+}
+
+/**
+ * Metadados de ciclo de vida persistidos na linha do match (colunas nativas + fallback JSONB).
+ */
+export interface MatchLifecycleMeta {
+  state?: MatchStatus;
+  viewedAt?: string | null;
+  ignoredAt?: string | null;
+  reopenedAt?: string | null;
+  reopenReason?: string | null;
+  reopenCount?: number;
+  snapshot?: MatchDecisionSnapshot | null;
+}
 
 export type DeliveryStatus = 'pronto' | 'planta' | 'em_construcao';
 export type PropertyOperation = 'venda' | 'locacao';
@@ -105,6 +142,7 @@ export interface MatchScoreBreakdown {
   area: number;           // 0–5
   penalties: string[];
   reasons: string[];
+  _lifecycle?: MatchLifecycleMeta;
 }
 
 /**
@@ -139,6 +177,13 @@ export interface MatchRecord {
   sentAt?: string | null;
   pausedAt?: string | null;
   archivedAt?: string | null;
+  viewedAt?: string | null;
+  ignoredAt?: string | null;
+  reopenedAt?: string | null;
+  reopenReason?: string | null;
+  reopenCount?: number;
+  isUnread?: boolean;
+  isRecent?: boolean;
   createdAt: string;
   updatedAt: string;
   
@@ -197,5 +242,13 @@ export interface LeadMatchGroup {
   bestMatch: MatchRecord;
   totalMatches: number;
   statusMatchesCount: number;
+  unreadMatchesCount?: number;
+  isUnread?: boolean;
+  isRecent?: boolean;
+  latestMatchAt?: string;
+  firstMatchAt?: string;
+  viewedAt?: string | null;
+  reopenedAt?: string | null;
+  reopenReason?: string | null;
   matches: MatchRecord[];
 }

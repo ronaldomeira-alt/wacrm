@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -14,18 +14,31 @@ import {
 import { LeadMatchCard } from '@/components/match/lead-match-card';
 import { LeadMatchesModal } from '@/components/match/lead-matches-modal';
 import { SendWhatsAppModal } from '@/components/match/send-whatsapp-modal';
+import { AssignedNotificationsPopover } from '@/components/action-items/assigned-notifications-popover';
 import type { MatchCardItem } from '@/components/match/match-card';
+import type { MatchLifecycleAction } from '@/lib/match/service';
 import { toast } from 'sonner';
-import { Sparkles, Search, RefreshCw, Loader2, Building2 } from 'lucide-react';
+import {
+  Sparkles,
+  Search,
+  RefreshCw,
+  Loader2,
+  Building2,
+  Clock,
+  CheckCircle2,
+  Archive,
+  History,
+  ArrowUpDown,
+} from 'lucide-react';
 import type { MatchStatus, LeadMatchGroup } from '@/lib/match/types';
 import { createClient } from '@/lib/supabase/client';
 import { PULL_TO_REFRESH_EVENT } from '@/hooks/use-pull-to-refresh';
 
 const SCORE_FILTER_LABELS: Record<string, string> = {
-  all: 'Todas as faixas',
+  all: 'Compatibilidade: Todas',
   strong: '85%+ (Match Forte)',
   good: '70%–84% (Bom Match)',
-  possible: '50%–69% (Compatibilidade Possível)',
+  possible: '50%–69% (Possível)',
   manual: '0%–49% (Consulta Manual)',
 };
 
@@ -36,105 +49,184 @@ const MATURITY_FILTER_LABELS: Record<string, string> = {
 };
 
 const AI_SCORE_FILTER_LABELS: Record<string, string> = {
-  '0': 'Score: Qualquer',
+  '0': 'Score IA: Qualquer',
   '5': 'Score ≥ 5 (Morno/Quente)',
   '7': 'Score ≥ 7 (Qualificado)',
   '9': 'Score ≥ 9 (Altíssimo calor)',
 };
 
+const DATE_FILTER_LABELS: Record<string, string> = {
+  all: 'Período: Todas as datas',
+  today: 'Hoje',
+  '24h': 'Últimas 24 horas',
+  '7d': 'Últimos 7 dias (Recentes)',
+  '30d': 'Últimos 30 dias',
+  older: 'Anteriores (> 7 dias)',
+};
+
+const SORT_BY_LABELS: Record<string, string> = {
+  recent_desc: 'Mais recentes primeiro',
+  score_desc: 'Maior compatibilidade',
+  priority_desc: 'Maior prioridade comercial',
+  ai_score_desc: 'Maior Score IA',
+};
+
 export default function MatchPage() {
   const [activeTab, setActiveTab] = useState<MatchStatus>('novo');
   const [groups, setGroups] = useState<LeadMatchGroup[]>([]);
-  const [counts, setCounts] = useState({ novos: 0, enviados: 0, pausados: 0, arquivados: 0 });
+  const [counts, setCounts] = useState({
+    novos: 0,
+    em_analise: 0,
+    enviados: 0,
+    pausados: 0,
+    arquivados: 0,
+    ignorados: 0,
+    recentes: 0,
+    nao_lidos: 0,
+  });
+  const [catalogStatus, setCatalogStatus] = useState<{
+    activePropertiesCount: number;
+    totalProjectionsCount: number;
+    latestCatalogUpdate: string | null;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingActionKey, setLoadingActionKey] = useState<string | null>(null);
+  const [triagingHistory, setTriagingHistory] = useState(false);
 
   // Filtros
   const [leadSearch, setLeadSearch] = useState('');
   const [propertySearch, setPropertySearch] = useState('');
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | '24h' | '7d' | '30d' | 'older'>('all');
   const [scoreFilter, setScoreFilter] = useState<'all' | 'strong' | 'good' | 'possible' | 'manual'>('all');
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
   const [minAiScore, setMinAiScore] = useState<string>('0');
+  const [sortBy, setSortBy] = useState<'recent_desc' | 'score_desc' | 'priority_desc' | 'ai_score_desc'>('recent_desc');
 
-  // Modais
+  // Modais e Deep-link de Notificações
   const [selectedGroupForModal, setSelectedGroupForModal] = useState<LeadMatchGroup | null>(null);
+  const [highlightPropertyId, setHighlightPropertyId] = useState<string | null>(null);
   const [selectedMatchForSend, setSelectedMatchForSend] = useState<MatchCardItem | null>(null);
+  const deepLinkHandledRef = useRef<string | null>(null);
 
-  const fetchMatches = useCallback(async (silent = false) => {
-    if (!silent) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
-
-    try {
-      const params = new URLSearchParams();
-      params.set('status', activeTab);
-
-      if (leadSearch.trim()) params.set('lead_search', leadSearch.trim());
-      if (propertySearch.trim()) params.set('property_search', propertySearch.trim());
-
-      if (scoreFilter === 'strong') {
-        params.set('min_score', '85');
-      } else if (scoreFilter === 'good') {
-        params.set('min_score', '70');
-        params.set('max_score', '84');
-      } else if (scoreFilter === 'possible') {
-        params.set('min_score', '50');
-        params.set('max_score', '69');
-      } else if (scoreFilter === 'manual') {
-        params.set('min_score', '0');
-        params.set('max_score', '49');
-      }
-
-      if (maturityFilter === 'ready') {
-        params.set('min_maturity', '70');
-      }
-
-      if (parseInt(minAiScore, 10) > 0) {
-        params.set('min_ai_score', minAiScore);
-      }
-
-      const res = await fetch(`/api/match?${params.toString()}`);
-      if (!res.ok) throw new Error('Falha ao carregar matches');
-      const data = await res.json();
-
-      const newGroups: LeadMatchGroup[] = data.groups || [];
-      setGroups(newGroups);
-      if (data.counts) {
-        setCounts(data.counts);
-      }
-      // Se o modal estiver aberto, atualiza com os dados frescos
-      setSelectedGroupForModal((prev) => {
-        if (!prev) return null;
-        return newGroups.find((g) => g.leadId === prev.leadId) || null;
-      });
-    } catch (err) {
-      console.error(err);
+  const fetchMatches = useCallback(
+    async (silent = false, forceInventorySync = false) => {
       if (!silent) {
-        toast.error('Erro ao carregar lista de matches');
+        setLoading(true);
+      } else {
+        setRefreshing(true);
       }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [activeTab, leadSearch, propertySearch, scoreFilter, maturityFilter, minAiScore]);
+
+      try {
+        const params = new URLSearchParams();
+        params.set('status', activeTab);
+        params.set('sort_by', sortBy);
+
+        if (forceInventorySync) params.set('sync', '1');
+        if (leadSearch.trim()) params.set('lead_search', leadSearch.trim());
+        if (propertySearch.trim()) params.set('property_search', propertySearch.trim());
+        if (dateFilter !== 'all') params.set('date_filter', dateFilter);
+
+        if (scoreFilter === 'strong') {
+          params.set('min_score', '85');
+        } else if (scoreFilter === 'good') {
+          params.set('min_score', '70');
+          params.set('max_score', '84');
+        } else if (scoreFilter === 'possible') {
+          params.set('min_score', '50');
+          params.set('max_score', '69');
+        } else if (scoreFilter === 'manual') {
+          params.set('min_score', '0');
+          params.set('max_score', '49');
+        }
+
+        if (maturityFilter === 'ready') {
+          params.set('min_maturity', '70');
+        } else if (maturityFilter === 'growing') {
+          params.set('max_maturity', '69');
+        }
+
+        if (parseInt(minAiScore, 10) > 0) {
+          params.set('min_ai_score', minAiScore);
+        }
+
+        const res = await fetch(`/api/match?${params.toString()}`);
+        if (!res.ok) throw new Error('Falha ao carregar matches');
+        const data = await res.json();
+
+        const newGroups: LeadMatchGroup[] = data.groups || [];
+        setGroups(newGroups);
+        if (data.counts) {
+          setCounts((prev) => ({ ...prev, ...data.counts }));
+        }
+        if (data.catalogStatus) {
+          setCatalogStatus(data.catalogStatus);
+        }
+
+        // Atualiza modal caso esteja aberto
+        setSelectedGroupForModal((prev) => {
+          if (!prev) return null;
+          return newGroups.find((g) => g.leadId === prev.leadId) || null;
+        });
+
+        // Verifica parâmetros de deep-link vindos de notificação (?lead=...&property=...)
+        if (typeof window !== 'undefined') {
+          const urlParams = new URLSearchParams(window.location.search);
+          const targetLeadId = urlParams.get('lead');
+          const targetPropId = urlParams.get('property');
+          const deepLinkKey = `${targetLeadId || ''}:${targetPropId || ''}`;
+
+          if ((targetLeadId || targetPropId) && deepLinkHandledRef.current !== deepLinkKey) {
+            deepLinkHandledRef.current = deepLinkKey;
+            if (targetPropId) {
+              setHighlightPropertyId(targetPropId);
+            }
+            if (targetLeadId) {
+              const foundGroup = newGroups.find((g) => g.leadId === targetLeadId);
+              if (foundGroup) {
+                setSelectedGroupForModal(foundGroup);
+              } else {
+                // Busca diretamente o grupo do lead caso esteja em outra aba/filtro
+                fetch(`/api/match/lead/${targetLeadId}`)
+                  .then((r) => (r.ok ? r.json() : null))
+                  .then((leadData) => {
+                    if (leadData?.matchGroup) {
+                      setSelectedGroupForModal(leadData.matchGroup);
+                    }
+                  })
+                  .catch(() => {});
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        if (!silent) {
+          toast.error('Erro ao carregar lista de matches');
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [activeTab, leadSearch, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy]
+  );
 
   useEffect(() => {
     fetchMatches();
   }, [fetchMatches]);
 
   // Sincronização em tempo real via Supabase Realtime
-  // Atualiza automaticamente quando imóveis ou matches forem modificados no banco
+  // Escuta alterações em lead_property_matches, property_match_projections E inventory_properties (Meus Imóveis)
   useEffect(() => {
     const supabase = createClient();
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleRefresh = () => {
+    const scheduleRefresh = (forceSync = false) => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        fetchMatches(true);
-      }, 1200);
+        fetchMatches(true, forceSync);
+      }, 1000);
     };
 
     const channel = supabase
@@ -142,12 +234,17 @@ export default function MatchPage() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'lead_property_matches' },
-        scheduleRefresh
+        () => scheduleRefresh(false)
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'property_match_projections' },
-        scheduleRefresh
+        () => scheduleRefresh(false)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'inventory_properties' },
+        () => scheduleRefresh(true)
       )
       .subscribe();
 
@@ -166,7 +263,7 @@ export default function MatchPage() {
     };
 
     const handlePull = () => {
-      fetchMatches(true);
+      fetchMatches(true, true);
     };
 
     document.addEventListener('visibilitychange', handleResume);
@@ -180,13 +277,137 @@ export default function MatchPage() {
     };
   }, [fetchMatches]);
 
+  // Ao abrir o modal de um lead na aba 'novo', registra visualização (mark_viewed) silenciosamente
+  const handleOpenLeadModal = useCallback(
+    (group: LeadMatchGroup) => {
+      setSelectedGroupForModal(group);
+      if (group.isUnread) {
+        fetch('/api/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operation: 'lifecycle',
+            action: 'mark_viewed',
+            leadId: group.leadId,
+            currentStatusFilter: activeTab,
+          }),
+        })
+          .then(() => {
+            setGroups((prev) =>
+              prev.map((g) =>
+                g.leadId === group.leadId ? { ...g, isUnread: false, unreadMatchesCount: 0 } : g
+              )
+            );
+          })
+          .catch(() => {});
+      }
+    },
+    [activeTab]
+  );
+
+  // Ações rápidas de ciclo de vida diretamente no card do Lead (Em análise, Ignorar, Arquivar, Restaurar)
+  const handleQuickAction = useCallback(
+    async (
+      group: LeadMatchGroup,
+      action: MatchLifecycleAction,
+      scope: 'lead' | 'best_match' = 'lead'
+    ) => {
+      const key = `${group.leadId}:${action}`;
+      setLoadingActionKey(key);
+      try {
+        const res = await fetch('/api/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operation: 'lifecycle',
+            action,
+            leadId: scope === 'lead' ? group.leadId : undefined,
+            matchId: scope === 'best_match' ? group.bestMatch?.id : undefined,
+            currentStatusFilter: activeTab,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error('Falha ao atualizar oportunidade');
+        }
+
+        const actionLabels: Record<string, string> = {
+          view: 'Oportunidade movida para Em Análise.',
+          ignore: 'Oportunidade ignorada (não voltará aos novos sem mudança material).',
+          archive: 'Oportunidade arquivada no histórico.',
+          restore: 'Oportunidade restaurada para Novos.',
+        };
+
+        toast.success(actionLabels[action] || 'Estado atualizado!');
+        await fetchMatches(true);
+      } catch (err) {
+        toast.error((err as Error).message || 'Erro ao executar ação');
+      } finally {
+        setLoadingActionKey(null);
+      }
+    },
+    [activeTab, fetchMatches]
+  );
+
+  // Triagem em lote de oportunidades antigas acumuladas (> 14 dias)
+  const handleTriageHistorical = useCallback(async () => {
+    setTriagingHistory(true);
+    try {
+      const res = await fetch('/api/match', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'triage_historical',
+          olderThanDays: 14,
+        }),
+      });
+      if (!res.ok) throw new Error('Falha ao arquivar oportunidades antigas');
+      const data = await res.json();
+      toast.success(
+        `${data.leadsArchived || 0} leads antigos (${data.matchesArchived || 0} matches) movidos para Arquivados!`
+      );
+      await fetchMatches(true);
+    } catch (err) {
+      toast.error((err as Error).message || 'Erro ao arquivar histórico');
+    } finally {
+      setTriagingHistory(false);
+    }
+  }, [fetchMatches]);
+
+  // Separação entre oportunidades recentes (últimos 7 dias) e anteriores na aba 'novo'
+  const { recentGroups, historicalGroups, showSplitView } = useMemo(() => {
+    if (activeTab !== 'novo' || dateFilter !== 'all') {
+      return {
+        recentGroups: groups,
+        historicalGroups: [] as LeadMatchGroup[],
+        showSplitView: false,
+      };
+    }
+
+    const recent: LeadMatchGroup[] = [];
+    const historical: LeadMatchGroup[] = [];
+    for (const g of groups) {
+      if (g.isRecent) {
+        recent.push(g);
+      } else {
+        historical.push(g);
+      }
+    }
+
+    return {
+      recentGroups: recent,
+      historicalGroups: historical,
+      showSplitView: true,
+    };
+  }, [groups, activeTab, dateFilter]);
+
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Top Header */}
       <div className="border-b border-border bg-card/60 backdrop-blur-md px-6 py-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
                 <Sparkles className="size-5 text-primary" />
                 Match
@@ -194,6 +415,11 @@ export default function MatchPage() {
               <span className="rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-xs font-semibold text-primary">
                 Túnel Ativo
               </span>
+              {catalogStatus && (
+                <span className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
+                  {catalogStatus.activePropertiesCount} imóveis ativos sincronizados
+                </span>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
               Recomendações determinísticas de imóveis para leads qualificados.
@@ -201,15 +427,19 @@ export default function MatchPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Sino de Notificações Internas de Match */}
+            <AssignedNotificationsPopover onlyMatch />
+
             <Button
               variant="outline"
               size="sm"
               onClick={() => {
                 setRefreshing(true);
-                fetchMatches();
+                fetchMatches(false, true);
               }}
               disabled={loading || refreshing}
               className="gap-1.5 text-xs"
+              title="Sincronizar com Meus Imóveis e atualizar oportunidades"
             >
               <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
               Atualizar
@@ -217,11 +447,17 @@ export default function MatchPage() {
           </div>
         </div>
 
-        {/* Tabs de Status Visíveis (FASE 11 & 12) */}
-        <div className="mt-4">
+        {/* Tabs de Status do Ciclo de Vida */}
+        <div className="mt-4 overflow-x-auto pb-1 sm:pb-0">
           <Tabs
             value={activeTab}
-            onValueChange={(val) => setActiveTab(val as MatchStatus)}
+            onValueChange={(val) => {
+              const nextTab = val as MatchStatus;
+              setActiveTab(nextTab);
+              if (nextTab === 'novo') {
+                setSortBy('recent_desc');
+              }
+            }}
             className="w-full"
           >
             <TabsList className="bg-muted/60 p-1">
@@ -231,9 +467,15 @@ export default function MatchPage() {
                   {counts.novos}
                 </span>
               </TabsTrigger>
+              <TabsTrigger value="em_analise" className="gap-2 text-xs">
+                Em Análise
+                <span className="rounded-full bg-blue-500/10 px-1.5 py-0.2 text-[10px] font-bold text-blue-400">
+                  {counts.em_analise}
+                </span>
+              </TabsTrigger>
               <TabsTrigger value="enviado" className="gap-2 text-xs">
                 Enviados
-                <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] font-bold text-muted-foreground">
+                <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400">
                   {counts.enviados}
                 </span>
               </TabsTrigger>
@@ -249,6 +491,12 @@ export default function MatchPage() {
                   {counts.arquivados}
                 </span>
               </TabsTrigger>
+              <TabsTrigger value="ignorado" className="gap-2 text-xs">
+                Ignorados
+                <span className="rounded-full bg-rose-500/10 px-1.5 py-0.2 text-[10px] font-bold text-rose-400">
+                  {counts.ignorados}
+                </span>
+              </TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
@@ -256,7 +504,7 @@ export default function MatchPage() {
 
       {/* Barra de Filtros Inteligentes */}
       <div className="border-b border-border bg-card/30 px-6 py-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2.5">
           {/* Busca por Lead */}
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
@@ -279,21 +527,41 @@ export default function MatchPage() {
             />
           </div>
 
-          {/* Faixa de Match */}
+          {/* Filtro de Data / Período */}
+          <Select
+            value={dateFilter}
+            onValueChange={(val) => setDateFilter((val as typeof dateFilter) || 'all')}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Período">
+                {DATE_FILTER_LABELS[dateFilter] || 'Período: Todas as datas'}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent className="text-xs">
+              <SelectItem value="all">Período: Todas as datas</SelectItem>
+              <SelectItem value="today">Hoje</SelectItem>
+              <SelectItem value="24h">Últimas 24 horas</SelectItem>
+              <SelectItem value="7d">Últimos 7 dias (Recentes)</SelectItem>
+              <SelectItem value="30d">Últimos 30 dias</SelectItem>
+              <SelectItem value="older">Anteriores (&gt; 7 dias)</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* Faixa de Compatibilidade */}
           <Select
             value={scoreFilter}
             onValueChange={(val) => setScoreFilter((val as typeof scoreFilter) || 'all')}
           >
             <SelectTrigger className="h-8 text-xs">
               <SelectValue placeholder="Compatibilidade">
-                {SCORE_FILTER_LABELS[scoreFilter] || 'Todas as faixas'}
+                {SCORE_FILTER_LABELS[scoreFilter] || 'Compatibilidade: Todas'}
               </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
-              <SelectItem value="all">Todas as faixas</SelectItem>
+              <SelectItem value="all">Compatibilidade: Todas</SelectItem>
               <SelectItem value="strong">85%+ (Match Forte)</SelectItem>
               <SelectItem value="good">70%–84% (Bom Match)</SelectItem>
-              <SelectItem value="possible">50%–69% (Compatibilidade Possível)</SelectItem>
+              <SelectItem value="possible">50%–69% (Possível)</SelectItem>
               <SelectItem value="manual">0%–49% (Consulta Manual)</SelectItem>
             </SelectContent>
           </Select>
@@ -319,42 +587,162 @@ export default function MatchPage() {
           <Select value={minAiScore} onValueChange={(val) => setMinAiScore(val || '0')}>
             <SelectTrigger className="h-8 text-xs">
               <SelectValue placeholder="Temperatura">
-                {AI_SCORE_FILTER_LABELS[minAiScore] || 'Score: Qualquer'}
+                {AI_SCORE_FILTER_LABELS[minAiScore] || 'Score IA: Qualquer'}
               </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
-              <SelectItem value="0">Score: Qualquer</SelectItem>
+              <SelectItem value="0">Score IA: Qualquer</SelectItem>
               <SelectItem value="5">Score ≥ 5 (Morno/Quente)</SelectItem>
               <SelectItem value="7">Score ≥ 7 (Qualificado)</SelectItem>
               <SelectItem value="9">Score ≥ 9 (Altíssimo calor)</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* Ordenação */}
+          <Select
+            value={sortBy}
+            onValueChange={(val) => setSortBy((val as typeof sortBy) || 'recent_desc')}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <ArrowUpDown className="size-3 mr-1 text-muted-foreground shrink-0" />
+              <SelectValue placeholder="Ordenar por">
+                {SORT_BY_LABELS[sortBy] || 'Mais recentes primeiro'}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent className="text-xs">
+              <SelectItem value="recent_desc">Mais recentes primeiro</SelectItem>
+              <SelectItem value="score_desc">Maior compatibilidade</SelectItem>
+              <SelectItem value="priority_desc">Maior prioridade comercial</SelectItem>
+              <SelectItem value="ai_score_desc">Maior Score IA</SelectItem>
             </SelectContent>
           </Select>
         </div>
       </div>
 
       {/* Conteúdo Principal: Grid de Leads (1 Card Visual = 1 Lead) */}
-      <div className="flex-1 p-6">
+      <div className="flex-1 p-6 space-y-8">
         {loading ? (
           <div className="flex h-64 flex-col items-center justify-center gap-2">
             <Loader2 className="size-8 animate-spin text-primary" />
-            <p className="text-xs text-muted-foreground">Calculando compatibilidades determinísticas...</p>
+            <p className="text-xs text-muted-foreground">
+              Sincronizando catálogo e calculando compatibilidades determinísticas...
+            </p>
           </div>
         ) : groups.length === 0 ? (
           <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
             <Sparkles className="size-10 text-muted-foreground/40 mb-3" />
-            <h3 className="text-sm font-semibold text-foreground">Nenhum Lead com Match nesta visualização</h3>
+            <h3 className="text-sm font-semibold text-foreground">
+              Nenhuma oportunidade encontrada nesta visualização
+            </h3>
             <p className="text-xs text-muted-foreground max-w-sm mt-1">
               Não há recomendações correspondentes aos filtros selecionados na aba{' '}
-              <strong>{activeTab.toUpperCase()}</strong>.
+              <strong>{activeTab.replace('_', ' ').toUpperCase()}</strong>.
             </p>
           </div>
+        ) : showSplitView ? (
+          <>
+            {/* SEÇÃO 1: OPORTUNIDADES NOVAS / RECENTES (Últimos 7 dias) */}
+            <section className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-border/60">
+                <div className="flex items-center gap-2">
+                  <Clock className="size-4 text-primary" />
+                  <h2 className="text-sm font-bold text-foreground">
+                    Novas Oportunidades Recentes (últimos 7 dias)
+                  </h2>
+                  <span className="rounded-full bg-primary/15 border border-primary/30 px-2 py-0.5 text-xs font-bold text-primary">
+                    {recentGroups.length}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Ordenadas da mais recente para a mais antiga.
+                </p>
+              </div>
+
+              {recentGroups.length === 0 ? (
+                <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-emerald-500/30 bg-emerald-500/5 p-6 text-center">
+                  <CheckCircle2 className="size-8 text-emerald-400 mb-2" />
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Nenhuma oportunidade nova identificada nos últimos 7 dias
+                  </h3>
+                  <p className="text-xs text-muted-foreground max-w-md mt-1">
+                    Você está em dia com as novidades recentes! Abaixo estão apenas as oportunidades anteriores acumuladas que aguardam triagem.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {recentGroups.map((group) => (
+                    <LeadMatchCard
+                      key={group.leadId}
+                      group={group}
+                      activeTab={activeTab}
+                      loadingAction={loadingActionKey}
+                      onOpenModal={handleOpenLeadModal}
+                      onQuickAction={handleQuickAction}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* SEÇÃO 2: OPORTUNIDADES ANTERIORES / ACUMULADAS (+7 dias) */}
+            {historicalGroups.length > 0 && (
+              <section className="space-y-3 pt-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-border/60">
+                  <div className="flex items-center gap-2">
+                    <History className="size-4 text-muted-foreground" />
+                    <h2 className="text-sm font-semibold text-muted-foreground">
+                      Oportunidades Anteriores Aguardando Triagem (+7 dias)
+                    </h2>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                      {historicalGroups.length}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={triagingHistory}
+                      onClick={handleTriageHistorical}
+                      className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+                      title="Mover oportunidades com mais de 14 dias para a aba Arquivados (mantendo no histórico)"
+                    >
+                      {triagingHistory ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Archive className="size-3" />
+                      )}
+                      <span>Arquivar anteriores (&gt; 14 dias)</span>
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 opacity-95">
+                  {historicalGroups.map((group) => (
+                    <LeadMatchCard
+                      key={group.leadId}
+                      group={group}
+                      activeTab={activeTab}
+                      loadingAction={loadingActionKey}
+                      onOpenModal={handleOpenLeadModal}
+                      onQuickAction={handleQuickAction}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {groups.map((group) => (
               <LeadMatchCard
                 key={group.leadId}
                 group={group}
-                onOpenModal={(g) => setSelectedGroupForModal(g)}
+                activeTab={activeTab}
+                loadingAction={loadingActionKey}
+                onOpenModal={handleOpenLeadModal}
+                onQuickAction={handleQuickAction}
               />
             ))}
           </div>
@@ -364,10 +752,16 @@ export default function MatchPage() {
       {/* Modal Central Grande de Imóveis Compatíveis do Lead */}
       <LeadMatchesModal
         open={!!selectedGroupForModal}
-        onOpenChange={(open) => !open && setSelectedGroupForModal(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedGroupForModal(null);
+            setHighlightPropertyId(null);
+          }
+        }}
         group={selectedGroupForModal}
+        highlightPropertyId={highlightPropertyId}
         onOpenSendModal={(match) => setSelectedMatchForSend(match)}
-        onMatchUpdated={() => fetchMatches()}
+        onMatchUpdated={() => fetchMatches(true)}
       />
 
       {/* Modal de Envio via WhatsApp Pessoal Individual */}
@@ -386,7 +780,7 @@ export default function MatchPage() {
           propertyCoverUrl={selectedMatchForSend.property.coverUrl}
           matchScore={Math.round(selectedMatchForSend.match_score)}
           onSent={() => {
-            fetchMatches();
+            fetchMatches(true);
           }}
         />
       )}

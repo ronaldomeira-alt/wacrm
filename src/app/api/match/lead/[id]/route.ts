@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { buildLeadSearchProfile } from '@/lib/match/profile-builder';
 import { calculateProfileMaturity } from '@/lib/match/maturity';
+import { recalculateMatchesForLead } from '@/lib/match/service';
+import { resolveMatchLifecycle, type RawMatchRowForLifecycle } from '@/lib/match/lifecycle';
 
 export async function GET(
   request: Request,
@@ -148,8 +150,16 @@ export async function GET(
       })
       .map((m) => {
         const prop = matchPropertiesMap.get(m.property_id)!;
+        const lc = resolveMatchLifecycle(m as unknown as RawMatchRowForLifecycle);
         return {
           ...m,
+          match_status: lc.effectiveStatus,
+          viewed_at: lc.viewedAt,
+          ignored_at: lc.ignoredAt,
+          reopened_at: lc.reopenedAt,
+          reopen_reason: lc.reopenReason,
+          is_unread: lc.isUnread,
+          is_recent: lc.isRecent,
           contacts: {
             id: profile.leadId,
             name: profile.name,
@@ -286,6 +296,31 @@ export async function PATCH(
     if (error) {
       console.error('[PATCH /api/match/lead/:id] Erro ao atualizar status do contato:', error);
       return NextResponse.json({ error: 'Falha ao atualizar status' }, { status: 500 });
+    }
+
+    // Sincroniza matches pendentes com o novo estado do lead
+    try {
+      if (body.action === 'pause') {
+        await ctx.supabase
+          .from('lead_property_matches')
+          .update({ match_status: 'pausado', paused_at: now, updated_at: now })
+          .eq('account_id', ctx.accountId)
+          .eq('lead_id', contactId)
+          .eq('match_status', 'novo')
+          .eq('suppressed', false);
+      } else if (body.action === 'archive') {
+        await ctx.supabase
+          .from('lead_property_matches')
+          .update({ match_status: 'arquivado', archived_at: now, updated_at: now })
+          .eq('account_id', ctx.accountId)
+          .eq('lead_id', contactId)
+          .eq('match_status', 'novo')
+          .eq('suppressed', false);
+      } else if (body.action === 'resume' || body.action === 'unarchive') {
+        await recalculateMatchesForLead(ctx.supabase, ctx.accountId, contactId);
+      }
+    } catch (syncErr) {
+      console.warn('[PATCH /api/match/lead/:id] Aviso ao sincronizar matches do lead:', syncErr);
     }
 
     return NextResponse.json({ ok: true, action: body.action });

@@ -11,24 +11,95 @@ import {
   ChevronRight,
   ExternalLink,
   Phone,
+  Clock,
+  Eye,
+  EyeOff,
+  Archive,
+  RotateCcw,
+  RefreshCw,
+  Loader2,
 } from 'lucide-react';
-import type { LeadMatchGroup } from '@/lib/match/types';
+import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import type { LeadMatchGroup, MatchStatus } from '@/lib/match/types';
 import type { MatchCardItem } from '@/components/match/match-card';
+import type { MatchLifecycleAction } from '@/lib/match/service';
 
 interface LeadMatchCardProps {
   group: LeadMatchGroup;
+  activeTab?: MatchStatus;
+  loadingAction?: string | null;
   onOpenModal: (group: LeadMatchGroup) => void;
+  onQuickAction?: (
+    group: LeadMatchGroup,
+    action: MatchLifecycleAction,
+    scope?: 'lead' | 'best_match'
+  ) => void;
 }
 
-export function LeadMatchCard({ group, onOpenModal }: LeadMatchCardProps) {
+function formatMatchTimestamp(isoDate?: string | null): {
+  shortLabel: string;
+  fullLabel: string;
+  relativeLabel: string;
+} {
+  if (!isoDate) {
+    return {
+      shortLabel: 'Data não registrada',
+      fullLabel: 'Data não registrada',
+      relativeLabel: '',
+    };
+  }
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) {
+    return {
+      shortLabel: 'Data não registrada',
+      fullLabel: 'Data não registrada',
+      relativeLabel: '',
+    };
+  }
+
+  const timeStr = format(d, 'HH:mm', { locale: ptBR });
+  const fullLabel = format(d, "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
+  const relativeLabel = formatDistanceToNow(d, { addSuffix: true, locale: ptBR });
+
+  if (isToday(d)) {
+    return {
+      shortLabel: `Hoje às ${timeStr}`,
+      fullLabel,
+      relativeLabel,
+    };
+  }
+  if (isYesterday(d)) {
+    return {
+      shortLabel: `Ontem às ${timeStr}`,
+      fullLabel,
+      relativeLabel,
+    };
+  }
+
+  return {
+    shortLabel: `${format(d, 'dd/MM/yyyy', { locale: ptBR })} às ${timeStr}`,
+    fullLabel,
+    relativeLabel,
+  };
+}
+
+export function LeadMatchCard({
+  group,
+  activeTab = 'novo',
+  loadingAction,
+  onOpenModal,
+  onQuickAction,
+}: LeadMatchCardProps) {
   const leadName = group.lead.name || 'Lead sem nome';
-  const initials = leadName
-    .split(' ')
-    .filter(Boolean)
-    .map((w) => w[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase() || 'L';
+  const initials =
+    leadName
+      .split(' ')
+      .filter(Boolean)
+      .map((w) => w[0])
+      .slice(0, 2)
+      .join('')
+      .toUpperCase() || 'L';
 
   const bestMatch = group.bestMatch as unknown as MatchCardItem;
   const bestScore = Math.round(bestMatch?.match_score ?? 0);
@@ -42,7 +113,6 @@ export function LeadMatchCard({ group, onOpenModal }: LeadMatchCardProps) {
       }).format(bestProp.priceMin)
     : 'Sob consulta';
 
-  // Badge de Score do Melhor Match
   const getScoreBadgeClass = (score: number) => {
     if (score >= 85) {
       return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
@@ -53,20 +123,46 @@ export function LeadMatchCard({ group, onOpenModal }: LeadMatchCardProps) {
     return 'bg-amber-500/15 text-amber-400 border-amber-500/30';
   };
 
-  const totalMatchesCount = group.totalMatches || group.matches.length || 0;
+  const totalMatchesCount = group.statusMatchesCount || group.totalMatches || group.matches.length || 0;
+  const matchTime = formatMatchTimestamp(
+    group.latestMatchAt || (bestMatch as unknown as { created_at?: string })?.created_at
+  );
+  const isUnread = Boolean(group.isUnread);
+  const isBusy = Boolean(loadingAction && loadingAction.startsWith(group.leadId));
 
   return (
-    <Card className="flex flex-col justify-between border-border/70 bg-card/70 hover:border-primary/40 transition-all duration-200 rounded-xl p-4 gap-3 shadow-xs hover:shadow-md">
+    <Card
+      className={`flex flex-col justify-between border bg-card/70 hover:border-primary/40 transition-all duration-200 rounded-xl p-4 gap-3 shadow-xs hover:shadow-md ${
+        isUnread && activeTab === 'novo'
+          ? 'border-primary/35 ring-1 ring-primary/15'
+          : 'border-border/70'
+      }`}
+    >
       {/* 1. Header do Lead */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="size-8 rounded-full bg-primary/10 border border-primary/20 text-primary font-bold text-xs flex items-center justify-center shrink-0">
-            {initials}
+          <div className="relative shrink-0">
+            <div className="size-8 rounded-full bg-primary/10 border border-primary/20 text-primary font-bold text-xs flex items-center justify-center">
+              {initials}
+            </div>
+            {isUnread && activeTab === 'novo' && (
+              <span
+                className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-primary ring-2 ring-background"
+                title="Oportunidade ainda não visualizada"
+              />
+            )}
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-foreground truncate" title={leadName}>
-              {leadName}
-            </h3>
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-sm font-semibold text-foreground truncate" title={leadName}>
+                {leadName}
+              </h3>
+              {isUnread && activeTab === 'novo' && (
+                <span className="rounded-full bg-primary/15 border border-primary/30 px-1.5 py-0.2 text-[9px] font-bold uppercase tracking-wide text-primary shrink-0">
+                  Novo
+                </span>
+              )}
+            </div>
             <p className="text-[11px] text-muted-foreground font-mono flex items-center gap-1">
               <Phone className="size-2.5 text-muted-foreground/70" />
               {group.lead.phone}
@@ -98,12 +194,39 @@ export function LeadMatchCard({ group, onOpenModal }: LeadMatchCardProps) {
                 ? 'bg-amber-500/10 text-amber-400 border-amber-500/25'
                 : 'bg-muted text-muted-foreground border-border/50'
             }`}
-            title={`Temperatura IA: ${group.aiScore}/10`}
+            title={`Score comercial IA: ${group.aiScore}/10`}
           >
             <Flame className="size-2.5" />
             {group.aiScore}/10
           </span>
         </div>
+      </div>
+
+      {/* Data e Hora de Identificação + Motivo de Reabertura */}
+      <div className="flex flex-col gap-1">
+        <div
+          className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground"
+          title={`Identificado em ${matchTime.fullLabel}`}
+        >
+          <span className="inline-flex items-center gap-1 truncate">
+            <Clock className="size-3 text-muted-foreground/70 shrink-0" />
+            <span>{matchTime.shortLabel}</span>
+          </span>
+          {matchTime.relativeLabel && (
+            <span className="text-[10px] text-muted-foreground/80 shrink-0">
+              {matchTime.relativeLabel}
+            </span>
+          )}
+        </div>
+
+        {group.reopenReason && (
+          <div className="flex items-center gap-1.5 rounded-md bg-amber-500/10 border border-amber-500/25 px-2 py-1 text-[10px] text-amber-300">
+            <RefreshCw className="size-3 shrink-0 text-amber-400" />
+            <span className="truncate" title={group.reopenReason}>
+              Reaberto: {group.reopenReason}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* 2. Seção Central: MELHOR MATCH */}
@@ -148,11 +271,11 @@ export function LeadMatchCard({ group, onOpenModal }: LeadMatchCardProps) {
                 {bestProp.title}
               </p>
               <p className="text-[11px] text-muted-foreground truncate">
-                {bestProp.neighborhood ? `${bestProp.neighborhood}, ${bestProp.city}` : bestProp.city}
+                {bestProp.neighborhood
+                  ? `${bestProp.neighborhood}, ${bestProp.city}`
+                  : bestProp.city}
               </p>
-              <p className="text-xs font-semibold text-foreground/90 mt-0.5">
-                {formattedPrice}
-              </p>
+              <p className="text-xs font-semibold text-foreground/90 mt-0.5">{formattedPrice}</p>
             </div>
           </div>
         ) : (
@@ -160,25 +283,102 @@ export function LeadMatchCard({ group, onOpenModal }: LeadMatchCardProps) {
         )}
       </div>
 
-      {/* 3. Rodapé de Ações: Contador Clicável e Ver Perfil */}
-      <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onOpenModal(group)}
-          className="h-7 text-xs font-medium bg-primary/10 hover:bg-primary/20 text-primary border-primary/25 hover:border-primary/40 px-2.5 gap-1 transition-colors"
-        >
-          <span>{totalMatchesCount} {totalMatchesCount === 1 ? 'imóvel compatível' : 'imóveis compatíveis'}</span>
-          <ChevronRight className="size-3" />
-        </Button>
+      {/* 3. Rodapé de Ações: Contador Clicável + Ações Rápidas de Ciclo de Vida + Ver Perfil */}
+      <div className="flex flex-col gap-2 pt-1.5 border-t border-border/40">
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenModal(group)}
+            className="h-7 text-xs font-medium bg-primary/10 hover:bg-primary/20 text-primary border-primary/25 hover:border-primary/40 px-2.5 gap-1 transition-colors"
+          >
+            <span>
+              {totalMatchesCount}{' '}
+              {totalMatchesCount === 1 ? 'imóvel compatível' : 'imóveis compatíveis'}
+            </span>
+            <ChevronRight className="size-3" />
+          </Button>
 
-        <Link
-          href={`/match/lead/${group.leadId}`}
-          className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/60 rounded-md px-2.5 py-1 h-7 transition-colors"
-        >
-          <span>Ver Perfil</span>
-          <ExternalLink className="size-3 text-muted-foreground/80" />
-        </Link>
+          <Link
+            href={`/match/lead/${group.leadId}`}
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/60 rounded-md px-2.5 py-1 h-7 transition-colors"
+          >
+            <span>Ver Perfil</span>
+            <ExternalLink className="size-3 text-muted-foreground/80" />
+          </Link>
+        </div>
+
+        {/* Barra de Ações Rápidas do Ciclo de Vida */}
+        {onQuickAction && (
+          <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-border/30">
+            {isBusy ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground py-0.5">
+                <Loader2 className="size-3 animate-spin text-primary" />
+                Atualizando...
+              </span>
+            ) : (
+              <>
+                {activeTab === 'novo' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onQuickAction(group, 'view', 'lead')}
+                    className="h-6 px-2 text-[11px] gap-1 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                    title="Mover oportunidade para Em Análise"
+                  >
+                    <Eye className="size-3" />
+                    <span>Em análise</span>
+                  </Button>
+                )}
+
+                {(activeTab === 'novo' || activeTab === 'em_analise') && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onQuickAction(group, 'archive', 'lead')}
+                      className="h-6 px-2 text-[11px] gap-1 text-muted-foreground hover:text-foreground hover:bg-muted/70"
+                      title="Arquivar oportunidade no histórico"
+                    >
+                      <Archive className="size-3" />
+                      <span>Arquivar</span>
+                    </Button>
+
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onQuickAction(group, 'ignore', 'lead')}
+                      className="h-6 px-2 text-[11px] gap-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+                      title="Ignorar oportunidade (só reaparece se houver mudança material)"
+                    >
+                      <EyeOff className="size-3" />
+                      <span>Ignorar</span>
+                    </Button>
+                  </>
+                )}
+
+                {(activeTab === 'ignorado' ||
+                  activeTab === 'arquivado' ||
+                  activeTab === 'pausado') && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onQuickAction(group, 'restore', 'lead')}
+                    className="h-6 px-2 text-[11px] gap-1 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                    title="Restaurar oportunidade para Novos"
+                  >
+                    <RotateCcw className="size-3" />
+                    <span>Restaurar</span>
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </Card>
   );

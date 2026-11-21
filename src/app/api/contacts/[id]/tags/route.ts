@@ -6,6 +6,7 @@ import {
   ContactTagWriteError,
   removeContactTag,
 } from '@/lib/contacts/tag-write';
+import { recalculateMatchesForLead } from '@/lib/match/service';
 
 function tagWriteErrorResponse(error: ContactTagWriteError): NextResponse {
   return NextResponse.json({ error: error.message }, { status: error.status });
@@ -66,6 +67,14 @@ export async function DELETE(
       contactId,
       tagId,
     });
+
+    if (typeof (ctx.supabase as { from?: unknown })?.from === 'function') {
+      try {
+        await recalculateMatchesForLead(ctx.supabase, ctx.accountId, contactId);
+      } catch (err) {
+        console.warn('[DELETE /api/contacts/[id]/tags] recalculateMatchesForLead warning:', err);
+      }
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

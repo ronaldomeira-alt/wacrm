@@ -42,7 +42,7 @@ export async function sendPushToAccount(
 
   const { data: subs, error } = await supabaseAdmin()
     .from('push_subscriptions')
-    .select('id, endpoint, p256dh, auth_key')
+    .select('id, endpoint, p256dh, auth_key, auth')
     .eq('account_id', accountId)
 
   if (error) {
@@ -55,19 +55,30 @@ export async function sendPushToAccount(
   const staleIds: string[] = []
 
   await Promise.all(
-    subs.map(async (sub) => {
+    subs.map(async (sub: { id: string; endpoint: string; p256dh: string; auth_key?: string | null; auth?: string | null }) => {
+      const authSecret = sub.auth_key || sub.auth || ''
+      if (!authSecret || !sub.p256dh) return
       try {
         await webpush.sendNotification(
           {
             endpoint: sub.endpoint,
-            keys: { p256dh: sub.p256dh, auth: sub.auth_key },
+            keys: { p256dh: sub.p256dh, auth: authSecret },
           },
           JSON.stringify(payload),
+          {
+            TTL: 86400,
+            urgency: 'high',
+          },
         )
         sent += 1
       } catch (err: unknown) {
         const statusCode = (err as { statusCode?: number })?.statusCode
-        if (statusCode === 404 || statusCode === 410) {
+        const errBody = String((err as { body?: unknown })?.body ?? (err as Error)?.message ?? '').toLowerCase()
+        if (
+          statusCode === 404 ||
+          statusCode === 410 ||
+          (statusCode === 400 && errBody.includes('vapidpkhashmismatch'))
+        ) {
           staleIds.push(sub.id)
         } else {
           console.error('[push] send failed:', err)
