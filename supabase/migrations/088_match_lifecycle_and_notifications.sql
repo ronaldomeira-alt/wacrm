@@ -183,22 +183,13 @@ AS $$
   WITH base AS (
     SELECT
       m.id,
-      m.account_id,
       m.lead_id,
       m.property_id,
       m.match_score,
-      m.score_breakdown,
       m.profile_maturity,
       m.commercial_priority,
-      m.suppressed,
-      m.origin,
-      m.sent_at,
-      m.paused_at,
-      m.archived_at,
       m.created_at,
-      m.updated_at,
       COALESCE(m.viewed_at, NULLIF(m.score_breakdown->'_lifecycle'->>'viewedAt', '')::timestamptz) AS eff_viewed_at,
-      COALESCE(m.ignored_at, NULLIF(m.score_breakdown->'_lifecycle'->>'ignoredAt', '')::timestamptz) AS eff_ignored_at,
       COALESCE(m.reopened_at, NULLIF(m.score_breakdown->'_lifecycle'->>'reopenedAt', '')::timestamptz) AS eff_reopened_at,
       COALESCE(m.reopen_reason, m.score_breakdown->'_lifecycle'->>'reopenReason') AS eff_reopen_reason,
       CASE
@@ -221,20 +212,7 @@ AS $$
       c.archived_at AS contact_archived_at,
       c.has_purchased AS contact_has_purchased,
       c.is_personal_whatsapp AS contact_is_personal_whatsapp,
-      p.status AS prop_status,
-      p.title AS prop_title,
-      p.code AS prop_code,
-      p.property_type AS prop_type,
-      p.neighborhood AS prop_neighborhood,
-      p.city AS prop_city,
-      p.price_min AS prop_price_min,
-      p.price_max AS prop_price_max,
-      p.bedrooms_min AS prop_bedrooms_min,
-      p.bedrooms_max AS prop_bedrooms_max,
-      p.delivery_status AS prop_delivery_status,
-      p.cover_url AS prop_cover_url,
-      p.public_url AS prop_public_url,
-      p.features AS prop_features
+      p.status AS prop_status
     FROM public.lead_property_matches m
     JOIN public.property_match_projections p
       ON p.account_id = m.account_id
@@ -286,179 +264,164 @@ AS $$
         OR (p_date_filter = 'older' AND COALESCE(b.eff_reopened_at, b.created_at) < now() - interval '7 days')
       )
   ),
-  ranked AS (
+  grouped AS (
     SELECT
-      f.*,
+      f.lead_id,
+      jsonb_build_object(
+        'id', f.lead_id,
+        'name', MAX(f.contact_name),
+        'phone', MAX(f.contact_phone),
+        'ai_score', MAX(f.contact_ai_score),
+        'ai_score_reason', MAX(f.contact_ai_score_reason),
+        'paused_at', MAX(f.contact_paused_at),
+        'archived_at', MAX(f.contact_archived_at),
+        'has_purchased', BOOL_OR(COALESCE(f.contact_has_purchased, false)),
+        'is_personal_whatsapp', BOOL_OR(COALESCE(f.contact_is_personal_whatsapp, false))
+      ) AS lead,
+      MAX(f.profile_maturity)::integer AS profile_maturity,
+      MAX(f.contact_ai_score)::integer AS ai_score,
+      COUNT(*)::bigint AS status_matches_count,
+      COUNT(*) FILTER (WHERE f.is_row_unread)::bigint AS unread_matches_count,
+      BOOL_OR(f.is_row_unread) AS is_unread,
+      BOOL_OR(f.is_row_recent) AS is_recent,
+      MAX(f.ref_at) AS latest_match_at,
+      MIN(f.created_at) AS first_match_at,
+      MAX(f.eff_viewed_at) AS viewed_at,
+      MAX(f.eff_reopened_at) AS reopened_at,
+      MAX(f.eff_reopen_reason) AS reopen_reason,
+      MAX(f.match_score) AS max_match_score,
+      MAX(f.commercial_priority) AS max_priority
+    FROM filtered f
+    GROUP BY f.lead_id
+  ),
+  paged AS (
+    SELECT
+      g.*,
+      COUNT(*) OVER()::bigint AS total_groups,
+      ROW_NUMBER() OVER (
+        ORDER BY
+          CASE WHEN p_sort_by = 'recent_desc' THEN EXTRACT(EPOCH FROM g.latest_match_at) END DESC NULLS LAST,
+          CASE WHEN p_sort_by = 'priority_desc' THEN g.max_priority END DESC NULLS LAST,
+          CASE WHEN p_sort_by = 'ai_score_desc' THEN g.ai_score END DESC NULLS LAST,
+          g.max_match_score DESC NULLS LAST,
+          g.max_priority DESC NULLS LAST,
+          g.latest_match_at DESC NULLS LAST,
+          g.lead_id ASC
+      ) AS page_order
+    FROM grouped g
+  ),
+  page_slice AS (
+    SELECT *
+    FROM paged
+    ORDER BY page_order ASC
+    LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 36), 500))
+    OFFSET GREATEST(0, COALESCE(p_offset, 0))
+  ),
+  slice_ranked AS (
+    SELECT
+      f.id,
+      f.lead_id,
+      f.property_id,
+      f.effective_status,
+      f.eff_viewed_at,
+      f.eff_reopened_at,
+      f.eff_reopen_reason,
+      f.is_row_unread,
+      f.is_row_recent,
+      f.contact_name,
+      f.contact_phone,
+      f.contact_ai_score,
       ROW_NUMBER() OVER (
         PARTITION BY f.lead_id
         ORDER BY f.match_score DESC, f.commercial_priority DESC, f.ref_at DESC
       ) AS rn
     FROM filtered f
+    JOIN page_slice ps ON ps.lead_id = f.lead_id
   ),
-  grouped AS (
+  slice_matches AS (
     SELECT
-      r.lead_id,
+      sr.lead_id,
+      sr.rn,
       jsonb_build_object(
-        'id', r.lead_id,
-        'name', MAX(r.contact_name),
-        'phone', MAX(r.contact_phone),
-        'ai_score', MAX(r.contact_ai_score),
-        'ai_score_reason', MAX(r.contact_ai_score_reason),
-        'paused_at', MAX(r.contact_paused_at),
-        'archived_at', MAX(r.contact_archived_at),
-        'has_purchased', BOOL_OR(COALESCE(r.contact_has_purchased, false)),
-        'is_personal_whatsapp', BOOL_OR(COALESCE(r.contact_is_personal_whatsapp, false))
-      ) AS lead,
-      MAX(r.profile_maturity)::integer AS profile_maturity,
-      MAX(r.contact_ai_score)::integer AS ai_score,
-      COUNT(*)::bigint AS status_matches_count,
-      COUNT(*) FILTER (WHERE r.is_row_unread)::bigint AS unread_matches_count,
-      BOOL_OR(r.is_row_unread) AS is_unread,
-      BOOL_OR(r.is_row_recent) AS is_recent,
-      MAX(r.ref_at) AS latest_match_at,
-      MIN(r.created_at) AS first_match_at,
-      MAX(r.eff_viewed_at) AS viewed_at,
-      MAX(r.eff_reopened_at) AS reopened_at,
-      MAX(r.eff_reopen_reason) AS reopen_reason,
-      MAX(r.match_score) AS max_match_score,
-      MAX(r.commercial_priority) AS max_priority,
-      (
-        SELECT jsonb_build_object(
-          'id', x.id,
-          'account_id', x.account_id,
-          'lead_id', x.lead_id,
-          'property_id', x.property_id,
-          'match_score', x.match_score,
-          'score_breakdown', x.score_breakdown,
-          'profile_maturity', x.profile_maturity,
-          'commercial_priority', x.commercial_priority,
-          'match_status', x.effective_status,
-          'suppressed', x.suppressed,
-          'origin', x.origin,
-          'sent_at', x.sent_at,
-          'paused_at', x.paused_at,
-          'archived_at', x.archived_at,
-          'viewed_at', x.eff_viewed_at,
-          'ignored_at', x.eff_ignored_at,
-          'reopened_at', x.eff_reopened_at,
-          'reopen_reason', x.eff_reopen_reason,
-          'is_unread', x.is_row_unread,
-          'is_recent', x.is_row_recent,
-          'created_at', x.created_at,
-          'updated_at', x.updated_at,
-          'contacts', jsonb_build_object(
-            'id', x.lead_id,
-            'name', x.contact_name,
-            'phone', x.contact_phone,
-            'ai_score', x.contact_ai_score
-          ),
-          'property', jsonb_build_object(
-            'propertyId', x.property_id,
-            'title', x.prop_title,
-            'code', x.prop_code,
-            'propertyType', x.prop_type,
-            'neighborhood', x.prop_neighborhood,
-            'city', x.prop_city,
-            'priceMin', x.prop_price_min,
-            'priceMax', x.prop_price_max,
-            'bedroomsMin', x.prop_bedrooms_min,
-            'bedroomsMax', x.prop_bedrooms_max,
-            'deliveryStatus', x.prop_delivery_status,
-            'coverUrl', x.prop_cover_url,
-            'publicUrl', x.prop_public_url,
-            'features', COALESCE(x.prop_features, '{}'::text[])
-          )
-        )
-        FROM ranked x
-        WHERE x.lead_id = r.lead_id AND x.rn = 1
-        LIMIT 1
-      ) AS best_match,
-      COALESCE(
-        (
-          SELECT jsonb_agg(
-            jsonb_build_object(
-              'id', x.id,
-              'account_id', x.account_id,
-              'lead_id', x.lead_id,
-              'property_id', x.property_id,
-              'match_score', x.match_score,
-              'score_breakdown', x.score_breakdown,
-              'profile_maturity', x.profile_maturity,
-              'commercial_priority', x.commercial_priority,
-              'match_status', x.effective_status,
-              'suppressed', x.suppressed,
-              'origin', x.origin,
-              'sent_at', x.sent_at,
-              'paused_at', x.paused_at,
-              'archived_at', x.archived_at,
-              'viewed_at', x.eff_viewed_at,
-              'ignored_at', x.eff_ignored_at,
-              'reopened_at', x.eff_reopened_at,
-              'reopen_reason', x.eff_reopen_reason,
-              'is_unread', x.is_row_unread,
-              'is_recent', x.is_row_recent,
-              'created_at', x.created_at,
-              'updated_at', x.updated_at,
-              'contacts', jsonb_build_object(
-                'id', x.lead_id,
-                'name', x.contact_name,
-                'phone', x.contact_phone,
-                'ai_score', x.contact_ai_score
-              ),
-              'property', jsonb_build_object(
-                'propertyId', x.property_id,
-                'title', x.prop_title,
-                'code', x.prop_code,
-                'propertyType', x.prop_type,
-                'neighborhood', x.prop_neighborhood,
-                'city', x.prop_city,
-                'priceMin', x.prop_price_min,
-                'priceMax', x.prop_price_max,
-                'bedroomsMin', x.prop_bedrooms_min,
-                'bedroomsMax', x.prop_bedrooms_max,
-                'deliveryStatus', x.prop_delivery_status,
-                'coverUrl', x.prop_cover_url,
-                'publicUrl', x.prop_public_url,
-                'features', COALESCE(x.prop_features, '{}'::text[])
-              )
-            )
-            ORDER BY x.rn ASC
-          )
-          FROM ranked x
-          WHERE x.lead_id = r.lead_id AND x.rn <= GREATEST(1, p_max_matches_per_lead)
+        'id', m.id,
+        'account_id', m.account_id,
+        'lead_id', m.lead_id,
+        'property_id', m.property_id,
+        'match_score', m.match_score,
+        'score_breakdown', m.score_breakdown,
+        'profile_maturity', m.profile_maturity,
+        'commercial_priority', m.commercial_priority,
+        'match_status', sr.effective_status,
+        'suppressed', m.suppressed,
+        'origin', m.origin,
+        'sent_at', m.sent_at,
+        'paused_at', m.paused_at,
+        'archived_at', m.archived_at,
+        'viewed_at', sr.eff_viewed_at,
+        'ignored_at', COALESCE(m.ignored_at, NULLIF(m.score_breakdown->'_lifecycle'->>'ignoredAt', '')::timestamptz),
+        'reopened_at', sr.eff_reopened_at,
+        'reopen_reason', sr.eff_reopen_reason,
+        'is_unread', sr.is_row_unread,
+        'is_recent', sr.is_row_recent,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at,
+        'contacts', jsonb_build_object(
+          'id', sr.lead_id,
+          'name', sr.contact_name,
+          'phone', sr.contact_phone,
+          'ai_score', sr.contact_ai_score
         ),
-        '[]'::jsonb
-      ) AS matches
-    FROM ranked r
-    GROUP BY r.lead_id
+        'property', jsonb_build_object(
+          'propertyId', p.property_id,
+          'title', p.title,
+          'code', p.code,
+          'propertyType', p.property_type,
+          'neighborhood', p.neighborhood,
+          'city', p.city,
+          'priceMin', p.price_min,
+          'priceMax', p.price_max,
+          'bedroomsMin', p.bedrooms_min,
+          'bedroomsMax', p.bedrooms_max,
+          'deliveryStatus', p.delivery_status,
+          'coverUrl', p.cover_url,
+          'publicUrl', p.public_url,
+          'features', COALESCE(p.features, '{}'::text[])
+        )
+      ) AS match_json
+    FROM slice_ranked sr
+    JOIN public.lead_property_matches m ON m.id = sr.id
+    JOIN public.property_match_projections p
+      ON p.account_id = m.account_id AND p.property_id = m.property_id
+    WHERE sr.rn <= GREATEST(1, p_max_matches_per_lead)
+  ),
+  slice_agg AS (
+    SELECT
+      sm.lead_id,
+      (jsonb_agg(sm.match_json ORDER BY sm.rn ASC))->0 AS best_match,
+      jsonb_agg(sm.match_json ORDER BY sm.rn ASC) AS matches
+    FROM slice_matches sm
+    GROUP BY sm.lead_id
   )
   SELECT
-    g.lead_id,
-    g.lead,
-    g.profile_maturity,
-    g.ai_score,
-    g.status_matches_count,
-    g.unread_matches_count,
-    g.is_unread,
-    g.is_recent,
-    g.latest_match_at,
-    g.first_match_at,
-    g.viewed_at,
-    g.reopened_at,
-    g.reopen_reason,
-    g.best_match,
-    g.matches,
-    COUNT(*) OVER()::bigint AS total_groups
-  FROM grouped g
-  ORDER BY
-    CASE WHEN p_sort_by = 'recent_desc' THEN EXTRACT(EPOCH FROM g.latest_match_at) END DESC NULLS LAST,
-    CASE WHEN p_sort_by = 'priority_desc' THEN g.max_priority END DESC NULLS LAST,
-    CASE WHEN p_sort_by = 'ai_score_desc' THEN g.ai_score END DESC NULLS LAST,
-    g.max_match_score DESC NULLS LAST,
-    g.max_priority DESC NULLS LAST,
-    g.latest_match_at DESC NULLS LAST
-  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 36), 500))
-  OFFSET GREATEST(0, COALESCE(p_offset, 0));
+    ps.lead_id,
+    ps.lead,
+    ps.profile_maturity,
+    ps.ai_score,
+    ps.status_matches_count,
+    ps.unread_matches_count,
+    ps.is_unread,
+    ps.is_recent,
+    ps.latest_match_at,
+    ps.first_match_at,
+    ps.viewed_at,
+    ps.reopened_at,
+    ps.reopen_reason,
+    sa.best_match,
+    COALESCE(sa.matches, '[]'::jsonb) AS matches,
+    ps.total_groups
+  FROM page_slice ps
+  LEFT JOIN slice_agg sa ON sa.lead_id = ps.lead_id
+  ORDER BY ps.page_order ASC;
 $$;
 
 REVOKE ALL ON FUNCTION public.get_match_lead_groups(uuid, text, integer, integer, integer, integer, integer, text, text, text, text, text, integer, integer, integer) FROM PUBLIC, anon;
