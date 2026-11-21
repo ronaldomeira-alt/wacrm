@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { authenticateTunnelRequest, ensurePropertyUuid } from '@/lib/tunnel/auth';
 import { recalculateMatchesForProperty } from '@/lib/match/service';
 import { isMatchRelevantProjectionChange } from '@/lib/match/change-detection';
+import { reconcileInventoryWithProjections } from '@/lib/match/inventory-reconciler';
 
 function parseNum(val: unknown, fallback: number | null = null): number | null {
   if (typeof val === 'number' && !Number.isNaN(val)) return val;
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
   }
 
   const body = (await request.json().catch(() => null)) as {
+    trigger_reconcile?: boolean;
     property_id?: string;
     code?: string;
     title?: string;
@@ -53,6 +55,20 @@ export async function POST(request: Request) {
     public_url?: string;
     status?: 'ativo' | 'inativo' | 'arquivado';
   } | null;
+
+  // Modo rápido disparado por rotinas server-side (MCP, importadores, crons) do Meus Imóveis:
+  // reconcilia automaticamente qualquer delta gravado em `inventory_properties` sem precisar abrir a UI.
+  if (body?.trigger_reconcile === true) {
+    const reconcileStats = await reconcileInventoryWithProjections(ctx.db, ctx.accountId, {
+      force: true,
+      maxPropertiesToRecalculate: 25,
+    });
+    return NextResponse.json({
+      success: true,
+      action: 'reconciled',
+      reconcileStats,
+    });
+  }
 
   if (!body?.property_id || !body?.title || !body?.neighborhood) {
     return NextResponse.json(

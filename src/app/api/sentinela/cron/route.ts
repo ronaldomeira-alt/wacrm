@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import webpush from 'web-push'
+import { runMatchInventorySyncIfChanged } from '@/lib/match/background-sync'
 
 // ============================================================
 // Types & Interfaces (Strict TypeScript)
@@ -367,6 +368,22 @@ export async function GET(request: Request): Promise<NextResponse> {
   } catch (err) {
     queryErrors.push(
       `deals (ghosts) exception: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  // ------------------------------------------------------------
+  // C.2) Sincronização automática de Match (Meus Imóveis -> WACRM)
+  //      Garante recuperação contínua de imóveis cadastrados/editados via MCP ou importadores
+  //      mesmo sem ninguém abrir a tela Match.
+  // ------------------------------------------------------------
+  try {
+    await runMatchInventorySyncIfChanged(db, null, {
+      force: false,
+      maxPropertiesToRecalculate: 20,
+    })
+  } catch (matchSyncErr) {
+    queryErrors.push(
+      `match_sync warning: ${matchSyncErr instanceof Error ? matchSyncErr.message : String(matchSyncErr)}`,
     )
   }
 

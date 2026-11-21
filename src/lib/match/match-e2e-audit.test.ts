@@ -1,12 +1,27 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const pushMocks = vi.hoisted(() => ({
   sendPushToAccount: vi.fn(),
+  requireRole: vi.fn(),
+  supabaseAdmin: vi.fn(),
 }));
 
 vi.mock('../push/send', () => ({
   sendPushToAccount: pushMocks.sendPushToAccount,
+}));
+
+vi.mock('@/lib/auth/account', () => ({
+  requireRole: pushMocks.requireRole,
+  toErrorResponse: vi.fn((err: unknown) =>
+    Response.json({ error: (err as Error)?.message || 'error' }, { status: 500 })
+  ),
+}));
+
+vi.mock('@/lib/push/admin-client', () => ({
+  supabaseAdmin: pushMocks.supabaseAdmin,
 }));
 
 import {
@@ -28,7 +43,10 @@ import {
   reconcileInventoryWithProjections,
   resetInventoryReconcileWatermark,
 } from './inventory-reconciler';
+import { runMatchInventorySyncIfChanged } from './background-sync';
 import { ensurePropertyUuid } from '../tunnel/auth';
+import { GET as getMatchRoute } from '@/app/api/match/route';
+import { POST as postTunnelSyncRoute } from '@/app/api/tunnel/v1/properties/sync/route';
 
 /**
  * Banco em memória isolado que emula operações do Supabase (`select`, `insert`, `update`,
@@ -73,6 +91,10 @@ function createInMemorySupabase(seed: {
     let orderCol: string | null = null;
     let orderAsc = true;
     let limitCount: number | null = null;
+    let rangeFrom: number | null = null;
+    let rangeTo: number | null = null;
+    let headOnly = false;
+    let wantCount = false;
 
     const execute = async () => {
       const rows = tables[tableName] || [];
@@ -80,6 +102,7 @@ function createInMemorySupabase(seed: {
 
       if (mode === 'select') {
         let out = rows.filter(matchFn).map((r) => ({ ...r }));
+        const totalMatched = out.length;
         if (orderCol) {
           out.sort((a, b) => {
             const va = String(a[orderCol!] ?? '');
@@ -87,8 +110,16 @@ function createInMemorySupabase(seed: {
             return orderAsc ? va.localeCompare(vb) : vb.localeCompare(va);
           });
         }
-        if (limitCount !== null) out = out.slice(0, limitCount);
-        return { data: out, error: null };
+        if (rangeFrom !== null && rangeTo !== null) {
+          out = out.slice(rangeFrom, rangeTo + 1);
+        } else if (limitCount !== null) {
+          out = out.slice(0, limitCount);
+        }
+        return {
+          data: headOnly ? null : out,
+          count: wantCount ? totalMatched : null,
+          error: null,
+        };
       }
 
       if (mode === 'insert') {
@@ -156,10 +187,14 @@ function createInMemorySupabase(seed: {
     };
 
     const builder: Record<string, unknown> = {
-      select: () => {
-        if (mode === 'select') {
-          // keep mode select
-        }
+      select: (_cols?: string, opts?: { count?: string; head?: boolean }) => {
+        if (opts?.count) wantCount = true;
+        if (opts?.head) headOnly = true;
+        return builder;
+      },
+      range: (from: number, to: number) => {
+        rangeFrom = from;
+        rangeTo = to;
         return builder;
       },
       insert: (data: unknown) => {
@@ -229,6 +264,7 @@ function createInMemorySupabase(seed: {
     tables,
     db: {
       from: (tableName: string) => makeBuilder(tableName),
+      rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'rpc not installed in unit mock' } }),
     } as unknown as SupabaseClient,
   };
 }
@@ -713,5 +749,287 @@ describe('Auditoria End-to-End do Módulo Match — WACRM + Meus Imóveis', () =
       },
     });
     expect(blockedReopen.shouldReopen).toBe(false);
+  });
+
+  it('Revisão Ponto 1: runMatchInventorySyncIfChanged detecta imóvel gravado via MCP/importador em background sem abrir tela e dispara notificação', async () => {
+    const mcpPropRawId = 'mcp-prop-auto-01';
+    const { db, tables } = createInMemorySupabase({
+      profiles: baseProfiles,
+      contacts: [mariaContact],
+      lead_intelligence: [mariaIntelligence],
+      inventory_properties: [
+        {
+          account_id: '52716edc-399e-4d4c-9788-0d6b04c0031f',
+          property_id: mcpPropRawId,
+          updated_at: new Date().toISOString(),
+          property_data: {
+            id: mcpPropRawId,
+            title: 'Apartamento Bessa via MCP',
+            type: 'Apartamento',
+            purpose: 'Venda',
+            neighborhood: 'Bessa',
+            price: 440000,
+            bedrooms: 2,
+            status: 'Ativo',
+            ativo: true,
+          },
+        },
+      ],
+      property_match_projections: [],
+    });
+
+    // 1º tick em background detecta drift e reconcilia + notifica sem precisar abrir /match
+    const firstCheck = await runMatchInventorySyncIfChanged(db, accountId);
+    expect(firstCheck.checked).toBe(true);
+    expect(firstCheck.driftDetected).toBe(true);
+    expect(firstCheck.reconcile?.upsertedProjections).toBe(1);
+    expect(tables.lead_property_matches.length).toBe(1);
+    expect(tables.notifications.length).toBe(2);
+    expect(pushMocks.sendPushToAccount).toHaveBeenCalledTimes(1);
+
+    // 2º tick sem alterações detecta up_to_date e não reprocessa nada
+    pushMocks.sendPushToAccount.mockClear();
+    const secondCheck = await runMatchInventorySyncIfChanged(db, accountId);
+    expect(secondCheck.checked).toBe(true);
+    expect(secondCheck.driftDetected).toBe(false);
+    expect(secondCheck.reason).toBe('up_to_date');
+    expect(pushMocks.sendPushToAccount).not.toHaveBeenCalled();
+  });
+
+  it('Revisão Ponto 2: Migration 088 preserva 100% dos registros históricos (ZERO DELETE físico)', () => {
+    const migrationPath = path.resolve(
+      process.cwd(),
+      'supabase/migrations/088_match_lifecycle_and_notifications.sql'
+    );
+    const sql = fs.readFileSync(migrationPath, 'utf8');
+    expect(sql).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.get_match_lead_groups');
+  });
+
+  it('Revisão Ponto 3: GET /api/match pagina integralmente TODOS os 282 leads (258 ativos + 24 arquivados, > 1.000 linhas) com 100% de consistência nos contadores', async () => {
+    // Gera exatamente 282 leads (258 ativos + 24 arquivados) x 5 imóveis = 1.410 linhas (> limite de 1.000 do PostgREST)
+    const props = Array.from({ length: 5 }, (_, pIdx) => ({
+      ...bessaProjection,
+      id: `proj-p-${pIdx}`,
+      property_id: `11111111-1111-4111-a111-00000000000${pIdx}`,
+      title: `Apartamento Bessa ${pIdx + 1}`,
+    }));
+
+    const contacts: Array<Record<string, unknown>> = [];
+    const matches: Array<Record<string, unknown>> = [];
+    const baseMs = Date.now();
+
+    for (let i = 0; i < 282; i++) {
+      const isArchived = i >= 258; // 24 arquivados + 258 ativos = 282 leads
+      const leadId = `lead-${String(i).padStart(4, '0')}`;
+      contacts.push({
+        id: leadId,
+        account_id: accountId,
+        name: `Cliente ${i + 1}`,
+        phone: `55839999${String(i).padStart(5, '0')}`,
+        ai_score: 7,
+        paused_at: null,
+        archived_at: isArchived ? '2026-10-10T10:00:00.000Z' : null,
+      });
+
+      const createdIso = new Date(baseMs - i * 3600 * 1000).toISOString();
+      for (let pIdx = 0; pIdx < 5; pIdx++) {
+        matches.push({
+          id: `match-${String(i).padStart(4, '0')}-${pIdx}`,
+          account_id: accountId,
+          lead_id: leadId,
+          property_id: props[pIdx].property_id,
+          match_score: 90 - pIdx,
+          score_breakdown: {},
+          profile_maturity: 80,
+          commercial_priority: 85 - pIdx,
+          match_status: 'novo',
+          suppressed: false,
+          origin: 'match_automatico',
+          created_at: createdIso,
+          updated_at: createdIso,
+        });
+      }
+    }
+
+    const { db } = createInMemorySupabase({
+      contacts,
+      property_match_projections: props,
+      lead_property_matches: matches,
+    });
+
+    pushMocks.requireRole.mockResolvedValue({
+      supabase: db,
+      accountId,
+      userId: 'user-ronaldo',
+      role: 'owner',
+    });
+    pushMocks.supabaseAdmin.mockReturnValue(db);
+
+    // Percorre todas as páginas de `Novos` (page_size = 50 -> 6 páginas cobrindo 258 leads)
+    const seenLeadIds = new Set<string>();
+    let currentPage = 1;
+    let totalGroupsReported = 0;
+    let countsReported: Record<string, number> = {};
+
+    while (true) {
+      const res = await getMatchRoute(
+        new Request(`http://localhost/api/match?status=novo&page=${currentPage}&page_size=50`)
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      totalGroupsReported = body.pagination.totalGroups;
+      countsReported = body.counts;
+
+      for (const g of body.groups) {
+        expect(seenLeadIds.has(g.leadId)).toBe(false); // zero duplicidade entre páginas
+        seenLeadIds.add(g.leadId);
+      }
+
+      if (!body.pagination.hasMore) break;
+      currentPage++;
+      expect(currentPage).toBeLessThanOrEqual(10);
+    }
+
+    // Todos os 258 leads ativos foram percorridos nas páginas; os 24 arquivados foram contabilizados em Arquivados
+    expect(seenLeadIds.size).toBe(258);
+    expect(totalGroupsReported).toBe(258);
+    expect(countsReported.novos).toBe(258);
+    expect(countsReported.arquivados).toBe(24);
+    expect(countsReported.novos + countsReported.arquivados).toBe(282);
+  });
+
+  it('Revisão Ponto 4: gatilhos HTTP do túnel (imóvel direto + trigger_reconcile do MCP) persistem notificações completas com metadata e respeitam idempotência', async () => {
+    const prevSecret = process.env.TUNNEL_API_KEY;
+    process.env.TUNNEL_API_KEY = 'test-tunnel-secret-match-audit';
+
+    try {
+      const { db, tables } = createInMemorySupabase({
+        profiles: baseProfiles,
+        contacts: [mariaContact],
+        lead_intelligence: [mariaIntelligence],
+        property_match_projections: [],
+        inventory_properties: [
+          {
+            account_id: '52716edc-399e-4d4c-9788-0d6b04c0031f',
+            property_id: 'mcp-live-prop-99',
+            updated_at: new Date().toISOString(),
+            property_data: {
+              id: 'mcp-live-prop-99',
+              title: 'Cobertura no Bessa via MCP',
+              type: 'Apartamento',
+              purpose: 'Venda',
+              neighborhood: 'Bessa',
+              price: 460000,
+              bedrooms: 2,
+              status: 'Ativo',
+              ativo: true,
+            },
+          },
+        ],
+      });
+
+      pushMocks.supabaseAdmin.mockReturnValue(db);
+
+      // 4A. Push direto de imóvel novo via túnel (UI / OLX Import)
+      const directReq = new Request('http://localhost/api/tunnel/v1/properties/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-tunnel-secret-match-audit',
+          'x-account-id': accountId,
+        },
+        body: JSON.stringify({
+          property_id: 'direct-olx-prop-01',
+          title: 'Apartamento no Bessa OLX',
+          operation: 'venda',
+          property_type: 'apartamento',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 445000,
+          price_max: 445000,
+          bedrooms_min: 2,
+          bedrooms_max: 2,
+          delivery_status: 'pronto',
+          status: 'ativo',
+        }),
+      });
+
+      const directRes = await postTunnelSyncRoute(directReq);
+      expect(directRes.status).toBe(200);
+      expect(tables.notifications.length).toBe(2); // 1 por membro da conta
+      const firstNotif = tables.notifications[0];
+      expect(firstNotif.type).toBe('match_created');
+      expect(firstNotif.read_at ?? null).toBeNull();
+      expect(firstNotif.contact_id).toBe(mariaContact.id);
+      expect(String(firstNotif.body)).toContain('Maria');
+      const parsedTarget = parseNotificationTarget({
+        type: firstNotif.type as string,
+        title: firstNotif.title as string,
+        body: firstNotif.body as string,
+        contact_id: firstNotif.contact_id as string,
+        metadata: firstNotif.metadata as Record<string, unknown>,
+      });
+      expect(parsedTarget.isMatchNotification).toBe(true);
+      expect(parsedTarget.targetUrl).toContain(`/match?lead=${mariaContact.id}`);
+      expect(pushMocks.sendPushToAccount).toHaveBeenCalledTimes(1);
+
+      // 4B. Reenvio idêntico do mesmo imóvel NÃO gera nova notificação nem push duplicado
+      pushMocks.sendPushToAccount.mockClear();
+      const duplicateReq = new Request('http://localhost/api/tunnel/v1/properties/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-tunnel-secret-match-audit',
+          'x-account-id': accountId,
+        },
+        body: JSON.stringify({
+          property_id: 'direct-olx-prop-01',
+          title: 'Apartamento no Bessa OLX',
+          operation: 'venda',
+          property_type: 'apartamento',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 445000,
+          price_max: 445000,
+          bedrooms_min: 2,
+          bedrooms_max: 2,
+          delivery_status: 'pronto',
+          status: 'ativo',
+        }),
+      });
+      const duplicateRes = await postTunnelSyncRoute(duplicateReq);
+      expect(duplicateRes.status).toBe(200);
+      expect(tables.notifications.length).toBe(2);
+      expect(pushMocks.sendPushToAccount).not.toHaveBeenCalled();
+
+      // 4C. Gatilho `trigger_reconcile: true` (enviado pelo servidor MCP do Meus Imóveis)
+      const mcpTriggerReq = new Request('http://localhost/api/tunnel/v1/properties/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-tunnel-secret-match-audit',
+          'x-account-id': accountId,
+        },
+        body: JSON.stringify({
+          trigger_reconcile: true,
+          source: 'mcp:upsert_empreendimento',
+        }),
+      });
+      const mcpTriggerRes = await postTunnelSyncRoute(mcpTriggerReq);
+      expect(mcpTriggerRes.status).toBe(200);
+      const mcpBody = await mcpTriggerRes.json();
+      expect(mcpBody.action).toBe('reconciled');
+      expect(mcpBody.reconcileStats?.upsertedProjections).toBe(1);
+      // 2 notificações anteriores + 2 novas para o imóvel criado via MCP
+      expect(tables.notifications.length).toBe(4);
+      expect(pushMocks.sendPushToAccount).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prevSecret === undefined) {
+        delete process.env.TUNNEL_API_KEY;
+      } else {
+        process.env.TUNNEL_API_KEY = prevSecret;
+      }
+    }
   });
 });

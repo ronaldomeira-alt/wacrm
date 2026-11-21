@@ -9,6 +9,29 @@ import {
 import { reconcileInventoryWithProjections } from '@/lib/match/inventory-reconciler';
 import type { MatchStatus } from '@/lib/match/types';
 
+const DEFAULT_PAGE_SIZE = 36;
+const MAX_PAGE_SIZE = 200;
+const MAX_PREVIEW_MATCHES_PER_LEAD = 20;
+
+interface RpcLeadGroupRow {
+  lead_id: string;
+  lead: Record<string, unknown>;
+  profile_maturity: number;
+  ai_score: number;
+  status_matches_count: number | string;
+  unread_matches_count: number | string;
+  is_unread: boolean;
+  is_recent: boolean;
+  latest_match_at: string | null;
+  first_match_at: string | null;
+  viewed_at: string | null;
+  reopened_at: string | null;
+  reopen_reason: string | null;
+  best_match: Record<string, unknown>;
+  matches: Array<Record<string, unknown>>;
+  total_groups: number | string;
+}
+
 export async function GET(request: Request) {
   try {
     const ctx = await requireRole('agent');
@@ -24,7 +47,15 @@ export async function GET(request: Request) {
     const propertySearch = (searchParams.get('property_search') || '').trim();
     const dateFilter = (searchParams.get('date_filter') || 'all').trim(); // all | today | 24h | 7d | 30d | older
     const viewFilter = (searchParams.get('view_filter') || 'all').trim(); // all | unread | viewed
-    const sortBy = (searchParams.get('sort_by') || (status === 'novo' ? 'recent_desc' : 'score_desc')).trim();
+    const sortBy = (
+      searchParams.get('sort_by') || (status === 'novo' ? 'recent_desc' : 'score_desc')
+    ).trim();
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
+    const pageSize = Math.min(
+      MAX_PAGE_SIZE,
+      Math.max(1, parseInt(searchParams.get('page_size') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
+    );
+    const offset = (page - 1) * pageSize;
     const forceSync = searchParams.get('sync') === '1';
 
     let adminDb = ctx.supabase;
@@ -34,13 +65,13 @@ export async function GET(request: Request) {
       adminDb = ctx.supabase;
     }
 
-    // 0. Reconciliação incremental com inventory_properties (Meus Imóveis) + higienização de leads arquivados
+    // 0. Reconciliação incremental (fallback complementar ao envio em tempo real e ao cron/watcher em background)
     const reconcileStats = await reconcileInventoryWithProjections(adminDb, ctx.accountId, {
       force: forceSync,
-      maxPropertiesToRecalculate: forceSync ? 40 : 15,
+      maxPropertiesToRecalculate: forceSync ? 40 : 10,
     });
 
-    // 1. Projeções com colunas específicas necessárias para listagem e enriquecimento dos cards
+    // 1. Projeções com colunas específicas necessárias para listagem, contadores e status de catálogo
     const { data: allProjections } = await ctx.supabase
       .from('property_match_projections')
       .select(
@@ -61,226 +92,273 @@ export async function GET(request: Request) {
       }
     }
 
-    // Helper para deletar matches órfãos em lotes seguros
-    const safeDeleteInChunks = (column: string, ids: string[]) => {
-      const unique = [...new Set(ids)];
-      const chunkSize = 50;
-      for (let i = 0; i < unique.length; i += chunkSize) {
-        const slice = unique.slice(i, i + chunkSize);
-        void ctx.supabase
-          .from('lead_property_matches')
-          .delete()
-          .eq('account_id', ctx.accountId)
-          .in(column, slice);
-      }
-    };
+    // 2. Contadores precisos por aba via RPC `get_match_tab_counts`
+    let countNovos = 0;
+    let countEmAnalise = 0;
+    let countEnviados = 0;
+    let countPausados = 0;
+    let countArquivados = 0;
+    let countIgnorados = 0;
 
-    // 2. Busca das linhas de matches combinando as mais recentes + maior prioridade
-    // para eliminar o truncamento de 1.000 linhas do PostgREST que ocultava novos leads
-    const buildBaseSelect = () => {
-      let q = ctx.supabase
+    const { data: tabCounts, error: tabCountsErr } = await ctx.supabase.rpc('get_match_tab_counts', {
+      p_account_id: ctx.accountId,
+    });
+
+    const hasModernTabCounts = !tabCountsErr && Array.isArray(tabCounts);
+    if (hasModernTabCounts) {
+      for (const row of tabCounts as { match_status: string; distinct_leads: number | string }[]) {
+        const val = Number(row.distinct_leads) || 0;
+        if (row.match_status === 'novo') countNovos = val;
+        else if (row.match_status === 'em_analise') countEmAnalise = val;
+        else if (row.match_status === 'enviado') countEnviados = val;
+        else if (row.match_status === 'pausado') countPausados = val;
+        else if (row.match_status === 'arquivado') countArquivados = val;
+        else if (row.match_status === 'ignorado') countIgnorados = val;
+      }
+    }
+
+    // 3. Caminho primário: RPC SQL paginada `get_match_lead_groups` (pós-migration 088)
+    //    Agrega 100% das linhas no PostgreSQL (~15ms) preservando TODO o histórico e paginando todos os leads.
+    const { data: rpcGroups, error: rpcGroupsErr } = await ctx.supabase.rpc(
+      'get_match_lead_groups',
+      {
+        p_account_id: ctx.accountId,
+        p_status: status,
+        p_min_score: minScore,
+        p_max_score: maxScore,
+        p_min_maturity: minMaturity,
+        p_max_maturity: maxMaturity,
+        p_min_ai_score: minAiScore,
+        p_lead_search: leadSearch || null,
+        p_property_search: propertySearch || null,
+        p_date_filter: dateFilter,
+        p_view_filter: viewFilter,
+        p_sort_by: sortBy,
+        p_limit: pageSize,
+        p_offset: offset,
+        p_max_matches_per_lead: MAX_PREVIEW_MATCHES_PER_LEAD,
+      }
+    );
+
+    if (!rpcGroupsErr && Array.isArray(rpcGroups)) {
+      const typedRows = rpcGroups as RpcLeadGroupRow[];
+      const totalGroups =
+        typedRows.length > 0 ? Number(typedRows[0].total_groups) || typedRows.length : 0;
+      const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));
+
+      const groups = typedRows.map((row) => ({
+        leadId: row.lead_id,
+        lead: row.lead,
+        profileMaturity: Number(row.profile_maturity) || 0,
+        aiScore: Number(row.ai_score) || 0,
+        bestMatch: row.best_match,
+        totalMatches: Number(row.status_matches_count) || 0,
+        statusMatchesCount: Number(row.status_matches_count) || 0,
+        unreadMatchesCount: Number(row.unread_matches_count) || 0,
+        isUnread: Boolean(row.is_unread),
+        isRecent: Boolean(row.is_recent),
+        latestMatchAt: row.latest_match_at || undefined,
+        firstMatchAt: row.first_match_at || undefined,
+        viewedAt: row.viewed_at || null,
+        reopenedAt: row.reopened_at || null,
+        reopenReason: row.reopen_reason || null,
+        matches: Array.isArray(row.matches) ? row.matches : [],
+      }));
+
+      const recentGroupsCount = groups.filter((g) => g.isRecent).length;
+      const unreadGroupsCount = groups.filter((g) => g.isUnread).length;
+
+      return NextResponse.json({
+        counts: {
+          novos: countNovos,
+          em_analise: countEmAnalise,
+          enviados: countEnviados,
+          pausados: countPausados,
+          arquivados: countArquivados,
+          ignorados: countIgnorados,
+          recentes: recentGroupsCount,
+          nao_lidos: unreadGroupsCount,
+        },
+        pagination: {
+          page,
+          pageSize,
+          totalGroups,
+          totalPages,
+          hasMore: page < totalPages,
+          mode: 'rpc',
+        },
+        catalogStatus: {
+          activePropertiesCount: activePropertyIds.size,
+          totalProjectionsCount: validPropertyIds.size,
+          latestCatalogUpdate,
+          reconcileStats,
+        },
+        groups,
+        matches: groups.flatMap((g) => g.matches),
+      });
+    }
+
+    // 4. Caminho fallback completo (pré-migration 088 ou mocks sem RPC `get_match_lead_groups`)
+    //    Carrega contatos da conta UMA única vez (sem repetir em cada linha de match)
+    //    e pagina todas as linhas leves de `lead_property_matches` em fatias de 1.000,
+    //    garantindo que 100% dos leads (ex.: todos os 282) sejam agrupados e paginados sem truncamento.
+    const { data: accountContacts } = await ctx.supabase
+      .from('contacts')
+      .select(
+        'id, name, phone, ai_score, ai_score_reason, paused_at, archived_at, has_purchased, is_personal_whatsapp'
+      )
+      .eq('account_id', ctx.accountId);
+
+    const contactsMap = new Map<string, Record<string, unknown>>();
+    for (const c of accountContacts || []) {
+      contactsMap.set(c.id, c as Record<string, unknown>);
+    }
+
+    // Busca todas as linhas leves de lead_property_matches para a conta sem truncar em 1.000
+    const allMatchRows: Array<Record<string, unknown>> = [];
+    const CHUNK_SIZE = 1000;
+    const MAX_SCAN_PAGES = 80; // até 80.000 linhas com segurança
+    for (let scanPage = 0; scanPage < MAX_SCAN_PAGES; scanPage++) {
+      const from = scanPage * CHUNK_SIZE;
+      const to = from + CHUNK_SIZE - 1;
+      const { data: batch, error: batchErr } = await ctx.supabase
         .from('lead_property_matches')
         .select(
-          `
-          id,
-          account_id,
-          lead_id,
-          property_id,
-          match_score,
-          score_breakdown,
-          profile_maturity,
-          commercial_priority,
-          match_status,
-          suppressed,
-          origin,
-          sent_at,
-          paused_at,
-          archived_at,
-          created_at,
-          updated_at,
-          contacts!inner (
-            id,
-            name,
-            phone,
-            ai_score,
-            ai_score_reason,
-            paused_at,
-            archived_at,
-            has_purchased,
-            is_personal_whatsapp
-          )
-        `
+          'id, account_id, lead_id, property_id, match_score, score_breakdown, profile_maturity, commercial_priority, match_status, suppressed, origin, sent_at, paused_at, archived_at, created_at, updated_at'
         )
         .eq('account_id', ctx.accountId)
-        .gte('match_score', minScore)
-        .lte('match_score', maxScore)
-        .gte('profile_maturity', minMaturity)
-        .lte('profile_maturity', maxMaturity);
+        .order('id', { ascending: true })
+        .range(from, to);
 
-      if (status === 'ignorado') {
-        q = q.eq('suppressed', true);
-      } else if (status === 'novo' || status === 'em_analise') {
-        // 'em_analise' pode estar armazenado com match_status='em_analise' (pós-088) ou match_status='novo' + _lifecycle.state='em_analise'
-        q = q.in('match_status', ['novo', 'em_analise']).eq('suppressed', false);
-      } else {
-        q = q.eq('match_status', status).eq('suppressed', false);
+      if (batchErr) {
+        console.error('[GET /api/match] Erro no fallback paginado:', batchErr);
+        return NextResponse.json({ error: 'Falha ao buscar matches' }, { status: 500 });
       }
-
-      if (minAiScore > 0) {
-        q = q.gte('contacts.ai_score', minAiScore);
-      }
-
-      if (leadSearch) {
-        q = q.or(`name.ilike.%${leadSearch}%,phone.ilike.%${leadSearch}%`, {
-          foreignTable: 'contacts',
-        });
-      }
-
-      return q;
-    };
-
-    // Executa duas buscas complementares em paralelo (Mais Recentes + Maior Score/Prioridade)
-    // garantindo que 100% dos matches novos apareçam mesmo em bases com > 1.000 linhas
-    const [recentRes, topRes] = await Promise.all([
-      buildBaseSelect()
-        .order('created_at', { ascending: false })
-        .order('match_score', { ascending: false })
-        .limit(1000),
-      buildBaseSelect()
-        .order('match_score', { ascending: false })
-        .order('commercial_priority', { ascending: false })
-        .order('updated_at', { ascending: false })
-        .limit(1000),
-    ]);
-
-    if (recentRes.error && topRes.error) {
-      console.error('[GET /api/match] Erro na busca de matches:', recentRes.error);
-      return NextResponse.json({ error: 'Falha ao buscar matches' }, { status: 500 });
-    }
-
-    const mergedMatchesMap = new Map<string, NonNullable<typeof recentRes.data>[number]>();
-    for (const row of recentRes.data || []) {
-      mergedMatchesMap.set(row.id, row);
-    }
-    for (const row of topRes.data || []) {
-      if (!mergedMatchesMap.has(row.id)) {
-        mergedMatchesMap.set(row.id, row);
-      }
-    }
-    const matches = Array.from(mergedMatchesMap.values());
-
-    // Limpa do banco de dados qualquer match órfão sem imóvel ou match 'novo' de imóvel inativo
-    if (propertiesMap.size > 0) {
-      const staleMatches = matches.filter((m) => {
-        const prop = propertiesMap.get(m.property_id);
-        if (!prop) return true;
-        if (!m.suppressed && m.match_status === 'novo' && prop.status !== 'ativo') return true;
-        return false;
-      });
-      if (staleMatches.length > 0) {
-        const staleIds = staleMatches.map((m) => m.id);
-        after(() => {
-          safeDeleteInChunks('id', staleIds);
-        });
-      }
+      if (!batch || batch.length === 0) break;
+      allMatchRows.push(...(batch as Array<Record<string, unknown>>));
+      if (batch.length < CHUNK_SIZE) break;
     }
 
     const nowMs = Date.now();
 
-    // Enriquecimento com ciclo de vida resolvido (`resolveMatchLifecycle`) e filtro de validade
-    let filteredMatches = matches
-      .map((m) => {
-        const lifecycle = resolveMatchLifecycle(m as unknown as RawMatchRowForLifecycle, nowMs);
-        return {
-          ...m,
-          _resolvedLifecycle: lifecycle,
-        };
-      })
-      .filter((m) => {
-        const prop = propertiesMap.get(m.property_id);
-        if (!prop) return false;
+    // Recalcula contadores reais a partir de 100% das linhas lidas para coerência exata com as páginas
+    const tabLeadSets: Record<MatchStatus, Set<string>> = {
+      novo: new Set(),
+      em_analise: new Set(),
+      enviado: new Set(),
+      pausado: new Set(),
+      arquivado: new Set(),
+      ignorado: new Set(),
+    };
 
-        const contactObj = (Array.isArray(m.contacts) ? m.contacts[0] : m.contacts) as Record<
-          string,
-          unknown
-        > | null;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const todayMs = startOfToday.getTime();
+    const ms24h = 24 * 60 * 60 * 1000;
+    const ms7d = 7 * ms24h;
+    const ms30d = 30 * ms24h;
+    const normLeadSearch = leadSearch.toLowerCase();
+    const normPropSearch = propertySearch.toLowerCase();
 
-        const isContactArchived = Boolean(contactObj?.archived_at);
-        const isContactPaused = Boolean(contactObj?.paused_at);
+    const groupsMap = new Map<
+      string,
+      {
+        leadId: string;
+        lead: Record<string, unknown>;
+        profileMaturity: number;
+        aiScore: number;
+        matches: Array<Record<string, unknown>>;
+      }
+    >();
 
-        // Leads arquivados ou pausados não devem aparecer em 'novo' nem 'em_analise'
-        if ((status === 'novo' || status === 'em_analise') && (isContactArchived || isContactPaused)) {
-          return false;
+    const staleIds: string[] = [];
+
+    for (const rawRow of allMatchRows) {
+      const propId = String(rawRow.property_id || '');
+      const leadId = String(rawRow.lead_id || '');
+      const prop = propertiesMap.get(propId);
+      const contact = contactsMap.get(leadId);
+
+      if (!prop) {
+        if (propertiesMap.size > 0 && rawRow.id) staleIds.push(String(rawRow.id));
+        continue;
+      }
+      if (!contact) continue;
+
+      const lc = resolveMatchLifecycle(rawRow as unknown as RawMatchRowForLifecycle, nowMs);
+      const isContactArchived = Boolean(contact.archived_at);
+      const isContactPaused = Boolean(contact.paused_at);
+
+      // Contabiliza nas abas respeitando contatos ativos e imóveis ativos
+      const isActiveTabStatus = lc.effectiveStatus === 'novo' || lc.effectiveStatus === 'em_analise';
+      if (isActiveTabStatus) {
+        if (prop.status === 'ativo' && !isContactArchived && !isContactPaused) {
+          tabLeadSets[lc.effectiveStatus].add(leadId);
+        } else if (isContactArchived) {
+          tabLeadSets.arquivado.add(leadId);
+        } else if (isContactPaused) {
+          tabLeadSets.pausado.add(leadId);
         }
+      } else {
+        tabLeadSets[lc.effectiveStatus].add(leadId);
+      }
 
-        // Imóveis inativos/vendidos não devem aparecer como oportunidades ativas ('novo' ou 'em_analise')
-        if ((status === 'novo' || status === 'em_analise') && prop.status !== 'ativo') {
-          return false;
+      // Filtra pela aba selecionada
+      let effectiveStatusForFilter = lc.effectiveStatus;
+      if (isActiveTabStatus && isContactArchived) effectiveStatusForFilter = 'arquivado';
+      else if (isActiveTabStatus && isContactPaused) effectiveStatusForFilter = 'pausado';
+
+      if (effectiveStatusForFilter !== status) continue;
+      if ((status === 'novo' || status === 'em_analise') && prop.status !== 'ativo') continue;
+
+      const matchScore = Number(rawRow.match_score || 0);
+      const profileMaturity = Number(rawRow.profile_maturity || 0);
+      const aiScore = Number(contact.ai_score ?? 0);
+
+      if (matchScore < minScore || matchScore > maxScore) continue;
+      if (profileMaturity < minMaturity || profileMaturity > maxMaturity) continue;
+      if (minAiScore > 0 && aiScore < minAiScore) continue;
+
+      if (normLeadSearch) {
+        const cName = String(contact.name || '').toLowerCase();
+        const cPhone = String(contact.phone || '').toLowerCase();
+        if (!cName.includes(normLeadSearch) && !cPhone.includes(normLeadSearch)) continue;
+      }
+
+      if (normPropSearch) {
+        const pTitle = String(prop.title || '').toLowerCase();
+        const pNeigh = String(prop.neighborhood || '').toLowerCase();
+        const pCode = String(prop.code || '').toLowerCase();
+        if (
+          !pTitle.includes(normPropSearch) &&
+          !pNeigh.includes(normPropSearch) &&
+          !pCode.includes(normPropSearch)
+        ) {
+          continue;
         }
+      }
 
-        // Filtra pelo estado efetivo do ciclo de vida
-        if (m._resolvedLifecycle.effectiveStatus !== status) {
-          return false;
-        }
+      if (viewFilter === 'unread' && !lc.isUnread) continue;
+      if (viewFilter === 'viewed' && lc.isUnread) continue;
 
-        return true;
-      });
-
-    // Filtro por imóvel (caso fornecido)
-    if (propertySearch) {
-      const normSearch = propertySearch.toLowerCase();
-      filteredMatches = filteredMatches.filter((m) => {
-        const prop = propertiesMap.get(m.property_id);
-        if (!prop) return false;
-        const title = String(prop.title || '').toLowerCase();
-        const neighborhood = String(prop.neighborhood || '').toLowerCase();
-        const code = String(prop.code || '').toLowerCase();
-        return (
-          title.includes(normSearch) ||
-          neighborhood.includes(normSearch) ||
-          code.includes(normSearch)
-        );
-      });
-    }
-
-    // Filtro de visualização (lidos / não visualizados)
-    if (viewFilter === 'unread') {
-      filteredMatches = filteredMatches.filter((m) => m._resolvedLifecycle.isUnread);
-    } else if (viewFilter === 'viewed') {
-      filteredMatches = filteredMatches.filter((m) => !m._resolvedLifecycle.isUnread);
-    }
-
-    // Filtro de data/período (baseado na data de identificação ou reabertura do match)
-    if (dateFilter !== 'all') {
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      const todayMs = startOfToday.getTime();
-      const ms24h = 24 * 60 * 60 * 1000;
-      const ms7d = 7 * ms24h;
-      const ms30d = 30 * ms24h;
-
-      filteredMatches = filteredMatches.filter((m) => {
-        const refStr = m._resolvedLifecycle.reopenedAt || m.created_at || m.updated_at;
+      if (dateFilter !== 'all') {
+        const refStr = lc.reopenedAt || String(rawRow.created_at || rawRow.updated_at || '');
         const refMs = refStr ? new Date(refStr).getTime() : 0;
-        if (!refMs || Number.isNaN(refMs)) return false;
+        if (!refMs || Number.isNaN(refMs)) continue;
         const ageMs = nowMs - refMs;
+        if (dateFilter === 'today' && refMs < todayMs) continue;
+        if (dateFilter === '24h' && ageMs > ms24h) continue;
+        if (dateFilter === '7d' && ageMs > ms7d) continue;
+        if (dateFilter === '30d' && ageMs > ms30d) continue;
+        if (dateFilter === 'older' && ageMs <= ms7d) continue;
+      }
 
-        if (dateFilter === 'today') return refMs >= todayMs;
-        if (dateFilter === '24h') return ageMs <= ms24h;
-        if (dateFilter === '7d') return ageMs <= ms7d;
-        if (dateFilter === '30d') return ageMs <= ms30d;
-        if (dateFilter === 'older') return ageMs > ms7d;
-        return true;
-      });
-    }
-
-    // Anexa os dados do imóvel e metadados de ciclo de vida em cada match
-    const enrichedMatches = filteredMatches.map((m) => {
-      const prop = propertiesMap.get(m.property_id)!;
-      const lc = m._resolvedLifecycle;
-      return {
-        ...m,
-        match_status: lc.effectiveStatus,
+      const enrichedRow = {
+        ...rawRow,
+        match_score: matchScore,
+        commercial_priority: Number(rawRow.commercial_priority || 0),
+        profile_maturity: profileMaturity,
+        match_status: effectiveStatusForFilter,
         viewed_at: lc.viewedAt,
         ignored_at: lc.ignoredAt,
         reopened_at: lc.reopenedAt,
@@ -288,6 +366,7 @@ export async function GET(request: Request) {
         reopen_count: lc.reopenCount,
         is_unread: lc.isUnread,
         is_recent: lc.isRecent,
+        contacts: contact,
         property: {
           propertyId: prop.property_id,
           title: prop.title,
@@ -305,49 +384,42 @@ export async function GET(request: Request) {
           features: prop.features || [],
         },
       };
-    });
 
-    // 3. Agrupa os matches por LEAD (1 Card Visual = 1 Lead)
-    const groupsMap = new Map<
-      string,
-      {
-        leadId: string;
-        lead: Record<string, unknown>;
-        profileMaturity: number;
-        aiScore: number;
-        matches: typeof enrichedMatches;
-      }
-    >();
-
-    for (const m of enrichedMatches) {
-      const contactObj = (Array.isArray(m.contacts) ? m.contacts[0] : m.contacts) as Record<
-        string,
-        unknown
-      >;
-      if (!groupsMap.has(m.lead_id)) {
-        groupsMap.set(m.lead_id, {
-          leadId: m.lead_id,
-          lead: contactObj,
-          profileMaturity: m.profile_maturity,
-          aiScore: (contactObj?.ai_score as number) ?? 0,
+      if (!groupsMap.has(leadId)) {
+        groupsMap.set(leadId, {
+          leadId,
+          lead: contact,
+          profileMaturity,
+          aiScore,
           matches: [],
         });
       }
-      groupsMap.get(m.lead_id)!.matches.push(m);
+      groupsMap.get(leadId)!.matches.push(enrichedRow);
     }
 
-    const groups = Array.from(groupsMap.values()).map((g) => {
-      // Ordena os matches internos do lead: match_score DESC, depois commercial_priority DESC, depois mais recente
-      const sortedMatches = [...g.matches].sort((a, b) => {
-        if (b.match_score !== a.match_score) return b.match_score - a.match_score;
-        if (b.commercial_priority !== a.commercial_priority) {
-          return b.commercial_priority - a.commercial_priority;
+    if (staleIds.length > 0) {
+      after(() => {
+        for (let i = 0; i < staleIds.length; i += 50) {
+          void ctx.supabase
+            .from('lead_property_matches')
+            .delete()
+            .eq('account_id', ctx.accountId)
+            .in('id', staleIds.slice(i, i + 50));
         }
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+    }
+
+    const allGroups = Array.from(groupsMap.values()).map((g) => {
+      const sortedMatches = [...g.matches].sort((a, b) => {
+        const sDiff = Number(b.match_score || 0) - Number(a.match_score || 0);
+        if (sDiff !== 0) return sDiff;
+        const pDiff = Number(b.commercial_priority || 0) - Number(a.commercial_priority || 0);
+        if (pDiff !== 0) return pDiff;
+        return new Date(String(b.created_at || 0)).getTime() - new Date(String(a.created_at || 0)).getTime();
       });
 
-      let latestMatchAt = sortedMatches[0]?.created_at || '';
-      let firstMatchAt = sortedMatches[0]?.created_at || '';
+      let latestMatchAt = String(sortedMatches[0]?.created_at || '');
+      let firstMatchAt = String(sortedMatches[0]?.created_at || '');
       let unreadMatchesCount = 0;
       let isRecent = false;
       let latestViewedAt: string | null = null;
@@ -355,21 +427,18 @@ export async function GET(request: Request) {
       let reopenReason: string | null = null;
 
       for (const m of sortedMatches) {
-        const refAt = m.reopened_at || m.created_at;
-        if (refAt && (!latestMatchAt || refAt > latestMatchAt)) {
-          latestMatchAt = refAt;
-        }
-        if (m.created_at && (!firstMatchAt || m.created_at < firstMatchAt)) {
-          firstMatchAt = m.created_at;
-        }
+        const refAt = String(m.reopened_at || m.created_at || '');
+        if (refAt && (!latestMatchAt || refAt > latestMatchAt)) latestMatchAt = refAt;
+        const cAt = String(m.created_at || '');
+        if (cAt && (!firstMatchAt || cAt < firstMatchAt)) firstMatchAt = cAt;
         if (m.is_unread) unreadMatchesCount++;
         if (m.is_recent) isRecent = true;
-        if (m.viewed_at && (!latestViewedAt || m.viewed_at > latestViewedAt)) {
-          latestViewedAt = m.viewed_at;
+        if (m.viewed_at && (!latestViewedAt || String(m.viewed_at) > latestViewedAt)) {
+          latestViewedAt = String(m.viewed_at);
         }
-        if (m.reopened_at && (!reopenedAt || m.reopened_at > reopenedAt)) {
-          reopenedAt = m.reopened_at;
-          reopenReason = m.reopen_reason || null;
+        if (m.reopened_at && (!reopenedAt || String(m.reopened_at) > reopenedAt)) {
+          reopenedAt = String(m.reopened_at);
+          reopenReason = m.reopen_reason ? String(m.reopen_reason) : null;
         }
       }
 
@@ -389,135 +458,66 @@ export async function GET(request: Request) {
         viewedAt: latestViewedAt,
         reopenedAt,
         reopenReason,
-        matches: sortedMatches,
+        // Limita apenas a prévia retornada por card (Top 20) mantendo 100% no banco
+        matches: sortedMatches.slice(0, MAX_PREVIEW_MATCHES_PER_LEAD),
       };
     });
 
-    // Ordenação dos grupos conforme seleção do usuário (padrão em 'novo': mais recente primeiro)
-    groups.sort((a, b) => {
+    allGroups.sort((a, b) => {
       if (sortBy === 'recent_desc') {
         const timeA = a.latestMatchAt ? new Date(a.latestMatchAt).getTime() : 0;
         const timeB = b.latestMatchAt ? new Date(b.latestMatchAt).getTime() : 0;
         if (timeB !== timeA) return timeB - timeA;
-        const scoreDiff = (b.bestMatch?.match_score || 0) - (a.bestMatch?.match_score || 0);
+        const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
         if (scoreDiff !== 0) return scoreDiff;
-        return (b.bestMatch?.commercial_priority || 0) - (a.bestMatch?.commercial_priority || 0);
+        return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
       }
-
       if (sortBy === 'priority_desc') {
-        const prioDiff =
-          (b.bestMatch?.commercial_priority || 0) - (a.bestMatch?.commercial_priority || 0);
+        const prioDiff = Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
         if (prioDiff !== 0) return prioDiff;
-        return (b.bestMatch?.match_score || 0) - (a.bestMatch?.match_score || 0);
+        return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
       }
-
       if (sortBy === 'ai_score_desc') {
         if (b.aiScore !== a.aiScore) return b.aiScore - a.aiScore;
-        return (b.bestMatch?.match_score || 0) - (a.bestMatch?.match_score || 0);
+        return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
       }
-
-      // score_desc
-      const scoreDiff = (b.bestMatch?.match_score || 0) - (a.bestMatch?.match_score || 0);
+      const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
       if (scoreDiff !== 0) return scoreDiff;
-      return (b.bestMatch?.commercial_priority || 0) - (a.bestMatch?.commercial_priority || 0);
+      return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
     });
 
-    // 4. Contadores precisos para cada aba de status
-    let countNovos = 0;
-    let countEmAnalise = 0;
-    let countEnviados = 0;
-    let countPausados = 0;
-    let countArquivados = 0;
-    let countIgnorados = 0;
+    const totalGroups = allGroups.length;
+    const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));
+    const pagedGroups = allGroups.slice(offset, offset + pageSize);
 
-    const { data: tabCounts, error: tabCountsErr } = await ctx.supabase.rpc('get_match_tab_counts', {
-      p_account_id: ctx.accountId,
-    });
+    countNovos = tabLeadSets.novo.size;
+    countEmAnalise = tabLeadSets.em_analise.size;
+    countEnviados = tabLeadSets.enviado.size;
+    countPausados = tabLeadSets.pausado.size;
+    countArquivados = tabLeadSets.arquivado.size;
+    countIgnorados = tabLeadSets.ignorado.size;
 
-    if (!tabCountsErr && tabCounts && Array.isArray(tabCounts)) {
-      for (const row of tabCounts as { match_status: string; distinct_leads: number | string }[]) {
-        const val = Number(row.distinct_leads) || 0;
-        if (row.match_status === 'novo') countNovos = val;
-        else if (row.match_status === 'em_analise') countEmAnalise = val;
-        else if (row.match_status === 'enviado') countEnviados = val;
-        else if (row.match_status === 'pausado') countPausados = val;
-        else if (row.match_status === 'arquivado') countArquivados = val;
-        else if (row.match_status === 'ignorado') countIgnorados = val;
-      }
-    }
-
-    // Complementa contadores para abas gerenciadas via _lifecycle ou suppressed antes da migration 088
-    const [ignoredLeadsRes, emAnaliseRowsRes] = await Promise.all([
-      ctx.supabase
-        .from('lead_property_matches')
-        .select('lead_id, property_id')
-        .eq('account_id', ctx.accountId)
-        .eq('suppressed', true)
-        .limit(1000),
-      ctx.supabase
-        .from('lead_property_matches')
-        .select('lead_id, property_id, match_status, score_breakdown')
-        .eq('account_id', ctx.accountId)
-        .eq('suppressed', false)
-        .not('score_breakdown->_lifecycle', 'is', null)
-        .limit(1000),
-    ]);
-
-    if (countIgnorados === 0 && ignoredLeadsRes.data) {
-      const igSet = new Set<string>();
-      for (const r of ignoredLeadsRes.data) {
-        if (validPropertyIds.has(r.property_id)) igSet.add(r.lead_id);
-      }
-      countIgnorados = igSet.size;
-    }
-
-    if (emAnaliseRowsRes.data && emAnaliseRowsRes.data.length > 0) {
-      const eaSet = new Set<string>();
-      for (const r of emAnaliseRowsRes.data) {
-        if (!activePropertyIds.has(r.property_id)) continue;
-        const lc = resolveMatchLifecycle(r as unknown as RawMatchRowForLifecycle, nowMs);
-        if (lc.effectiveStatus === 'em_analise') {
-          eaSet.add(r.lead_id);
-        }
-      }
-      if (countEmAnalise === 0 && eaSet.size > 0) {
-        countEmAnalise = eaSet.size;
-        countNovos = Math.max(0, countNovos - eaSet.size);
-      }
-    }
-
-    // Se a aba ativa não tem filtros restritivos de busca, garante coerência entre o contador da aba e os grupos visíveis
-    const hasNoSearchOrScoreFilters =
-      !leadSearch &&
-      !propertySearch &&
-      minScore === 0 &&
-      maxScore === 100 &&
-      minMaturity === 0 &&
-      minAiScore === 0 &&
-      dateFilter === 'all' &&
-      viewFilter === 'all';
-
-    if (hasNoSearchOrScoreFilters) {
-      if (status === 'em_analise') countEmAnalise = groups.length;
-      if (status === 'ignorado') countIgnorados = groups.length;
-      if (status === 'enviado') countEnviados = groups.length;
-      if (status === 'pausado') countPausados = groups.length;
-      if (status === 'arquivado') countArquivados = groups.length;
-    }
-
-    const recentGroupsCount = groups.filter((g) => g.isRecent).length;
-    const unreadGroupsCount = groups.filter((g) => g.isUnread).length;
+    const recentGroupsCount = allGroups.filter((g) => g.isRecent).length;
+    const unreadGroupsCount = allGroups.filter((g) => g.isUnread).length;
 
     return NextResponse.json({
       counts: {
-        novos: countNovos ?? 0,
-        em_analise: countEmAnalise ?? 0,
-        enviados: countEnviados ?? 0,
-        pausados: countPausados ?? 0,
-        arquivados: countArquivados ?? 0,
-        ignorados: countIgnorados ?? 0,
+        novos: countNovos,
+        em_analise: countEmAnalise,
+        enviados: countEnviados,
+        pausados: countPausados,
+        arquivados: countArquivados,
+        ignorados: countIgnorados,
         recentes: recentGroupsCount,
         nao_lidos: unreadGroupsCount,
+      },
+      pagination: {
+        page,
+        pageSize,
+        totalGroups,
+        totalPages,
+        hasMore: page < totalPages,
+        mode: 'fallback_complete',
       },
       catalogStatus: {
         activePropertiesCount: activePropertyIds.size,
@@ -525,8 +525,8 @@ export async function GET(request: Request) {
         latestCatalogUpdate,
         reconcileStats,
       },
-      groups,
-      matches: enrichedMatches,
+      groups: pagedGroups,
+      matches: pagedGroups.flatMap((g) => g.matches),
     });
   } catch (err) {
     return toErrorResponse(err);

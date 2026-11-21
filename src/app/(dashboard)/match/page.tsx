@@ -29,6 +29,8 @@ import {
   Archive,
   History,
   ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { MatchStatus, LeadMatchGroup } from '@/lib/match/types';
 import { createClient } from '@/lib/supabase/client';
@@ -102,6 +104,20 @@ export default function MatchPage() {
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
   const [minAiScore, setMinAiScore] = useState<string>('0');
   const [sortBy, setSortBy] = useState<'recent_desc' | 'score_desc' | 'priority_desc' | 'ai_score_desc'>('recent_desc');
+  const [page, setPage] = useState<number>(1);
+  const [pagination, setPagination] = useState<{
+    page: number;
+    pageSize: number;
+    totalGroups: number;
+    totalPages: number;
+    hasMore: boolean;
+  }>({
+    page: 1,
+    pageSize: 36,
+    totalGroups: 0,
+    totalPages: 1,
+    hasMore: false,
+  });
 
   // Modais e Deep-link de Notificações
   const [selectedGroupForModal, setSelectedGroupForModal] = useState<LeadMatchGroup | null>(null);
@@ -121,6 +137,8 @@ export default function MatchPage() {
         const params = new URLSearchParams();
         params.set('status', activeTab);
         params.set('sort_by', sortBy);
+        params.set('page', String(page));
+        params.set('page_size', '36');
 
         if (forceInventorySync) params.set('sync', '1');
         if (leadSearch.trim()) params.set('lead_search', leadSearch.trim());
@@ -158,6 +176,9 @@ export default function MatchPage() {
         setGroups(newGroups);
         if (data.counts) {
           setCounts((prev) => ({ ...prev, ...data.counts }));
+        }
+        if (data.pagination) {
+          setPagination(data.pagination);
         }
         if (data.catalogStatus) {
           setCatalogStatus(data.catalogStatus);
@@ -209,8 +230,13 @@ export default function MatchPage() {
         setRefreshing(false);
       }
     },
-    [activeTab, leadSearch, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy]
+    [activeTab, leadSearch, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy, page]
   );
+
+  // Volta para a página 1 quando mudar aba, filtros ou ordenação
+  useEffect(() => {
+    setPage(1);
+  }, [activeTab, leadSearch, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy]);
 
   useEffect(() => {
     fetchMatches();
@@ -745,6 +771,50 @@ export default function MatchPage() {
                 onQuickAction={handleQuickAction}
               />
             ))}
+          </div>
+        )}
+
+        {/* Controles de Paginação Completa (cobre 100% dos leads sem truncamento) */}
+        {!loading && pagination.totalGroups > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-border/60 text-xs text-muted-foreground">
+            <span>
+              Mostrando{' '}
+              <strong className="text-foreground">
+                {(pagination.page - 1) * pagination.pageSize + 1}–
+                {Math.min(pagination.page * pagination.pageSize, pagination.totalGroups)}
+              </strong>{' '}
+              de <strong className="text-foreground">{pagination.totalGroups}</strong> leads nesta aba
+            </span>
+
+            {pagination.totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={pagination.page <= 1 || refreshing}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  className="h-7 text-xs gap-1"
+                >
+                  <ChevronLeft className="size-3.5" />
+                  Anterior
+                </Button>
+                <span className="px-2 font-medium text-foreground">
+                  Página {pagination.page} de {pagination.totalPages}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!pagination.hasMore || refreshing}
+                  onClick={() => setPage((p) => p + 1)}
+                  className="h-7 text-xs gap-1"
+                >
+                  Próxima
+                  <ChevronRight className="size-3.5" />
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>
