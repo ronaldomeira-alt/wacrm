@@ -7,9 +7,22 @@ import {
 
 const DEFAULT_OPERATIONAL_ACCOUNT_ID = 'f8d2ae51-e393-4a74-a432-ddab0610837e';
 const DEFAULT_WATCHER_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
+const DEFAULT_FULL_RECONCILE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos (proteção complementar contra empate de COUNT/updated_at)
 
 let watcherStarted = false;
 let syncInFlight = false;
+const lastObservedInventoryByAccount = new Map<
+  string,
+  { count: number; latestUpdatedAt: number; lastFullReconcileAt: number }
+>();
+
+export function resetBackgroundSyncState(accountId?: string): void {
+  if (accountId) {
+    lastObservedInventoryByAccount.delete(accountId);
+  } else {
+    lastObservedInventoryByAccount.clear();
+  }
+}
 
 export async function resolveOperationalMatchAccountId(db: SupabaseClient): Promise<string | null> {
   if (process.env.MATCH_CANONICAL_ACCOUNT_ID) {
@@ -53,7 +66,12 @@ export interface BackgroundSyncCheckResult {
 export async function runMatchInventorySyncIfChanged(
   db: SupabaseClient,
   accountId?: string | null,
-  options?: { force?: boolean; maxPropertiesToRecalculate?: number }
+  options?: {
+    force?: boolean;
+    maxPropertiesToRecalculate?: number;
+    suppressNotifications?: boolean;
+    fullReconcileIntervalMs?: number;
+  }
 ): Promise<BackgroundSyncCheckResult> {
   if (syncInFlight) {
     return { checked: false, driftDetected: false, reason: 'sync_already_in_flight' };
@@ -66,10 +84,24 @@ export async function runMatchInventorySyncIfChanged(
       return { checked: false, driftDetected: false, reason: 'account_not_resolved' };
     }
 
+    const nowMs = Date.now();
+    const fullReconcileIntervalMs = Math.max(
+      60_000,
+      options?.fullReconcileIntervalMs ??
+        Number(process.env.MATCH_FULL_RECONCILE_INTERVAL_MS || DEFAULT_FULL_RECONCILE_INTERVAL_MS)
+    );
+
     if (options?.force) {
       const reconcile = await reconcileInventoryWithProjections(db, targetAccountId, {
         force: true,
         maxPropertiesToRecalculate: options.maxPropertiesToRecalculate ?? 40,
+        suppressNotifications: options.suppressNotifications,
+      });
+      const prev = lastObservedInventoryByAccount.get(targetAccountId);
+      lastObservedInventoryByAccount.set(targetAccountId, {
+        count: prev?.count ?? -1,
+        latestUpdatedAt: prev?.latestUpdatedAt ?? nowMs,
+        lastFullReconcileAt: nowMs,
       });
       return { checked: true, driftDetected: true, reason: 'forced', reconcile };
     }
@@ -106,20 +138,63 @@ export async function runMatchInventorySyncIfChanged(
     const invCount = typeof invCountRes.count === 'number' ? invCountRes.count : -1;
     const projCount = typeof projCountRes.count === 'number' ? projCountRes.count : -1;
 
+    const prevObserved = lastObservedInventoryByAccount.get(targetAccountId);
     const hasNewerInventory = latestInvAt > latestProjAt;
     const hasCountMismatch = invCount >= 0 && projCount >= 0 && invCount !== projCount;
+    const hasInventoryWatermarkChanged = Boolean(
+      prevObserved &&
+        ((invCount >= 0 && prevObserved.count >= 0 && invCount !== prevObserved.count) ||
+          (latestInvAt > 0 && latestInvAt !== prevObserved.latestUpdatedAt))
+    );
+    const isPeriodicFullCheckDue = Boolean(
+      prevObserved && nowMs - prevObserved.lastFullReconcileAt >= fullReconcileIntervalMs
+    );
 
-    if (!hasNewerInventory && !hasCountMismatch) {
+    if (
+      !hasNewerInventory &&
+      !hasCountMismatch &&
+      !hasInventoryWatermarkChanged &&
+      !isPeriodicFullCheckDue
+    ) {
+      lastObservedInventoryByAccount.set(targetAccountId, {
+        count: invCount,
+        latestUpdatedAt: latestInvAt,
+        lastFullReconcileAt: prevObserved?.lastFullReconcileAt ?? nowMs,
+      });
       return { checked: true, driftDetected: false, reason: 'up_to_date' };
     }
 
-    const reason = hasNewerInventory ? 'inventory_newer_than_projection' : 'inventory_count_mismatch';
+    const reason = hasNewerInventory
+      ? 'inventory_newer_than_projection'
+      : hasCountMismatch
+        ? 'inventory_count_mismatch'
+        : hasInventoryWatermarkChanged
+          ? 'inventory_watermark_changed'
+          : 'periodic_full_verification';
+
     const reconcile = await reconcileInventoryWithProjections(db, targetAccountId, {
       force: true,
       maxPropertiesToRecalculate: options?.maxPropertiesToRecalculate ?? 25,
+      suppressNotifications: options?.suppressNotifications,
     });
 
-    return { checked: true, driftDetected: true, reason, reconcile };
+    lastObservedInventoryByAccount.set(targetAccountId, {
+      count: invCount,
+      latestUpdatedAt: latestInvAt,
+      lastFullReconcileAt: nowMs,
+    });
+
+    const actualDrift =
+      reconcile.upsertedProjections > 0 ||
+      reconcile.deactivatedOrphans > 0 ||
+      reconcile.recalculatedProperties > 0;
+
+    return {
+      checked: true,
+      driftDetected: actualDrift || hasNewerInventory || hasCountMismatch || hasInventoryWatermarkChanged,
+      reason,
+      reconcile,
+    };
   } catch (err) {
     console.warn('[match-background-sync] Falha no check automático:', err);
     return { checked: false, driftDetected: false, reason: 'error' };

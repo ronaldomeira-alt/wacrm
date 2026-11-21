@@ -36,11 +36,17 @@ async function handleMatchCron(request: Request): Promise<NextResponse> {
 
   const { searchParams } = new URL(request.url);
   const force = searchParams.get('force') === '1';
+  const suppressNotifications = searchParams.get('suppress_notifications') === '1';
+  const maxRecalcParam = Number(searchParams.get('max_recalc') || '40');
+  const maxPropertiesToRecalculate = Number.isFinite(maxRecalcParam)
+    ? Math.max(1, Math.min(maxRecalcParam, 250))
+    : 40;
 
   const db = supabaseAdmin();
   const result = await runMatchInventorySyncIfChanged(db, null, {
     force,
-    maxPropertiesToRecalculate: 40,
+    suppressNotifications,
+    maxPropertiesToRecalculate,
   });
 
   return NextResponse.json({
