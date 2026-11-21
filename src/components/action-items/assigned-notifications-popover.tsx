@@ -8,7 +8,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { getDateFnsLocale } from "@/lib/date-fns-locale";
-import { parseNotificationTarget } from "@/lib/match/notifications";
+import { parseNotificationTarget } from "@/lib/match/notification-parser";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";

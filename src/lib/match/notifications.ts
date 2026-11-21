@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { sendPushToAccount } from '../push/send';
+export { parseNotificationTarget } from './notification-parser';
 
 export interface MatchNotificationCandidate {
   matchId?: string;
@@ -95,58 +96,6 @@ export function formatMatchNotificationText(
     : `Novo Match: ${leadName} (${score}%)`;
 
   return { title, body, url, tag };
-}
-
-/**
- * Extrai URL de destino e texto limpo de uma linha da tabela `notifications`.
- */
-export function parseNotificationTarget(notification: {
-  type?: string;
-  title?: string | null;
-  body?: string | null;
-  conversation_id?: string | null;
-  contact_id?: string | null;
-  metadata?: Record<string, unknown> | null;
-}): { cleanBody: string; targetUrl: string; isMatchNotification: boolean } {
-  const rawBody = notification.body || '';
-  const urlMatch = rawBody.match(/\s*\[url:(\/[^\]]+)\]\s*$/);
-  const cleanBody = urlMatch ? rawBody.replace(urlMatch[0], '').trim() : rawBody;
-
-  const metaUrl =
-    notification.metadata && typeof notification.metadata.url === 'string'
-      ? notification.metadata.url
-      : null;
-
-  const isMatchType =
-    notification.type === 'match_created' ||
-    notification.type === 'match_reopened' ||
-    notification.type === 'match_interest' ||
-    Boolean(urlMatch) ||
-    Boolean(notification.title?.startsWith('Novo Match')) ||
-    Boolean(notification.title?.startsWith('Match Reaberto')) ||
-    Boolean(notification.title?.startsWith('Interesse em Imóvel'));
-
-  if (metaUrl) {
-    return { cleanBody, targetUrl: metaUrl, isMatchNotification: isMatchType };
-  }
-  if (urlMatch?.[1]) {
-    return { cleanBody, targetUrl: urlMatch[1], isMatchNotification: true };
-  }
-  if (isMatchType && notification.contact_id) {
-    return {
-      cleanBody,
-      targetUrl: `/match?lead=${notification.contact_id}`,
-      isMatchNotification: true,
-    };
-  }
-  if (notification.conversation_id) {
-    return {
-      cleanBody,
-      targetUrl: `/inbox?c=${notification.conversation_id}`,
-      isMatchNotification: false,
-    };
-  }
-  return { cleanBody, targetUrl: '/match', isMatchNotification: isMatchType };
 }
 
 /**
