@@ -31,6 +31,8 @@ import {
   ArrowUpDown,
   ChevronLeft,
   ChevronRight,
+  SlidersHorizontal,
+  X,
 } from 'lucide-react';
 import type { MatchStatus, LeadMatchGroup } from '@/lib/match/types';
 import { createClient } from '@/lib/supabase/client';
@@ -104,6 +106,26 @@ export default function MatchPage() {
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
   const [minAiScore, setMinAiScore] = useState<string>('0');
   const [sortBy, setSortBy] = useState<'recent_desc' | 'score_desc' | 'priority_desc' | 'ai_score_desc'>('recent_desc');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  const activeSecondaryFiltersCount = useMemo(() => {
+    let count = 0;
+    if (propertySearch.trim()) count++;
+    if (dateFilter !== 'all') count++;
+    if (scoreFilter !== 'all') count++;
+    if (maturityFilter !== 'all') count++;
+    if (minAiScore !== '0') count++;
+    return count;
+  }, [propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore]);
+
+  const resetAllFilters = useCallback(() => {
+    setLeadSearch('');
+    setPropertySearch('');
+    setDateFilter('all');
+    setScoreFilter('all');
+    setMaturityFilter('all');
+    setMinAiScore('0');
+  }, []);
   const [page, setPage] = useState<number>(1);
   const [pagination, setPagination] = useState<{
     page: number;
@@ -430,29 +452,24 @@ export default function MatchPage() {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Top Header */}
-      <div className="border-b border-border bg-card/60 backdrop-blur-md px-6 py-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
-                <Sparkles className="size-5 text-primary" />
-                Match
-              </h1>
-              <span className="rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-xs font-semibold text-primary">
-                Túnel Ativo
+      <div className="border-b border-border bg-card/60 backdrop-blur-md px-4 py-3 sm:px-6 sm:py-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight text-foreground flex items-center gap-1.5 shrink-0">
+              <Sparkles className="size-4.5 sm:size-5 text-primary" />
+              Match
+            </h1>
+            <span className="rounded-full bg-primary/10 border border-primary/20 px-2 py-0.5 text-[10px] sm:text-xs font-semibold text-primary shrink-0">
+              Túnel Ativo
+            </span>
+            {catalogStatus && (
+              <span className="hidden md:inline-flex rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
+                {catalogStatus.activePropertiesCount} imóveis sincronizados
               </span>
-              {catalogStatus && (
-                <span className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
-                  {catalogStatus.activePropertiesCount} imóveis ativos sincronizados
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Recomendações determinísticas de imóveis para leads qualificados.
-            </p>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0">
             {/* Sino de Notificações Internas de Match */}
             <AssignedNotificationsPopover onlyMatch />
 
@@ -464,17 +481,21 @@ export default function MatchPage() {
                 fetchMatches(false, true);
               }}
               disabled={loading || refreshing}
-              className="gap-1.5 text-xs"
+              className="h-8 px-2.5 sm:px-3 text-xs gap-1.5"
               title="Sincronizar com Meus Imóveis e atualizar oportunidades"
             >
               <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-              Atualizar
+              <span className="hidden sm:inline">Atualizar</span>
             </Button>
           </div>
         </div>
 
-        {/* Tabs de Status do Ciclo de Vida */}
-        <div className="mt-4 overflow-x-auto pb-1 sm:pb-0">
+        <p className="hidden sm:block text-xs text-muted-foreground mt-1">
+          Recomendações determinísticas de imóveis para leads qualificados.
+        </p>
+
+        {/* Tabs de Status do Ciclo de Vida (Swipe horizontal fluido no iPhone) */}
+        <div className="mt-3 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto no-scrollbar pb-1">
           <Tabs
             value={activeTab}
             onValueChange={(val) => {
@@ -486,40 +507,40 @@ export default function MatchPage() {
             }}
             className="w-full"
           >
-            <TabsList className="bg-muted/60 p-1">
-              <TabsTrigger value="novo" className="gap-2 text-xs">
+            <TabsList className="inline-flex w-max space-x-1 bg-muted/60 p-1 rounded-xl">
+              <TabsTrigger value="novo" className="gap-1.5 text-xs px-3 py-1.5 shrink-0">
                 Novos
-                <span className="rounded-full bg-primary/10 px-1.5 py-0.2 text-[10px] font-bold text-primary">
+                <span className="rounded-full bg-primary/15 px-1.5 py-0.2 text-[10px] font-bold text-primary">
                   {counts.novos}
                 </span>
               </TabsTrigger>
-              <TabsTrigger value="em_analise" className="gap-2 text-xs">
+              <TabsTrigger value="em_analise" className="gap-1.5 text-xs px-3 py-1.5 shrink-0">
                 Em Análise
-                <span className="rounded-full bg-blue-500/10 px-1.5 py-0.2 text-[10px] font-bold text-blue-400">
+                <span className="rounded-full bg-blue-500/15 px-1.5 py-0.2 text-[10px] font-bold text-blue-400">
                   {counts.em_analise}
                 </span>
               </TabsTrigger>
-              <TabsTrigger value="enviado" className="gap-2 text-xs">
+              <TabsTrigger value="enviado" className="gap-1.5 text-xs px-3 py-1.5 shrink-0">
                 Enviados
-                <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400">
+                <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400">
                   {counts.enviados}
                 </span>
               </TabsTrigger>
-              <TabsTrigger value="pausado" className="gap-2 text-xs">
+              <TabsTrigger value="pausado" className="gap-1.5 text-xs px-3 py-1.5 shrink-0">
                 Pausados
-                <span className="rounded-full bg-amber-500/10 px-1.5 py-0.2 text-[10px] font-bold text-amber-500">
+                <span className="rounded-full bg-amber-500/15 px-1.5 py-0.2 text-[10px] font-bold text-amber-500">
                   {counts.pausados}
                 </span>
               </TabsTrigger>
-              <TabsTrigger value="arquivado" className="gap-2 text-xs">
+              <TabsTrigger value="arquivado" className="gap-1.5 text-xs px-3 py-1.5 shrink-0">
                 Arquivados
                 <span className="rounded-full bg-muted px-1.5 py-0.2 text-[10px] font-bold text-muted-foreground">
                   {counts.arquivados}
                 </span>
               </TabsTrigger>
-              <TabsTrigger value="ignorado" className="gap-2 text-xs">
+              <TabsTrigger value="ignorado" className="gap-1.5 text-xs px-3 py-1.5 shrink-0">
                 Ignorados
-                <span className="rounded-full bg-rose-500/10 px-1.5 py-0.2 text-[10px] font-bold text-rose-400">
+                <span className="rounded-full bg-rose-500/15 px-1.5 py-0.2 text-[10px] font-bold text-rose-400">
                   {counts.ignorados}
                 </span>
               </TabsTrigger>
@@ -529,8 +550,198 @@ export default function MatchPage() {
       </div>
 
       {/* Barra de Filtros Inteligentes */}
-      <div className="border-b border-border bg-card/30 px-6 py-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2.5">
+      <div className="border-b border-border bg-card/30 px-4 py-2.5 sm:px-6 sm:py-3">
+        {/* Mobile: Barra compacta (Busca de Lead + Toggle Filtros + Ordenação) */}
+        <div className="sm:hidden flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Buscar lead (nome/tel)..."
+                value={leadSearch}
+                onChange={(e) => setLeadSearch(e.target.value)}
+                className="pl-8 pr-7 text-xs h-9 bg-background/60"
+              />
+              {leadSearch && (
+                <button
+                  type="button"
+                  onClick={() => setLeadSearch('')}
+                  className="absolute right-2 top-2.5 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
+
+            <Button
+              type="button"
+              variant={mobileFiltersOpen || activeSecondaryFiltersCount > 0 ? 'secondary' : 'outline'}
+              size="sm"
+              onClick={() => setMobileFiltersOpen((prev) => !prev)}
+              className="h-9 px-2.5 text-xs gap-1.5 shrink-0"
+            >
+              <SlidersHorizontal className="size-3.5" />
+              <span>Filtros</span>
+              {activeSecondaryFiltersCount > 0 && (
+                <span className="rounded-full bg-primary text-primary-foreground text-[10px] px-1.5 py-0.2 font-bold leading-none">
+                  {activeSecondaryFiltersCount}
+                </span>
+              )}
+            </Button>
+          </div>
+
+          {/* Painel Expansível de Filtros Secundários no Mobile */}
+          {mobileFiltersOpen && (
+            <div className="rounded-xl border border-border/80 bg-card p-3 shadow-md space-y-2.5 animate-in fade-in-50 slide-in-from-top-2">
+              <div className="flex items-center justify-between pb-1 border-b border-border/50 text-xs">
+                <span className="font-semibold text-foreground flex items-center gap-1.5">
+                  <SlidersHorizontal className="size-3 text-primary" />
+                  Filtros Avançados
+                </span>
+                {activeSecondaryFiltersCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={resetAllFilters}
+                    className="text-[11px] text-primary hover:underline font-medium"
+                  >
+                    Limpar filtros
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 pt-1">
+                {/* Busca por Imóvel */}
+                <div className="relative">
+                  <Building2 className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar imóvel/bairro..."
+                    value={propertySearch}
+                    onChange={(e) => setPropertySearch(e.target.value)}
+                    className="pl-8 text-xs h-8 bg-background"
+                  />
+                </div>
+
+                {/* Ordenação no Mobile */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground uppercase font-semibold">Ordenação</label>
+                  <Select
+                    value={sortBy}
+                    onValueChange={(val) => setSortBy((val as typeof sortBy) || 'recent_desc')}
+                  >
+                    <SelectTrigger className="h-8 text-xs bg-background">
+                      <ArrowUpDown className="size-3 mr-1 text-muted-foreground shrink-0" />
+                      <SelectValue placeholder="Ordenar por">
+                        {SORT_BY_LABELS[sortBy] || 'Mais recentes primeiro'}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="text-xs">
+                      <SelectItem value="recent_desc">Mais recentes primeiro</SelectItem>
+                      <SelectItem value="score_desc">Maior compatibilidade</SelectItem>
+                      <SelectItem value="priority_desc">Maior prioridade comercial</SelectItem>
+                      <SelectItem value="ai_score_desc">Maior Score IA</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Filtro de Data / Período */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground uppercase font-semibold">Período</label>
+                  <Select
+                    value={dateFilter}
+                    onValueChange={(val) => setDateFilter((val as typeof dateFilter) || 'all')}
+                  >
+                    <SelectTrigger className="h-8 text-xs bg-background">
+                      <SelectValue placeholder="Período">
+                        {DATE_FILTER_LABELS[dateFilter] || 'Período: Todas as datas'}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="text-xs">
+                      <SelectItem value="all">Período: Todas as datas</SelectItem>
+                      <SelectItem value="today">Hoje</SelectItem>
+                      <SelectItem value="24h">Últimas 24 horas</SelectItem>
+                      <SelectItem value="7d">Últimos 7 dias (Recentes)</SelectItem>
+                      <SelectItem value="30d">Últimos 30 dias</SelectItem>
+                      <SelectItem value="older">Anteriores (&gt; 7 dias)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Faixa de Compatibilidade */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground uppercase font-semibold">Compatibilidade</label>
+                  <Select
+                    value={scoreFilter}
+                    onValueChange={(val) => setScoreFilter((val as typeof scoreFilter) || 'all')}
+                  >
+                    <SelectTrigger className="h-8 text-xs bg-background">
+                      <SelectValue placeholder="Compatibilidade">
+                        {SCORE_FILTER_LABELS[scoreFilter] || 'Compatibilidade: Todas'}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="text-xs">
+                      <SelectItem value="all">Compatibilidade: Todas</SelectItem>
+                      <SelectItem value="strong">85%+ (Match Forte)</SelectItem>
+                      <SelectItem value="good">70%–84% (Bom Match)</SelectItem>
+                      <SelectItem value="possible">50%–69% (Possível)</SelectItem>
+                      <SelectItem value="manual">0%–49% (Consulta Manual)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Maturidade e Score IA em linha */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-muted-foreground uppercase font-semibold">Maturidade</label>
+                    <Select
+                      value={maturityFilter}
+                      onValueChange={(val) => setMaturityFilter((val as typeof maturityFilter) || 'all')}
+                    >
+                      <SelectTrigger className="h-8 text-xs bg-background">
+                        <SelectValue placeholder="Maturidade">
+                          {MATURITY_FILTER_LABELS[maturityFilter] || 'Maturidade: Todas'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="text-xs">
+                        <SelectItem value="all">Todas</SelectItem>
+                        <SelectItem value="ready">≥ 70%</SelectItem>
+                        <SelectItem value="growing">&lt; 70%</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-muted-foreground uppercase font-semibold">Score IA</label>
+                    <Select value={minAiScore} onValueChange={(val) => setMinAiScore(val || '0')}>
+                      <SelectTrigger className="h-8 text-xs bg-background">
+                        <SelectValue placeholder="Temperatura">
+                          {AI_SCORE_FILTER_LABELS[minAiScore] || 'Score IA: Qualquer'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="text-xs">
+                        <SelectItem value="0">Qualquer</SelectItem>
+                        <SelectItem value="5">≥ 5</SelectItem>
+                        <SelectItem value="7">≥ 7</SelectItem>
+                        <SelectItem value="9">≥ 9</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setMobileFiltersOpen(false)}
+                className="w-full text-xs h-8 mt-1"
+              >
+                Ver Resultados
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Desktop: Grid Responsivo de 7 Colunas (mantido idêntico) */}
+        <div className="hidden sm:grid sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2.5">
           {/* Busca por Lead */}
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
@@ -646,13 +857,21 @@ export default function MatchPage() {
       </div>
 
       {/* Conteúdo Principal: Grid de Leads (1 Card Visual = 1 Lead) */}
-      <div className="flex-1 p-6 space-y-8">
+      <div className="flex-1 p-4 sm:p-6 space-y-6 sm:space-y-8">
         {loading ? (
-          <div className="flex h-64 flex-col items-center justify-center gap-2">
-            <Loader2 className="size-8 animate-spin text-primary" />
-            <p className="text-xs text-muted-foreground">
-              Sincronizando catálogo e calculando compatibilidades determinísticas...
-            </p>
+          <div className="flex h-56 flex-col items-center justify-center gap-3 text-center px-4">
+            <div className="relative">
+              <div className="size-9 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+              <Sparkles className="size-3.5 text-primary absolute inset-0 m-auto" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-semibold text-foreground">
+                {refreshing ? 'Sincronizando com Meus Imóveis...' : 'Carregando oportunidades determinísticas...'}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Cruzando perfis dos leads com o estoque imobiliário ativo.
+              </p>
+            </div>
           </div>
         ) : groups.length === 0 ? (
           <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">

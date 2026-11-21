@@ -65,63 +65,22 @@ export async function GET(request: Request) {
       adminDb = ctx.supabase;
     }
 
-    // 0. Reconciliação incremental (fallback complementar ao envio em tempo real e ao cron/watcher em background)
-    const reconcileStats = await reconcileInventoryWithProjections(adminDb, ctx.accountId, {
-      force: forceSync,
-      maxPropertiesToRecalculate: forceSync ? 40 : 10,
-    });
-
-    // 1. Projeções com colunas específicas necessárias para listagem, contadores e status de catálogo
-    const { data: allProjections } = await ctx.supabase
-      .from('property_match_projections')
-      .select(
-        'property_id, status, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
-      )
-      .eq('account_id', ctx.accountId);
-
-    const validPropertyIds = new Set((allProjections || []).map((p) => p.property_id));
-    const activePropertyIds = new Set(
-      (allProjections || []).filter((p) => p.status === 'ativo').map((p) => p.property_id)
-    );
-    const propertiesMap = new Map<string, Record<string, unknown>>();
-    let latestCatalogUpdate: string | null = null;
-    for (const p of allProjections || []) {
-      propertiesMap.set(p.property_id, p);
-      if (p.updated_at && (!latestCatalogUpdate || p.updated_at > latestCatalogUpdate)) {
-        latestCatalogUpdate = p.updated_at;
-      }
+    // 0. Reconciliação sob demanda apenas quando solicitado explicitamente pelo usuário (?sync=1)
+    //    A reconciliação contínua já ocorre em background pelo webhook do Meus Imóveis, pelo cron Hostinger e pelo watcher.
+    let reconcileStats = null;
+    if (forceSync) {
+      reconcileStats = await reconcileInventoryWithProjections(adminDb, ctx.accountId, {
+        force: true,
+        maxPropertiesToRecalculate: 40,
+      });
     }
 
-    // 2. Contadores precisos por aba via RPC `get_match_tab_counts`
-    let countNovos = 0;
-    let countEmAnalise = 0;
-    let countEnviados = 0;
-    let countPausados = 0;
-    let countArquivados = 0;
-    let countIgnorados = 0;
-
-    const { data: tabCounts, error: tabCountsErr } = await ctx.supabase.rpc('get_match_tab_counts', {
-      p_account_id: ctx.accountId,
-    });
-
-    const hasModernTabCounts = !tabCountsErr && Array.isArray(tabCounts);
-    if (hasModernTabCounts) {
-      for (const row of tabCounts as { match_status: string; distinct_leads: number | string }[]) {
-        const val = Number(row.distinct_leads) || 0;
-        if (row.match_status === 'novo') countNovos = val;
-        else if (row.match_status === 'em_analise') countEmAnalise = val;
-        else if (row.match_status === 'enviado') countEnviados = val;
-        else if (row.match_status === 'pausado') countPausados = val;
-        else if (row.match_status === 'arquivado') countArquivados = val;
-        else if (row.match_status === 'ignorado') countIgnorados = val;
-      }
-    }
-
-    // 3. Caminho primário: RPC SQL paginada `get_match_lead_groups` (pós-migration 088)
-    //    Agrega 100% das linhas no PostgreSQL (~15ms) preservando TODO o histórico e paginando todos os leads.
-    const { data: rpcGroups, error: rpcGroupsErr } = await ctx.supabase.rpc(
-      'get_match_lead_groups',
-      {
+    // 1 & 2 & 3. Execução paralela: contadores por aba, busca de grupos paginados e metadados de projeções
+    const [tabCountsRes, rpcGroupsRes, projectionsMetaRes] = await Promise.all([
+      ctx.supabase.rpc('get_match_tab_counts', {
+        p_account_id: ctx.accountId,
+      }),
+      ctx.supabase.rpc('get_match_lead_groups', {
         p_account_id: ctx.accountId,
         p_status: status,
         p_min_score: minScore,
@@ -137,8 +96,47 @@ export async function GET(request: Request) {
         p_limit: pageSize,
         p_offset: offset,
         p_max_matches_per_lead: MAX_PREVIEW_MATCHES_PER_LEAD,
-      }
+      }),
+      ctx.supabase
+        .from('property_match_projections')
+        .select('property_id, status, updated_at')
+        .eq('account_id', ctx.accountId),
+    ]);
+
+    const { data: tabCounts, error: tabCountsErr } = tabCountsRes;
+    const { data: rpcGroups, error: rpcGroupsErr } = rpcGroupsRes;
+    const { data: projectionsMeta } = projectionsMetaRes;
+
+    const validPropertyIds = new Set((projectionsMeta || []).map((p) => p.property_id));
+    const activePropertyIds = new Set(
+      (projectionsMeta || []).filter((p) => p.status === 'ativo').map((p) => p.property_id)
     );
+    let latestCatalogUpdate: string | null = null;
+    for (const p of projectionsMeta || []) {
+      if (p.updated_at && (!latestCatalogUpdate || p.updated_at > latestCatalogUpdate)) {
+        latestCatalogUpdate = p.updated_at;
+      }
+    }
+
+    let countNovos = 0;
+    let countEmAnalise = 0;
+    let countEnviados = 0;
+    let countPausados = 0;
+    let countArquivados = 0;
+    let countIgnorados = 0;
+
+    const hasModernTabCounts = !tabCountsErr && Array.isArray(tabCounts);
+    if (hasModernTabCounts) {
+      for (const row of tabCounts as { match_status: string; distinct_leads: number | string }[]) {
+        const val = Number(row.distinct_leads) || 0;
+        if (row.match_status === 'novo') countNovos = val;
+        else if (row.match_status === 'em_analise') countEmAnalise = val;
+        else if (row.match_status === 'enviado') countEnviados = val;
+        else if (row.match_status === 'pausado') countPausados = val;
+        else if (row.match_status === 'arquivado') countArquivados = val;
+        else if (row.match_status === 'ignorado') countIgnorados = val;
+      }
+    }
 
     if (!rpcGroupsErr && Array.isArray(rpcGroups)) {
       const typedRows = rpcGroups as RpcLeadGroupRow[];
@@ -199,9 +197,19 @@ export async function GET(request: Request) {
     }
 
     // 4. Caminho fallback completo (pré-migration 088 ou mocks sem RPC `get_match_lead_groups`)
-    //    Carrega contatos da conta UMA única vez (sem repetir em cada linha de match)
-    //    e pagina todas as linhas leves de `lead_property_matches` em fatias de 1.000,
-    //    garantindo que 100% dos leads (ex.: todos os 282) sejam agrupados e paginados sem truncamento.
+    //    Carrega contatos e propriedades completas apenas se o caminho primário falhar
+    const { data: allProjections } = await ctx.supabase
+      .from('property_match_projections')
+      .select(
+        'property_id, status, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
+      )
+      .eq('account_id', ctx.accountId);
+
+    const propertiesMap = new Map<string, Record<string, unknown>>();
+    for (const p of allProjections || []) {
+      propertiesMap.set(p.property_id, p);
+    }
+
     const { data: accountContacts } = await ctx.supabase
       .from('contacts')
       .select(
