@@ -450,7 +450,7 @@ export default function MatchPage() {
   }, [groups, activeTab, dateFilter]);
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="-m-4 sm:-m-6 flex min-h-[calc(100%+2rem)] sm:min-h-[calc(100%+3rem)] flex-col">
       {/* Top Header */}
       <div className="border-b border-border bg-card/60 backdrop-blur-md px-4 py-3 sm:px-6 sm:py-4">
         <div className="flex items-center justify-between gap-2">
@@ -857,7 +857,7 @@ export default function MatchPage() {
       </div>
 
       {/* Conteúdo Principal: Grid de Leads (1 Card Visual = 1 Lead) */}
-      <div className="flex-1 p-4 sm:p-6 space-y-6 sm:space-y-8">
+      <div className="flex-1 p-3 sm:p-6 space-y-4 sm:space-y-6">
         {loading ? (
           <div className="flex h-56 flex-col items-center justify-center gap-3 text-center px-4">
             <div className="relative">
@@ -874,7 +874,7 @@ export default function MatchPage() {
             </div>
           </div>
         ) : groups.length === 0 ? (
-          <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
+          <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-6 sm:p-8 text-center w-full">
             <Sparkles className="size-10 text-muted-foreground/40 mb-3" />
             <h3 className="text-sm font-semibold text-foreground">
               Nenhuma oportunidade encontrada nesta visualização

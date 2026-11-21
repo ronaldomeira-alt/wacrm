@@ -96,44 +96,16 @@ RETURNS TABLE (
 )
 LANGUAGE sql
 STABLE
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public
 AS $$
-  WITH normalized AS (
-    SELECT
-      m.lead_id,
-      CASE
-        WHEN m.suppressed = true OR m.match_status = 'ignorado'
-          OR (m.score_breakdown->'_lifecycle'->>'state') = 'ignorado'
-          THEN 'ignorado'
-        WHEN m.match_status = 'enviado' THEN 'enviado'
-        WHEN m.match_status = 'pausado' THEN 'pausado'
-        WHEN m.match_status = 'arquivado' THEN 'arquivado'
-        WHEN m.match_status = 'em_analise'
-          OR (m.score_breakdown->'_lifecycle'->>'state') = 'em_analise'
-          THEN 'em_analise'
-        ELSE 'novo'
-      END AS effective_status,
-      p.status AS prop_status,
-      c.paused_at AS contact_paused_at,
-      c.archived_at AS contact_archived_at
-    FROM public.lead_property_matches m
-    JOIN public.property_match_projections p
-      ON p.account_id = m.account_id
-     AND p.property_id = m.property_id
-    JOIN public.contacts c
-      ON c.id = m.lead_id
-     AND c.account_id = m.account_id
-    WHERE m.account_id = p_account_id
-  )
   SELECT
-    effective_status AS match_status,
-    COUNT(DISTINCT lead_id) AS distinct_leads
-  FROM normalized
-  WHERE
-    (effective_status IN ('novo', 'em_analise') AND prop_status = 'ativo' AND contact_archived_at IS NULL AND contact_paused_at IS NULL)
-    OR (effective_status IN ('enviado', 'pausado', 'arquivado', 'ignorado'))
-  GROUP BY effective_status;
+    m.match_status,
+    COUNT(DISTINCT m.lead_id) AS distinct_leads
+  FROM public.lead_property_matches m
+  WHERE m.account_id = p_account_id
+    AND m.suppressed = false
+  GROUP BY m.match_status;
 $$;
 
 REVOKE ALL ON FUNCTION public.get_match_tab_counts(uuid) FROM PUBLIC, anon;
@@ -181,7 +153,7 @@ RETURNS TABLE (
 )
 LANGUAGE sql
 STABLE
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public
 AS $$
   WITH active_contacts AS (
@@ -212,40 +184,29 @@ AS $$
         OR c.phone ILIKE '%' || btrim(p_lead_search) || '%'
       )
   ),
-  matched_rows AS (
+  lead_aggregates AS (
     SELECT
-      m.id,
       m.lead_id,
-      m.match_score,
-      m.commercial_priority,
-      m.profile_maturity,
-      m.created_at,
-      m.viewed_at,
-      m.reopened_at,
-      m.reopen_reason,
-      COALESCE(m.reopened_at, m.created_at) AS ref_at,
-      (p_status = 'novo' AND m.viewed_at IS NULL) AS is_row_unread,
-      (COALESCE(m.reopened_at, m.created_at) >= now() - interval '7 days') AS is_row_recent
+      MAX(m.profile_maturity)::integer AS profile_maturity,
+      COUNT(*)::bigint AS status_matches_count,
+      COUNT(*) FILTER (WHERE p_status = 'novo' AND m.viewed_at IS NULL)::bigint AS unread_matches_count,
+      BOOL_OR(p_status = 'novo' AND m.viewed_at IS NULL) AS is_unread,
+      BOOL_OR(COALESCE(m.reopened_at, m.created_at) >= now() - interval '7 days') AS is_recent,
+      MAX(COALESCE(m.reopened_at, m.created_at)) AS latest_match_at,
+      MIN(m.created_at) AS first_match_at,
+      MAX(m.viewed_at) AS viewed_at,
+      MAX(m.reopened_at) AS reopened_at,
+      MAX(m.reopen_reason) AS reopen_reason,
+      MAX(m.match_score) AS max_match_score,
+      MAX(m.commercial_priority) AS max_priority
     FROM public.lead_property_matches m
-    JOIN public.property_match_projections p
-      ON p.account_id = m.account_id AND p.property_id = m.property_id
     WHERE m.account_id = p_account_id
       AND m.match_status = p_status
       AND m.suppressed = false
-      AND (
-        p_status IN ('arquivado', 'pausado', 'ignorado', 'enviado')
-        OR p.status = 'ativo'
-      )
       AND m.match_score >= p_min_score
       AND m.match_score <= p_max_score
       AND m.profile_maturity >= p_min_maturity
       AND m.profile_maturity <= p_max_maturity
-      AND (
-        p_property_search IS NULL OR btrim(p_property_search) = ''
-        OR p.title ILIKE '%' || btrim(p_property_search) || '%'
-        OR p.neighborhood ILIKE '%' || btrim(p_property_search) || '%'
-        OR COALESCE(p.code, '') ILIKE '%' || btrim(p_property_search) || '%'
-      )
       AND (
         p_date_filter = 'all'
         OR (p_date_filter = 'today' AND COALESCE(m.reopened_at, m.created_at) >= date_trunc('day', now()))
@@ -259,24 +220,7 @@ AS $$
         OR (p_view_filter = 'unread' AND p_status = 'novo' AND m.viewed_at IS NULL)
         OR (p_view_filter = 'viewed' AND NOT (p_status = 'novo' AND m.viewed_at IS NULL))
       )
-  ),
-  lead_aggregates AS (
-    SELECT
-      mr.lead_id,
-      MAX(mr.profile_maturity)::integer AS profile_maturity,
-      COUNT(*)::bigint AS status_matches_count,
-      COUNT(*) FILTER (WHERE mr.is_row_unread)::bigint AS unread_matches_count,
-      BOOL_OR(mr.is_row_unread) AS is_unread,
-      BOOL_OR(mr.is_row_recent) AS is_recent,
-      MAX(mr.ref_at) AS latest_match_at,
-      MIN(mr.created_at) AS first_match_at,
-      MAX(mr.viewed_at) AS viewed_at,
-      MAX(mr.reopened_at) AS reopened_at,
-      MAX(mr.reopen_reason) AS reopen_reason,
-      MAX(mr.match_score) AS max_match_score,
-      MAX(mr.commercial_priority) AS max_priority
-    FROM matched_rows mr
-    GROUP BY mr.lead_id
+    GROUP BY m.lead_id
   ),
   combined AS (
     SELECT

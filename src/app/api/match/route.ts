@@ -77,10 +77,10 @@ export async function GET(request: Request) {
 
     // 1 & 2 & 3. Execução paralela: contadores por aba, busca de grupos paginados e metadados de projeções
     const [tabCountsRes, rpcGroupsRes, projectionsMetaRes] = await Promise.all([
-      ctx.supabase.rpc('get_match_tab_counts', {
+      adminDb.rpc('get_match_tab_counts', {
         p_account_id: ctx.accountId,
       }),
-      ctx.supabase.rpc('get_match_lead_groups', {
+      adminDb.rpc('get_match_lead_groups', {
         p_account_id: ctx.accountId,
         p_status: status,
         p_min_score: minScore,
@@ -97,7 +97,7 @@ export async function GET(request: Request) {
         p_offset: offset,
         p_max_matches_per_lead: MAX_PREVIEW_MATCHES_PER_LEAD,
       }),
-      ctx.supabase
+      adminDb
         .from('property_match_projections')
         .select('property_id, status, updated_at')
         .eq('account_id', ctx.accountId),
