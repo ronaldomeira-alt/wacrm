@@ -6,7 +6,7 @@ import {
   type TagWithJoin,
 } from './profile-builder';
 import { calculateProfileMaturity } from './maturity';
-import { evaluateMatch } from './engine';
+import { evaluateMatch, MIN_MATCH_SCORE_THRESHOLD } from './engine';
 import { calculateCommercialPriority } from './priority';
 import { generateTrackingToken, buildSharePublicUrl } from './tokens';
 import { ensurePropertyUuid } from '../tunnel/auth';
@@ -218,8 +218,9 @@ export async function recalculateMatchesForLead(
     const existing = existingMap.get(prop.propertyId);
     const evaluation = evaluateMatch(profile, prop);
 
-    // Se eliminado por critério eliminatório, remove match pendente ('novo') obsoleto se existia
-    if (!evaluation.eligible) {
+    // Se eliminado por critério eliminatório OU nota abaixo do corte comercial (90%),
+    // remove match pendente ('novo') obsoleto se existia
+    if (!evaluation.eligible || evaluation.matchScore < MIN_MATCH_SCORE_THRESHOLD) {
       if (existing?.id && !existing.suppressed && existing.match_status === 'novo') {
         staleMatchIdsToDelete.push(existing.id);
       }
@@ -585,7 +586,7 @@ export async function recalculateMatchesForProperty(
 
     const existing = existingMap.get(contact.id);
     const evaluation = evaluateMatch(profile, property);
-    if (!evaluation.eligible) {
+    if (!evaluation.eligible || evaluation.matchScore < MIN_MATCH_SCORE_THRESHOLD) {
       if (existing?.id && !existing.suppressed && existing.match_status === 'novo') {
         staleMatchIdsToDelete.push(existing.id);
       }

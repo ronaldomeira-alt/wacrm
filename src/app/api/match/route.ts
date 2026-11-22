@@ -38,7 +38,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
 
     const status = (searchParams.get('status') || 'novo') as MatchStatus;
-    const minScore = parseInt(searchParams.get('min_score') || '0', 10);
+    const minScore = parseInt(searchParams.get('min_score') || '90', 10);
     const maxScore = parseInt(searchParams.get('max_score') || '100', 10);
     const minMaturity = parseInt(searchParams.get('min_maturity') || '0', 10);
     const maxMaturity = parseInt(searchParams.get('max_maturity') || '100', 10);

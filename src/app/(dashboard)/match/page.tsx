@@ -39,11 +39,9 @@ import { createClient } from '@/lib/supabase/client';
 import { PULL_TO_REFRESH_EVENT } from '@/hooks/use-pull-to-refresh';
 
 const SCORE_FILTER_LABELS: Record<string, string> = {
-  all: 'Compatibilidade: Todas',
-  strong: '85%+ (Match Forte)',
-  good: '70%–84% (Bom Match)',
-  possible: '50%–69% (Possível)',
-  manual: '0%–49% (Consulta Manual)',
+  all: 'Compatibilidade: Todas (≥90%)',
+  elite: '95%+ (Match Perfeito)',
+  strong: '90%+ (Match Forte)',
 };
 
 const MATURITY_FILTER_LABELS: Record<string, string> = {
@@ -102,7 +100,7 @@ export default function MatchPage() {
   const [leadSearch, setLeadSearch] = useState('');
   const [propertySearch, setPropertySearch] = useState('');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '24h' | '7d' | '30d' | 'older'>('all');
-  const [scoreFilter, setScoreFilter] = useState<'all' | 'strong' | 'good' | 'possible' | 'manual'>('all');
+  const [scoreFilter, setScoreFilter] = useState<'all' | 'elite' | 'strong'>('all');
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
   const [minAiScore, setMinAiScore] = useState<string>('0');
   const [sortBy, setSortBy] = useState<'recent_desc' | 'score_desc' | 'priority_desc' | 'ai_score_desc'>('recent_desc');
@@ -167,17 +165,11 @@ export default function MatchPage() {
         if (propertySearch.trim()) params.set('property_search', propertySearch.trim());
         if (dateFilter !== 'all') params.set('date_filter', dateFilter);
 
-        if (scoreFilter === 'strong') {
-          params.set('min_score', '85');
-        } else if (scoreFilter === 'good') {
-          params.set('min_score', '70');
-          params.set('max_score', '84');
-        } else if (scoreFilter === 'possible') {
-          params.set('min_score', '50');
-          params.set('max_score', '69');
-        } else if (scoreFilter === 'manual') {
-          params.set('min_score', '0');
-          params.set('max_score', '49');
+        if (scoreFilter === 'elite') {
+          params.set('min_score', '95');
+        } else {
+          // 'all' e 'strong' aplicam a nota de corte comercial de 90%+
+          params.set('min_score', '90');
         }
 
         if (maturityFilter === 'ready') {
@@ -679,11 +671,9 @@ export default function MatchPage() {
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent className="text-xs">
-                      <SelectItem value="all">Compatibilidade: Todas</SelectItem>
-                      <SelectItem value="strong">85%+ (Match Forte)</SelectItem>
-                      <SelectItem value="good">70%–84% (Bom Match)</SelectItem>
-                      <SelectItem value="possible">50%–69% (Possível)</SelectItem>
-                      <SelectItem value="manual">0%–49% (Consulta Manual)</SelectItem>
+                      <SelectItem value="all">Compatibilidade: Todas (≥90%)</SelectItem>
+                      <SelectItem value="elite">95%+ (Match Perfeito)</SelectItem>
+                      <SelectItem value="strong">90%+ (Match Forte)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -795,11 +785,9 @@ export default function MatchPage() {
               </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
-              <SelectItem value="all">Compatibilidade: Todas</SelectItem>
-              <SelectItem value="strong">85%+ (Match Forte)</SelectItem>
-              <SelectItem value="good">70%–84% (Bom Match)</SelectItem>
-              <SelectItem value="possible">50%–69% (Possível)</SelectItem>
-              <SelectItem value="manual">0%–49% (Consulta Manual)</SelectItem>
+              <SelectItem value="all">Compatibilidade: Todas (≥90%)</SelectItem>
+              <SelectItem value="elite">95%+ (Match Perfeito)</SelectItem>
+              <SelectItem value="strong">90%+ (Match Forte)</SelectItem>
             </SelectContent>
           </Select>
 

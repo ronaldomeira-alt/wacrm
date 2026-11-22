@@ -103,8 +103,13 @@ AS $$
     m.match_status,
     COUNT(DISTINCT m.lead_id) AS distinct_leads
   FROM public.lead_property_matches m
+  JOIN public.contacts c ON c.id = m.lead_id
   WHERE m.account_id = p_account_id
     AND m.suppressed = false
+    AND (
+      m.match_status IN ('arquivado', 'pausado', 'ignorado', 'enviado')
+      OR (c.archived_at IS NULL AND c.paused_at IS NULL AND m.match_score >= 90)
+    )
   GROUP BY m.match_status;
 $$;
 
@@ -119,7 +124,7 @@ GRANT EXECUTE ON FUNCTION public.get_match_tab_counts(uuid) TO authenticated, se
 CREATE OR REPLACE FUNCTION public.get_match_lead_groups(
   p_account_id uuid,
   p_status text DEFAULT 'novo',
-  p_min_score integer DEFAULT 0,
+  p_min_score integer DEFAULT 90,
   p_max_score integer DEFAULT 100,
   p_min_maturity integer DEFAULT 0,
   p_max_maturity integer DEFAULT 100,

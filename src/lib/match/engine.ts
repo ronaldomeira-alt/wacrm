@@ -5,6 +5,22 @@ import type {
   MatchScoreBreakdown,
 } from './types';
 
+export const MIN_MATCH_SCORE_THRESHOLD = 90;
+
+export const SEASIDE_NEIGHBORHOODS = [
+  'bessa',
+  'jardim oceania',
+  'manaira',
+  'tambau',
+  'cabo branco',
+  'altiplano',
+  'camboinha',
+  'intermares',
+  'ponta de campina',
+  'formosa',
+  'seixas',
+];
+
 function normalizeString(val: string): string {
   return val
     .normalize('NFD')
@@ -58,27 +74,111 @@ export function evaluateMatch(
     }
   }
 
-  // 1.2 Tipologia Obrigatória ("Somente X")
-  const propTypeNorm = normalizeString(property.propertyType);
-  if (profile.propertyTypeStrict && profile.propertyTypes.length > 0) {
+  // 1.2 Tipologia: incompatibilidade absoluta natural de mercado
+  const propTypeNorm = normalizeString(property.propertyType || '');
+  const isLand = ['terreno', 'lote', 'loteamento', 'area'].some(
+    (t) => propTypeNorm.includes(t) || t.includes(propTypeNorm)
+  );
+  const isCommercial = ['comercial', 'sala', 'sala comercial', 'loja', 'predio comercial', 'galpao', 'escritorio'].some(
+    (t) => propTypeNorm.includes(t) || t.includes(propTypeNorm)
+  );
+  const isResidential = !isLand && !isCommercial;
+
+  if (profile.propertyTypes.length > 0) {
     const acceptedTypes = profile.propertyTypes.map(normalizeString);
-    if (!acceptedTypes.some((t) => propTypeNorm.includes(t) || t.includes(propTypeNorm))) {
+    const leadWantsResidential = acceptedTypes.some((t) =>
+      ['apartamento', 'casa', 'cobertura', 'duplex', 'triplex', 'flat', 'studio', 'loft', 'condominio', 'village', 'sobrado'].some((res) => t.includes(res) || res.includes(t))
+    );
+    const leadWantsLand = acceptedTypes.some((t) =>
+      ['terreno', 'lote', 'loteamento', 'area'].some((lnd) => t.includes(lnd) || lnd.includes(t))
+    );
+    const leadWantsCommercial = acceptedTypes.some((t) =>
+      ['comercial', 'sala', 'sala comercial', 'loja', 'predio', 'galpao', 'escritorio', 'consultorio'].some((com) => t.includes(com) || com.includes(t))
+    );
+
+    // Rejeição cruzada definitiva
+    if (leadWantsResidential && !leadWantsLand && isLand) {
       return eliminated(
-        `Cliente exige restritamente ${profile.propertyTypes.join(', ')} e imóvel é ${property.propertyType}`,
+        `Cliente procura imóvel residencial e o imóvel é terreno/lote (${property.propertyType})`,
         breakdown
       );
     }
-  }
-
-  // 1.3 Localização Obrigatória ("Somente Bessa")
-  const propNeighborhoodNorm = normalizeString(property.neighborhood);
-  if (profile.locationStrict && profile.locations.length > 0) {
-    const acceptedLocs = profile.locations.map(normalizeString);
-    if (!acceptedLocs.some((l) => propNeighborhoodNorm.includes(l) || l.includes(propNeighborhoodNorm))) {
+    if (leadWantsResidential && !leadWantsCommercial && isCommercial) {
       return eliminated(
-        `Cliente exige restritamente localização em ${profile.locations.join(', ')} e imóvel fica no ${property.neighborhood}`,
+        `Cliente procura imóvel residencial e o imóvel é comercial (${property.propertyType})`,
         breakdown
       );
+    }
+    if (leadWantsLand && !leadWantsResidential && isResidential) {
+      return eliminated(
+        `Cliente procura terreno/lote e o imóvel é residencial (${property.propertyType})`,
+        breakdown
+      );
+    }
+    if (leadWantsCommercial && !leadWantsResidential && isResidential) {
+      return eliminated(
+        `Cliente procura imóvel comercial e o imóvel é residencial (${property.propertyType})`,
+        breakdown
+      );
+    }
+
+    if (profile.propertyTypeStrict) {
+      if (!acceptedTypes.some((t) => propTypeNorm.includes(t) || t.includes(propTypeNorm))) {
+        return eliminated(
+          `Cliente exige restritamente ${profile.propertyTypes.join(', ')} e imóvel é ${property.propertyType}`,
+          breakdown
+        );
+      }
+    }
+  }
+
+  // 1.3 Localização e Cidade: descarte de cidades fora da praça de interesse
+  const propCityNorm = normalizeString(property.city || 'joao pessoa');
+  const propNeighborhoodNorm = normalizeString(property.neighborhood || '');
+  if (profile.locations.length > 0) {
+    const acceptedLocs = profile.locations.map(normalizeString);
+    const PRIMARY_METRO_AREAS = [
+      'joao pessoa',
+      'cabedelo',
+      'bessa',
+      'intermares',
+      'manaira',
+      'tambau',
+      'cabo branco',
+      'altiplano',
+      'bancarios',
+      'aeroclube',
+      'miramar',
+      'jardim oceania',
+      'camboinha',
+      'ponta de campina',
+    ];
+    const leadWantsPrimaryMetro = acceptedLocs.some((l) =>
+      PRIMARY_METRO_AREAS.some((area) => l.includes(area) || area.includes(l))
+    );
+    const isPropInPrimaryMetro =
+      propCityNorm.includes('joao pessoa') ||
+      propCityNorm.includes('cabedelo') ||
+      PRIMARY_METRO_AREAS.some((area) => propNeighborhoodNorm.includes(area) || area.includes(propNeighborhoodNorm));
+
+    // Se o cliente busca na Grande João Pessoa e o imóvel fica em outra comarca distante (ex: Bananeiras, Campina Grande)
+    if (leadWantsPrimaryMetro && !isPropInPrimaryMetro) {
+      const leadSpecifiedOtherCity = acceptedLocs.some((l) => propCityNorm.includes(l) || l.includes(propCityNorm));
+      if (!leadSpecifiedOtherCity) {
+        return eliminated(
+          `Imóvel fica em ${property.city} (${property.neighborhood}), fora da praça metropolitana de interesse do lead`,
+          breakdown
+        );
+      }
+    }
+
+    if (profile.locationStrict) {
+      if (!acceptedLocs.some((l) => propNeighborhoodNorm.includes(l) || l.includes(propNeighborhoodNorm))) {
+        return eliminated(
+          `Cliente exige restritamente localização em ${profile.locations.join(', ')} e imóvel fica no ${property.neighborhood}`,
+          breakdown
+        );
+      }
     }
   }
 
@@ -104,14 +204,30 @@ export function evaluateMatch(
     }
   }
 
-  // 1.6 Quartos Obrigatórios ("Preciso de X quartos")
-  const isResidential = !['terreno', 'lote', 'comercial', 'sala'].includes(propTypeNorm);
-  if (isResidential && profile.bedroomsStrict && profile.bedrooms.length > 0) {
+  // 1.6 Quartos: incompatibilidade eliminatória e descarte de discrepâncias graves
+  if (isResidential && profile.bedrooms.length > 0) {
     const minRequiredBedrooms = Math.min(...profile.bedrooms);
     const propMaxBedrooms = property.bedroomsMax ?? property.bedroomsMin ?? 0;
-    if (propMaxBedrooms < minRequiredBedrooms) {
+
+    if (profile.bedroomsStrict && propMaxBedrooms < minRequiredBedrooms) {
       return eliminated(
         `Cliente exige no mínimo ${minRequiredBedrooms} quarto(s) e imóvel possui no máximo ${propMaxBedrooms}`,
+        breakdown
+      );
+    }
+
+    // Se o cliente busca 3+ quartos, imóveis de 1 quarto ou sem quarto são descartados sumariamente
+    if (minRequiredBedrooms >= 3 && propMaxBedrooms <= 1) {
+      return eliminated(
+        `Cliente busca imóvel espaçoso (${minRequiredBedrooms} quartos) e imóvel é compacto com apenas ${propMaxBedrooms} quarto(s)`,
+        breakdown
+      );
+    }
+
+    // Se o cliente busca 2+ quartos, estúdios sem quarto privativo (0 quartos) são descartados
+    if (minRequiredBedrooms >= 2 && propMaxBedrooms === 0) {
+      return eliminated(
+        `Cliente busca ${minRequiredBedrooms} quartos e imóvel é estúdio/flat sem quarto privativo`,
         breakdown
       );
     }
@@ -204,21 +320,7 @@ export function evaluateMatch(
   }
 
   // 3.2 Localização (Base 20%)
-  const propCityNorm = normalizeString(property.city || 'joao pessoa');
   const propTitleNorm = normalizeString(property.title || '');
-  const SEASIDE_NEIGHBORHOODS = [
-    'bessa',
-    'jardim oceania',
-    'manaira',
-    'tambau',
-    'cabo branco',
-    'altiplano',
-    'camboinha',
-    'intermares',
-    'ponta de campina',
-    ' Formosa',
-    'seixas',
-  ];
 
   let locationNeverMentioned = false;
   if (profile.locations.length === 0) {
@@ -365,9 +467,15 @@ export function evaluateMatch(
     breakdown.penalties.push('Pontuação limitada a 69% por estar em localização não mencionada pelo lead');
   }
 
-  const isStrong = rawScore >= 85;
-  const isGood = rawScore >= 70 && rawScore < 85;
-  const isManual = rawScore < 70;
+  const isStrong = rawScore >= 90;
+  const isGood = rawScore >= 80 && rawScore < 90;
+  const meetsCommercialThreshold = rawScore >= MIN_MATCH_SCORE_THRESHOLD;
+
+  if (!meetsCommercialThreshold) {
+    breakdown.penalties.push(
+      `Compatibilidade (${rawScore}%) abaixo da nota de corte comercial mínima (${MIN_MATCH_SCORE_THRESHOLD}%)`
+    );
+  }
 
   return {
     eligible: true,
@@ -376,16 +484,16 @@ export function evaluateMatch(
     commercialPriority: 0, // Será calculado em priority.ts
     isStrongMatch: isStrong,
     isGoodMatch: isGood,
-    isManualOnly: isManual,
+    isManualOnly: !isStrong,
   };
 }
 
-function eliminated(reason: string, breakdown: MatchScoreBreakdown): MatchEvaluationResult {
+function eliminated(reason: string, breakdown: MatchScoreBreakdown, score = 0): MatchEvaluationResult {
   breakdown.penalties.push(reason);
   return {
     eligible: false,
     eliminatedReason: reason,
-    matchScore: 0,
+    matchScore: score,
     scoreBreakdown: breakdown,
     commercialPriority: 0,
     isStrongMatch: false,

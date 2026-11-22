@@ -416,4 +416,71 @@ describe('Fase 24 — Validação e Testes do Motor de Match WACRM', () => {
     const evalResult = evaluateMatch(profile, underConstruction);
     expect(evalResult.eligible).toBe(false);
   });
+
+  // 33. Lead buscando Apartamento elimina naturalmente Lotes e Salas Comerciais
+  it('33. Lead buscando Apartamento elimina naturalmente Lotes e Salas Comerciais', () => {
+    const profile = createMockProfile({
+      propertyTypes: ['apartamento'],
+      propertyTypeStrict: false,
+    });
+    const lote = createMockProperty({
+      propertyType: 'lote',
+      title: 'Lote no Altiplano',
+    });
+    const sala = createMockProperty({
+      propertyType: 'sala comercial',
+      title: 'Sala no Miramar',
+    });
+
+    const evalLote = evaluateMatch(profile, lote);
+    const evalSala = evaluateMatch(profile, sala);
+
+    expect(evalLote.eligible).toBe(false);
+    expect(evalLote.eliminatedReason).toContain('terreno/lote');
+    expect(evalSala.eligible).toBe(false);
+    expect(evalSala.eliminatedReason).toContain('comercial');
+  });
+
+  // 34. Lead buscando João Pessoa elimina naturalmente imóvel em Bananeiras
+  it('34. Lead buscando João Pessoa/Bessa elimina naturalmente imóvel em Bananeiras', () => {
+    const profile = createMockProfile({
+      locations: ['Bessa'],
+      locationStrict: false,
+    });
+    const bananeirasProp = createMockProperty({
+      city: 'Bananeiras',
+      neighborhood: 'Serra',
+      title: 'Chácara em Bananeiras',
+    });
+
+    const evalResult = evaluateMatch(profile, bananeirasProp);
+    expect(evalResult.eligible).toBe(false);
+    expect(evalResult.eliminatedReason).toContain('fora da praça metropolitana');
+  });
+
+  // 35. Lead buscando 3 quartos elimina naturalmente estúdio ou 1 quarto
+  it('35. Lead buscando 3 quartos elimina naturalmente estúdio ou 1 quarto', () => {
+    const profile = createMockProfile({
+      bedrooms: [3],
+      bedroomsStrict: false,
+    });
+    const oneBedFlat = createMockProperty({
+      bedroomsMin: 1,
+      bedroomsMax: 1,
+      title: 'Flat compacto',
+    });
+
+    const evalResult = evaluateMatch(profile, oneBedFlat);
+    expect(evalResult.eligible).toBe(false);
+    expect(evalResult.eliminatedReason).toContain('compacto com apenas 1 quarto');
+  });
+
+  // 36. Nota de corte de 90% para match forte
+  it('36. Limiar de 90% identifica Match Forte', () => {
+    const profile = createMockProfile();
+    const perfectProp = createMockProperty();
+    const evalResult = evaluateMatch(profile, perfectProp);
+    expect(evalResult.matchScore).toBeGreaterThanOrEqual(90);
+    expect(evalResult.isStrongMatch).toBe(true);
+  });
 });
