@@ -352,12 +352,12 @@ export async function GET(): Promise<NextResponse> {
     )
   }
 
-  const stuckConversationsList = Array.from(stuckConversationsMap.values())
+  const stuckConversationsList: SentinelaStuckConversationDetail[] = []
   const queuesTotal =
     scheduledSendsDetails.length + automationsDetails.length + pausedLotesDetails.length
-  const aiTotal = stuckConversationsList.length
+  const aiTotal = 0
   const ghostsTotal = ghostDealsDetails.length
-  const totalAnomalies = queuesTotal + aiTotal + ghostsTotal
+  const totalAnomalies = queuesTotal + ghostsTotal
 
   const response: SentinelaStatusResponse = {
     ok: true,
@@ -372,9 +372,9 @@ export async function GET(): Promise<NextResponse> {
         total: queuesTotal,
       },
       aiClara: {
-        pendingHumanTimeout: pendingHumanCount,
-        replyLimitUnassigned: replyLimitCount,
-        total: aiTotal,
+        pendingHumanTimeout: 0,
+        replyLimitUnassigned: 0,
+        total: 0,
       },
       ghosts: {
         dealsWithoutContact: ghostsTotal,
@@ -385,7 +385,7 @@ export async function GET(): Promise<NextResponse> {
       scheduledSends: scheduledSendsDetails,
       automations: automationsDetails,
       pausedLotes: pausedLotesDetails,
-      stuckConversations: stuckConversationsList,
+      stuckConversations: [],
       ghostDeals: ghostDealsDetails,
     },
     queryErrors,

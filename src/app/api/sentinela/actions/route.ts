@@ -270,74 +270,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // ------------------------------------------------------------
-  // 2. Destravar conversas da IA / Clara (limite 8 ou pending_human > 10m)
-  //    Atribui para o ID do administrador (Ronaldo Meira) e marca
-  //    unread_count = 1 + last_ai_reply_at = NOW() (que ativa a coluna
-  //    gerada needs_review = true no PostgreSQL).
+  // 2. Transbordo Humano da Clara:
+  //    Handoffs legítimos pertencem ao atendimento comercial humano na Caixa de Entrada
+  //    e NÃO devem sofrer auto-cura destrutiva pelo Sentinela.
   // ------------------------------------------------------------
-  try {
-    const adminUserId = await resolveAdminUserId(db)
-
-    const { data: pendingHumanRows, error: phErr } = await db
-      .from('conversations')
-      .select('id')
-      .neq('status', 'closed')
-      .eq('ai_transfer_status', 'pending_human')
-      .or(`ai_transfer_at.lt.${aiTenMinAgoIso},and(ai_transfer_at.is.null,updated_at.lt.${aiTenMinAgoIso})`)
-
-    if (phErr) {
-      errors.push(`conversations fetch (pending_human): ${phErr.message}`)
-    }
-
-    const { data: limitRows, error: limErr } = await db
-      .from('conversations')
-      .select('id')
-      .neq('status', 'closed')
-      .gte('ai_reply_count', AI_REPLY_SAFETY_LIMIT)
-      .is('assigned_agent_id', null)
-
-    if (limErr) {
-      errors.push(`conversations fetch (ai_reply_count): ${limErr.message}`)
-    }
-
-    const targetConversationIds = Array.from(
-      new Set<string>([
-        ...((pendingHumanRows ?? []) as StuckAiConversationIdRow[]).map((r) => r.id),
-        ...((limitRows ?? []) as StuckAiConversationIdRow[]).map((r) => r.id),
-      ]),
-    )
-
-    if (targetConversationIds.length > 0) {
-      const updatePayload: Record<string, unknown> = {
-        unread_count: 1,
-        ai_transfer_status: 'transferred',
-        // Bumping last_ai_reply_at above last_reviewed_at makes the stored
-        // generated column `needs_review` evaluate to true automatically.
-        last_ai_reply_at: nowIso,
-        updated_at: nowIso,
-      }
-
-      if (adminUserId) {
-        updatePayload.assigned_agent_id = adminUserId
-      }
-
-      const { data: updatedConvs, error: convUpdateErr } = await db
-        .from('conversations')
-        .update(updatePayload)
-        .in('id', targetConversationIds)
-        .select('id')
-
-      if (convUpdateErr) {
-        errors.push(`conversations update: ${convUpdateErr.message}`)
-      } else {
-        aiConversationsRecovered = ((updatedConvs ?? []) as UpdatedIdRow[]).length
-      }
-    }
-  } catch (err) {
-    errors.push(
-      `conversations recovery exception: ${err instanceof Error ? err.message : String(err)}`,
-    )
-  }
+  aiConversationsRecovered = 0
 
   // ------------------------------------------------------------
   // 2b. Limpar deals fantasmas (contact_id IS NULL)

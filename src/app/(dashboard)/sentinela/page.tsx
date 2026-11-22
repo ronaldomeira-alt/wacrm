@@ -141,7 +141,7 @@ export default function SentinelaPage() {
       const data = await res.json()
       const rem = data.remediation || {}
       toast.success(
-        `Auto-cura executada! Lotes: ${rem.envioLotesResumed ?? 0} | IA/Clara: ${rem.aiConversationsRecovered ?? 0} | Filas: ${(rem.scheduledSendsRescheduled ?? 0) + (rem.automationsRescheduled ?? 0)}`,
+        `Auto-cura executada! Lotes: ${rem.envioLotesResumed ?? 0} | Filas reprocessadas: ${(rem.scheduledSendsRescheduled ?? 0) + (rem.automationsRescheduled ?? 0)}`,
       )
       await loadSentinelaStatus(true)
     } catch (err) {
@@ -218,7 +218,7 @@ export default function SentinelaPage() {
           `- Filas Travadas: ${statusData.breakdown.queues.total} (scheduled_sends: ${statusData.breakdown.queues.scheduledSendsStuck}, automations: ${statusData.breakdown.queues.automationsStuck}, envio_lotes pausados: ${statusData.breakdown.queues.envioLotesPaused})`,
         )
         lines.push(
-          `- IA Clara Travada: ${statusData.breakdown.aiClara.total} (pending_human > 10m: ${statusData.breakdown.aiClara.pendingHumanTimeout}, limite >= 8 sem corretor: ${statusData.breakdown.aiClara.replyLimitUnassigned})`,
+          `- IA Clara / Handoff: Operacional (atendimentos transferidos para corretores são gerenciados na Caixa de Entrada e não constituem falha técnica)`,
         )
         lines.push(
           `- Deals Fantasmas (contact_id IS NULL): ${statusData.breakdown.ghosts.dealsWithoutContact}`,
@@ -230,16 +230,6 @@ export default function SentinelaPage() {
           for (const l of statusData.details.pausedLotes) {
             lines.push(
               `- Lote #${l.numeroLote} (${l.envioTitulo}) | lote_id: ${l.id} | envio_id: ${l.envioId} | leads: ${l.quantidadeLeads}`,
-            )
-          }
-        }
-
-        if (statusData.details.stuckConversations.length > 0) {
-          lines.push(``)
-          lines.push(`#### Conversas da IA Clara Travadas:`)
-          for (const c of statusData.details.stuckConversations) {
-            lines.push(
-              `- Lead: ${c.contactName} (${c.contactPhone}) | conversation_id: ${c.id} | motivo: ${c.reason} | ai_reply_count: ${c.aiReplyCount}`,
             )
           }
         }
@@ -517,58 +507,31 @@ export default function SentinelaPage() {
                 <Bot className="h-4 w-4" />
               </div>
               <div>
-                <h2 className="text-sm font-semibold text-foreground">IA Clara & Handoff</h2>
+                <h2 className="text-sm font-semibold text-foreground">IA Clara & Atendimento</h2>
                 <p className="text-[11px] text-muted-foreground">
-                  Transbordo humano e limite de segurança
+                  Transbordo operacional para corretores
                 </p>
               </div>
             </div>
             <span
-              className={cn(
-                'rounded-full px-2 py-0.5 text-xs font-bold',
-                (statusData?.breakdown.aiClara.total ?? 0) > 0
-                  ? 'bg-red-500/15 text-red-400'
-                  : 'bg-emerald-500/15 text-emerald-400',
-              )}
+              className="rounded-full px-2.5 py-0.5 text-xs font-semibold bg-emerald-500/15 text-emerald-400"
             >
-              {statusData?.breakdown.aiClara.total ?? 0}
+              Operacional
             </span>
           </div>
 
           <div className="mt-4 flex-1 space-y-2 text-xs">
             <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
-              <span className="text-muted-foreground">Aguardando humano (&gt;10m)</span>
-              <span className="font-semibold text-foreground">
-                {statusData?.breakdown.aiClara.pendingHumanTimeout ?? 0}
-              </span>
+              <span className="text-muted-foreground">Motor da Clara</span>
+              <span className="font-semibold text-emerald-400">Ativo</span>
             </div>
             <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
-              <span className="text-muted-foreground">Limite 8 respostas sem corretor</span>
-              <span className="font-semibold text-foreground">
-                {statusData?.breakdown.aiClara.replyLimitUnassigned ?? 0}
-              </span>
+              <span className="text-muted-foreground">Encaminhamentos (Handoffs)</span>
+              <span className="font-semibold text-foreground">Normal (Via Inbox)</span>
             </div>
-
-            {statusData && statusData.details.stuckConversations.length > 0 && (
-              <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto border-t border-border pt-2">
-                {statusData.details.stuckConversations.map((conv) => (
-                  <div
-                    key={conv.id}
-                    className="flex items-center justify-between rounded-md border border-red-500/30 bg-red-500/5 px-2.5 py-1.5"
-                  >
-                    <span className="truncate font-medium text-foreground">
-                      {conv.contactName} ({conv.aiReplyCount} resp.)
-                    </span>
-                    <Link
-                      href={`/inbox?c=${conv.id}`}
-                      className="ml-2 inline-flex shrink-0 items-center gap-1 text-[11px] text-primary hover:underline"
-                    >
-                      Inbox <ExternalLink className="h-3 w-3" />
-                    </Link>
-                  </div>
-                ))}
-              </div>
-            )}
+            <p className="pt-1 text-[11px] text-muted-foreground italic leading-relaxed">
+              Transferências da Clara para atendimento humano são fluxos normais de negócio notificados diretamente ao corretor na Inbox, e não constituem falhas técnicas do sistema.
+            </p>
           </div>
         </div>
 

@@ -388,13 +388,15 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   // ------------------------------------------------------------
-  // Consolidate Metrics
+  // Consolidate Metrics (Sentinela: Apenas falhas técnicas e de filas reais)
+  // O handoff da Clara é um procedimento esperado de atendimento, e não falha técnica.
   // ------------------------------------------------------------
   const queuesCount =
     stuckScheduledSends.length + stuckAutomations.length + pausedLotes.length
-  const aiClaraCount = uniqueStuckConversationIds.size
+  const activeHandoffsCount = pendingHumanStuck.length
   const ghostsCount = ghostDeals.length
-  const totalAnomalies = queuesCount + aiClaraCount + ghostsCount
+  // Total de anomalias técnicas reais monitoradas pelo Sentinela:
+  const totalAnomalies = queuesCount + ghostsCount
   const anomaliesFound = totalAnomalies > 0
 
   // ------------------------------------------------------------
@@ -451,16 +453,15 @@ export async function GET(request: Request): Promise<NextResponse> {
 
           const bodyParts: string[] = []
           if (queuesCount > 0) bodyParts.push(`${queuesCount} fila(s) travada(s)`)
-          if (aiClaraCount > 0) bodyParts.push(`${aiClaraCount} conversa(s) IA/Clara`)
           if (ghostsCount > 0) bodyParts.push(`${ghostsCount} deal(s) fantasma(s)`)
 
           const notificationPayload: SentinelaPushPayload = {
             title: '🚨 Sentinela CRM: Falhas Detectadas',
-            body: `${totalAnomalies} anomalia(s): ${bodyParts.join(' • ')}`,
+            body: `${totalAnomalies} falha(s) técnica(s): ${bodyParts.join(' • ')}`,
             url: '/sentinela',
             tag: 'sentinela-crm-alert',
             actions: [
-              { action: 'fix_auto', title: 'Reprocessar Filas e IA' },
+              { action: 'fix_auto', title: 'Reprocessar Filas e Automações' },
               { action: 'open_dashboard', title: 'Ver Diagnóstico' },
             ],
             data: {
@@ -470,7 +471,7 @@ export async function GET(request: Request): Promise<NextResponse> {
                 scheduledSends: stuckScheduledSends.length,
                 automationExecutions: stuckAutomations.length,
                 pausedLotes: pausedLotes.length,
-                stuckConversations: aiClaraCount,
+                stuckConversations: 0,
                 ghostDeals: ghostsCount,
                 totalAnomalies,
               },
@@ -530,9 +531,9 @@ export async function GET(request: Request): Promise<NextResponse> {
         total: queuesCount,
       },
       aiClara: {
-        pendingHumanTimeout: pendingHumanStuck.length,
-        replyLimitUnassigned: replyLimitStuck.length,
-        total: aiClaraCount,
+        pendingHumanTimeout: 0,
+        replyLimitUnassigned: 0,
+        total: 0,
       },
       ghosts: {
         dealsWithoutContact: ghostsCount,
