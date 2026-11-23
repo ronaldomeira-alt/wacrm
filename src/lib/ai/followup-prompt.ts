@@ -33,16 +33,53 @@ export interface FollowupScorePromptArgs {
   currentStageName: string | null;
   hoursSinceLastContact: number;
   summary: LeadSummary | null;
+  customerMessageCount?: number;
+  businessMessageCount?: number;
+  lastCustomerText?: string | null;
+  lastBusinessText?: string | null;
 }
 
 export function buildFollowupScoreUserPrompt(args: FollowupScorePromptArgs): string {
-  const { contactName, hasPurchased, currentStageName, hoursSinceLastContact, summary } = args;
+  const {
+    contactName,
+    hasPurchased,
+    currentStageName,
+    hoursSinceLastContact,
+    summary,
+    customerMessageCount,
+    businessMessageCount,
+    lastCustomerText,
+    lastBusinessText,
+  } = args;
   const days = Math.round((hoursSinceLastContact / 24) * 10) / 10;
+
+  const historyLines: string[] = [];
+  if (typeof customerMessageCount === 'number' || typeof businessMessageCount === 'number') {
+    const cCnt = customerMessageCount ?? 0;
+    const bCnt = businessMessageCount ?? 0;
+    historyLines.push(
+      `Histórico de mensagens na conversa: ${cCnt} recebida(s) do cliente e ${bCnt} enviada(s) pela empresa.${
+        bCnt > 0
+          ? ' (ATENÇÃO: o cliente JÁ foi atendido antes — trate como retomada de contato, NUNCA diga que nunca foi contatado.)'
+          : cCnt > 0
+            ? ' (O cliente escreveu, mas a empresa ainda não enviou a primeira resposta — trate como primeiro atendimento.)'
+            : ''
+      }`
+    );
+    if (lastCustomerText) {
+      historyLines.push(`Última mensagem do cliente: "${lastCustomerText.slice(0, 280)}"`);
+    }
+    if (lastBusinessText) {
+      historyLines.push(`Última mensagem da empresa: "${lastBusinessText.slice(0, 280)}"`);
+    }
+  }
+
   return [
     `Lead: ${contactName}`,
     `Já comprou comigo? ${hasPurchased ? 'Sim' : 'Não'}`,
     currentStageName ? `Etapa atual do pipeline: ${currentStageName}` : '(sem etapa/pipeline)',
-    `Sem contato (nenhuma mensagem, de nenhum dos lados) há aproximadamente ${days} dia(s).`,
+    `Sem contato há aproximadamente ${days} dia(s).`,
+    ...historyLines,
     `Resumo conhecido do lead:\n${summary ? JSON.stringify(summary, null, 2) : '(nenhum resumo estruturado ainda)'}`,
     'Responda apenas com o JSON descrito nas instruções.',
   ].join('\n\n');

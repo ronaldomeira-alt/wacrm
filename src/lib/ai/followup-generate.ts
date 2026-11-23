@@ -17,7 +17,13 @@ import {
   FOLLOWUP_MAX_SENDS_PER_RUN,
   FOLLOWUP_MIN_HOURS_SINCE_CONTACT,
   FOLLOWUP_MIN_SCORE,
+  FOLLOWUP_RECENT_TEAM_CONTACT_COOLDOWN_HOURS,
 } from './followup-config'
+import {
+  summarizeConversationMessages,
+  type ConversationMessageStats,
+  type RawConversationMessageRow,
+} from '@/lib/followup/engine'
 import { engineSendTemplate } from '@/lib/automations/meta-send'
 
 interface CandidateDeal {
@@ -63,13 +69,26 @@ export async function generateFollowupSuggestions(
     return { created: 0, scored: 0 }
   }
 
-  const candidates = ((dealRows ?? []) as unknown as CandidateDeal[]).filter(
-    (d) =>
-      d.contact_id &&
-      d.conversation_id &&
-      d.contact &&
-      (!d.conversation?.last_message_at || d.conversation.last_message_at < cutoff),
-  )
+  const candidates = ((dealRows ?? []) as unknown as CandidateDeal[])
+    .filter(
+      (d) =>
+        d.contact_id &&
+        d.conversation_id &&
+        d.contact &&
+        !d.contact.has_purchased &&
+        (!d.conversation?.last_message_at || d.conversation.last_message_at < cutoff),
+    )
+    .sort((a, b) => {
+      // Prioriza leads mais recentes (ex.: ontem e últimos dias) antes do histórico antigo.
+      // Timestamps idênticos preservam a ordem original (sort estável).
+      const tsA = a.conversation?.last_message_at
+        ? new Date(a.conversation.last_message_at).getTime() || 0
+        : 0
+      const tsB = b.conversation?.last_message_at
+        ? new Date(b.conversation.last_message_at).getTime() || 0
+        : 0
+      return tsB - tsA
+    })
   if (candidates.length === 0) return { created: 0, scored: 0 }
 
   // Exclude contacts that already have a pending follow-up — a fresh
@@ -167,17 +186,109 @@ export async function generateFollowupSuggestions(
     ]),
   )
 
+  // Carrega estatísticas reais de mensagens e sugestões já resolvidas para garantir
+  // idempotência (não recriar sugestão para o mesmo lead se não houve mensagem nova
+  // do cliente após a última resolução/ignorar, e respeitar acompanhamento recente da equipe).
+  const msgStatsByConv = new Map<string, ConversationMessageStats>()
+  const latestResolvedAtByContact = new Map<string, number>()
+
+  try {
+    const convIds = toScore.map((d) => d.conversation_id as string).filter(Boolean)
+    if (convIds.length > 0) {
+      const { data: msgRows } = await db
+        .from('messages')
+        .select('conversation_id, sender_type, content_type, content_text, media_url, template_name, created_at, private, event')
+        .in('conversation_id', convIds)
+        .order('created_at', { ascending: false })
+
+      if (Array.isArray(msgRows) && msgRows.length > 0) {
+        const grouped = new Map<string, RawConversationMessageRow[]>()
+        for (const m of msgRows as RawConversationMessageRow[]) {
+          const cid = String(m.conversation_id || '')
+          if (!cid) continue
+          const arr = grouped.get(cid) ?? []
+          arr.push(m)
+          grouped.set(cid, arr)
+        }
+        for (const [cid, list] of grouped.entries()) {
+          msgStatsByConv.set(cid, summarizeConversationMessages(list))
+        }
+      }
+    }
+  } catch {
+    // Ambientes de teste/mock que não implementam a tabela messages seguem o fluxo padrão
+  }
+
+  try {
+    const contactIds = toScore.map((d) => d.contact_id as string).filter(Boolean)
+    if (contactIds.length > 0 && msgStatsByConv.size > 0) {
+      const { data: resolvedRows } = await db
+        .from('ai_suggestions')
+        .select('contact_id, status, created_at, resolved_at')
+        .eq('account_id', accountId)
+        .eq('category', 'followup')
+        .in('contact_id', contactIds)
+
+      if (Array.isArray(resolvedRows)) {
+        for (const r of resolvedRows as Array<Record<string, unknown>>) {
+          const st = String(r.status || '')
+          if (st !== 'ignored' && st !== 'done' && st !== 'approved') continue
+          const cid = String(r.contact_id || '')
+          const ts = new Date(String(r.resolved_at || r.created_at || '')).getTime()
+          if (cid && Number.isFinite(ts) && ts > (latestResolvedAtByContact.get(cid) ?? 0)) {
+            latestResolvedAtByContact.set(cid, ts)
+          }
+        }
+      }
+    }
+  } catch {
+    // Segue sem bloqueio caso o mock não suporte a leitura adicional
+  }
+
   const systemPrompt = buildFollowupScoreSystemPrompt()
   let created = 0
   let scored = 0
+  const teamCooldownMs = FOLLOWUP_RECENT_TEAM_CONTACT_COOLDOWN_HOURS * 60 * 60 * 1000
 
   for (const deal of toScore) {
     const contactId = deal.contact_id as string
     const conversationId = deal.conversation_id as string
-    const lastContactAt = deal.conversation?.last_message_at
-    const hoursSince = lastContactAt
-      ? (Date.now() - new Date(lastContactAt).getTime()) / (60 * 60 * 1000)
-      : FOLLOWUP_MIN_HOURS_SINCE_CONTACT
+    const msgStats = msgStatsByConv.get(conversationId)
+
+    const effectiveLastCustomerAt =
+      msgStats?.lastCustomerMessageAt ?? deal.conversation?.last_message_at ?? null
+    const effectiveLastInteractionAt =
+      msgStats?.lastInteractionAt ?? deal.conversation?.last_message_at ?? null
+
+    // 1. Não recriar sugestão se já houve sugestão resolvida/ignorada DEPOIS da última mensagem do cliente
+    const lastResolvedMs = latestResolvedAtByContact.get(contactId)
+    if (lastResolvedMs && effectiveLastCustomerAt) {
+      const lastCustMs = new Date(effectiveLastCustomerAt).getTime()
+      if (Number.isFinite(lastCustMs) && lastResolvedMs >= lastCustMs) {
+        continue
+      }
+    }
+
+    // 2. Respeitar acompanhamento recente de Ronaldo/Tatiana (equipe humana enviou mensagem há pouco tempo)
+    if (msgStats?.lastAgentMessageAt) {
+      const lastAgentMs = new Date(msgStats.lastAgentMessageAt).getTime()
+      const lastCustMs = msgStats.lastCustomerMessageAt
+        ? new Date(msgStats.lastCustomerMessageAt).getTime()
+        : 0
+      if (
+        Number.isFinite(lastAgentMs) &&
+        lastAgentMs >= lastCustMs &&
+        Date.now() - lastAgentMs < teamCooldownMs
+      ) {
+        continue
+      }
+    }
+
+    const hoursSince = effectiveLastCustomerAt
+      ? (Date.now() - new Date(effectiveLastCustomerAt).getTime()) / (60 * 60 * 1000)
+      : effectiveLastInteractionAt
+        ? (Date.now() - new Date(effectiveLastInteractionAt).getTime()) / (60 * 60 * 1000)
+        : FOLLOWUP_MIN_HOURS_SINCE_CONTACT
 
     const userPrompt = buildFollowupScoreUserPrompt({
       contactName: deal.contact?.name || 'Lead',
@@ -185,6 +296,10 @@ export async function generateFollowupSuggestions(
       currentStageName: stageNameById.get(deal.stage_id) ?? null,
       hoursSinceLastContact: hoursSince,
       summary: summaryByContact.get(contactId) ?? null,
+      customerMessageCount: msgStats?.customerMessageCount,
+      businessMessageCount: msgStats?.businessMessageCount,
+      lastCustomerText: msgStats?.lastCustomerText,
+      lastBusinessText: msgStats?.lastBusinessText,
     })
 
     const activeKey =
@@ -233,6 +348,10 @@ export async function generateFollowupSuggestions(
           stage_name: stageNameById.get(deal.stage_id) ?? null,
           has_purchased: deal.contact?.has_purchased ?? false,
           hours_since_contact: Math.round(hoursSince),
+          last_customer_message_at: msgStats?.lastCustomerMessageAt ?? null,
+          last_business_message_at: msgStats?.lastBusinessMessageAt ?? null,
+          customer_message_count: msgStats?.customerMessageCount ?? null,
+          business_message_count: msgStats?.businessMessageCount ?? null,
           reason: result.reason,
           approach_summary: result.approach_summary,
           score: result.score,

@@ -239,5 +239,59 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     expect(pageSource).toContain('grid-cols-1 md:grid-cols-2 lg:grid-cols-3');
     expect(cardSource).toContain('line-clamp-3');
     expect(cardSource).toContain('grid-cols-3 gap-2');
+
+    // 4. Novo filtro padrão "Ontem" ('yesterday') + Anteontem + Últimos 3 dias + filtro de janela aberta + miniaturas reais no modal
+    expect(pageSource).toContain("DEFAULT_DATE_FILTER: FollowupDateFilter = 'yesterday'");
+    expect(pageSource).toContain('day_before_yesterday');
+    expect(pageSource).toContain('Últimos 3 dias');
+    expect(pageSource).toContain('Janela de atendimento aberta');
+    expect(dialogSource).toContain('data-testid="followup-property-thumbnail-img"');
+    expect(dialogSource).toContain('data-testid="followup-selected-property-summary"');
+  });
+
+  it('exibe discretamente o estado real da janela de atendimento de 24h (Janela aberta, Janela prestes a encerrar, Template necessário)', () => {
+    const htmlClosingSoon = renderToStaticMarkup(
+      React.createElement(FollowupCard, {
+        item: makeItem({
+          sessionWindow: {
+            status: 'closing_soon',
+            windowOpen: true,
+            closingSoon: true,
+            templateRequired: false,
+            remainingMs: 2 * 60 * 60 * 1000,
+            remainingLabel: '2h restantes',
+            isCtwaLead: true,
+            ctwaFreeBenefitActive: true,
+            ctwaFreeBenefitExpiresAt: null,
+            ctwaFreeBenefitRemainingLabel: 'CTWA gratuito: 40h restantes',
+          },
+        }),
+        onUpdateStatus: vi.fn(),
+      })
+    );
+    expect(htmlClosingSoon).toContain('Janela prestes a encerrar');
+    expect(htmlClosingSoon).toContain('2h restantes');
+    expect(htmlClosingSoon).toContain('CTWA gratuito: 40h restantes');
+
+    const htmlExpired = renderToStaticMarkup(
+      React.createElement(FollowupCard, {
+        item: makeItem({
+          sessionWindow: {
+            status: 'expired',
+            windowOpen: false,
+            closingSoon: false,
+            templateRequired: true,
+            remainingMs: 0,
+            remainingLabel: null,
+            isCtwaLead: false,
+            ctwaFreeBenefitActive: false,
+            ctwaFreeBenefitExpiresAt: null,
+            ctwaFreeBenefitRemainingLabel: null,
+          },
+        }),
+        onUpdateStatus: vi.fn(),
+      })
+    );
+    expect(htmlExpired).toContain('Template necessário');
   });
 });

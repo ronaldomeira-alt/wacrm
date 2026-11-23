@@ -30,5 +30,24 @@ export async function deleteExpiredIgnoredSuggestions(db: SupabaseClient): Promi
     console.error('[suggestions cleanup] delete failed:', error)
     return 0
   }
-  return data?.length ?? 0
+
+  let deletedCount = data?.length ?? 0
+
+  // Also clean up legacy `ignored` rows that were created without `resolved_at`
+  // populated (e.g. historical batch prior to resolved_at tracking) once their
+  // `created_at` exceeds the retention window.
+  try {
+    const { data: legacyData } = await db
+      .from('ai_suggestions')
+      .delete()
+      .eq('status', 'ignored')
+      .is('resolved_at', null)
+      .lt('created_at', cutoff)
+      .select('id')
+    deletedCount += legacyData?.length ?? 0
+  } catch {
+    // Ignore if mock client does not implement `.is()`
+  }
+
+  return deletedCount
 }

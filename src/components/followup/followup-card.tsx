@@ -27,7 +27,10 @@ import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { FollowupDialog } from '@/components/ai-hub/followup-dialog';
 import { scoreConfidenceBand } from '@/lib/ai/lead-analysis-config';
-import type { EnrichedFollowupItem } from '@/lib/followup/engine';
+import {
+  evaluateFollowupSessionWindow,
+  type EnrichedFollowupItem,
+} from '@/lib/followup/engine';
 import type { AiSuggestionStatus } from '@/types';
 
 export interface FollowupCardProps {
@@ -119,14 +122,25 @@ export function FollowupCard({
   const isPending = suggestion.status === 'pending';
   const isBusy = pendingAction !== null;
 
-  const suggestionTime = formatTimestampPtBr(item.suggestionCreatedAt);
-  const lastContactTime = item.lastCommunicationAt
-    ? formatTimestampPtBr(item.lastCommunicationAt)
+  const primaryCustomerIso =
+    item.lastCustomerMessageAt !== undefined
+      ? item.lastCustomerMessageAt
+      : item.lastCommunicationAt;
+  const customerTime = primaryCustomerIso ? formatTimestampPtBr(primaryCustomerIso) : null;
+  const businessTime = item.lastBusinessMessageAt
+    ? formatTimestampPtBr(item.lastBusinessMessageAt)
     : null;
-  const elapsedLabel = formatElapsedWithoutContact(
-    item.hoursSinceLastCommunication,
-    item.neverContacted
-  );
+  const suggestionTime = formatTimestampPtBr(item.suggestionCreatedAt);
+
+  const effectiveHours =
+    item.hoursSinceLastCustomerMessage ?? item.hoursSinceLastCommunication;
+  const elapsedLabel = formatElapsedWithoutContact(effectiveHours, item.neverContacted);
+
+  const liveWindow =
+    item.sessionWindow ??
+    evaluateFollowupSessionWindow({
+      lastCustomerMessageAt: primaryCustomerIso,
+    });
 
   const confidenceBand =
     typeof item.confidenceScore === 'number' ? scoreConfidenceBand(item.confidenceScore) : null;
@@ -175,6 +189,8 @@ export function FollowupCard({
                 <img
                   src={contact.avatar_url}
                   alt={leadName}
+                  loading="lazy"
+                  decoding="async"
                   className="size-8 rounded-full border border-border/60 object-cover"
                 />
               ) : (
@@ -229,8 +245,8 @@ export function FollowupCard({
                 item.aiScore >= 7
                   ? 'bg-rose-500/10 text-rose-400 border-rose-500/25'
                   : item.aiScore >= 4
-                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/25'
-                  : 'bg-muted text-muted-foreground border-border/50'
+                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/25'
+                    : 'bg-muted text-muted-foreground border-border/50'
               }`}
               title={`Score comercial da IA: ${item.aiScore}/10`}
             >
@@ -240,7 +256,7 @@ export function FollowupCard({
           </div>
         </div>
 
-        {/* Chips de Etapa do Pipeline, Tipo da Oportunidade e Prioridade */}
+        {/* Chips de Etapa do Pipeline, Tipo da Oportunidade, Prioridade e Janela de Atendimento (Seções 3, 5 e 8) */}
         <div className="flex flex-wrap items-center gap-1.5">
           {item.stageName ? (
             <span
@@ -280,29 +296,52 @@ export function FollowupCard({
               Prioridade alta
             </span>
           )}
-        </div>
-      </div>
 
-      {/* 2. Informações Temporais (Geração da sugestão vs. Última comunicação) */}
-      <div className="flex flex-col gap-1 text-[11px] text-muted-foreground rounded-lg bg-muted/25 border border-border/40 px-2.5 py-2">
-        <div
-          className="flex items-center justify-between gap-2"
-          title={`Sugestão gerada em ${suggestionTime.fullLabel}`}
-        >
-          <span className="inline-flex items-center gap-1 truncate">
-            <CalendarCheck2 className="size-3 text-primary/80 shrink-0" />
-            <span>Sugestão: {suggestionTime.shortLabel}</span>
-          </span>
-          {suggestionTime.relativeLabel && (
-            <span className="text-[10px] text-muted-foreground/80 shrink-0">
-              {suggestionTime.relativeLabel}
+          {/* Indicador discreto do estado real da Janela de Atendimento de 24h (Seção 5) */}
+          {liveWindow.status === 'closing_soon' ? (
+            <span
+              data-testid="followup-window-badge"
+              className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 border border-amber-500/35 px-2 py-0.5 text-[10px] font-semibold text-amber-300"
+              title={`Janela de atendimento de 24h prestes a encerrar (${liveWindow.remainingLabel || ''})`}
+            >
+              <Clock className="size-2.5" />
+              Janela prestes a encerrar
+              {liveWindow.remainingLabel ? ` • ${liveWindow.remainingLabel}` : ''}
+            </span>
+          ) : liveWindow.status === 'open' ? (
+            <span
+              data-testid="followup-window-badge"
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 text-[10px] font-semibold text-emerald-400"
+              title={`Janela de atendimento de 24h aberta (${liveWindow.remainingLabel || ''})`}
+            >
+              <Clock className="size-2.5" />
+              Janela aberta{liveWindow.remainingLabel ? ` • ${liveWindow.remainingLabel}` : ''}
+            </span>
+          ) : liveWindow.status === 'expired' ? (
+            <span
+              data-testid="followup-window-badge"
+              className="inline-flex items-center gap-1 rounded-full bg-muted/80 border border-border/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+              title="Janela de 24h encerrada: envio pela Cloud API exige template aprovado"
+            >
+              Template necessário
+            </span>
+          ) : (
+            <span
+              data-testid="followup-window-badge"
+              className="inline-flex items-center gap-1 rounded-full bg-muted/60 border border-border/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground/80"
+              title="Situação da janela de atendimento desconhecida"
+            >
+              Situação desconhecida
             </span>
           )}
         </div>
+      </div>
 
+      {/* 2. Informações Temporais: Última mensagem do cliente (principal) vs. Geração da sugestão (auditoria) */}
+      <div className="flex flex-col gap-1 text-[11px] text-muted-foreground rounded-lg bg-muted/25 border border-border/40 px-2.5 py-2">
         <div className="flex items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1 truncate">
-            <Clock className="size-3 text-muted-foreground/70 shrink-0" />
+            <Clock className="size-3 text-primary/80 shrink-0" />
             {item.neverContacted ? (
               <span
                 data-testid="followup-never-contacted"
@@ -310,9 +349,13 @@ export function FollowupCard({
               >
                 Nunca contatado
               </span>
-            ) : lastContactTime ? (
-              <span title={`Última comunicação em ${lastContactTime.fullLabel}`}>
-                Último contato: {lastContactTime.shortLabel}
+            ) : customerTime ? (
+              <span
+                title={`Última mensagem recebida do cliente em ${customerTime.fullLabel}${
+                  businessTime ? ` | Última msg da empresa: ${businessTime.fullLabel}` : ''
+                }`}
+              >
+                Último contato: {customerTime.shortLabel}
               </span>
             ) : (
               <span>{elapsedLabel}</span>
@@ -322,14 +365,29 @@ export function FollowupCard({
           {!item.neverContacted && (
             <span
               className={`text-[10px] font-semibold shrink-0 ${
-                (item.hoursSinceLastCommunication ?? 0) >= 72
-                  ? 'text-amber-400'
-                  : 'text-emerald-400'
+                (effectiveHours ?? 0) >= 72 ? 'text-amber-400' : 'text-emerald-400'
               }`}
             >
               {elapsedLabel}
             </span>
           )}
+        </div>
+
+        <div
+          className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground/80"
+          title={`Sugestão gerada pela IA em ${suggestionTime.fullLabel}`}
+        >
+          <span className="inline-flex items-center gap-1 truncate">
+            <CalendarCheck2 className="size-2.5 text-muted-foreground/60 shrink-0" />
+            <span>Sugestão: {suggestionTime.shortLabel}</span>
+          </span>
+          {liveWindow.ctwaFreeBenefitActive && liveWindow.ctwaFreeBenefitRemainingLabel ? (
+            <span className="text-primary font-medium shrink-0">
+              {liveWindow.ctwaFreeBenefitRemainingLabel}
+            </span>
+          ) : suggestionTime.relativeLabel ? (
+            <span className="shrink-0">{suggestionTime.relativeLabel}</span>
+          ) : null}
         </div>
       </div>
 
@@ -517,20 +575,24 @@ export function FollowupCard({
         )}
       </div>
 
-      {/* Modal preservado de Follow-up */}
-      <FollowupDialog
-        suggestion={suggestion}
-        open={followupOpen}
-        onOpenChange={setFollowupOpen}
-        onResolved={() => onRefresh?.()}
-        compatibleProperties={item.compatibleProperties}
-        stageName={item.stageName}
-        hoursSinceLastCommunication={item.hoursSinceLastCommunication}
-        neverContacted={item.neverContacted}
-        lastMessagePreview={item.lastMessagePreview}
-        primaryNeed={item.primaryNeed}
-        interestProperty={item.interestProperty}
-      />
+      {/* Modal de Follow-up carregado sob demanda (evita montar 36 árvores de modal ocultas no iPhone PWA/desktop) */}
+      {followupOpen && (
+        <FollowupDialog
+          suggestion={suggestion}
+          open={followupOpen}
+          onOpenChange={setFollowupOpen}
+          onResolved={() => onRefresh?.()}
+          compatibleProperties={item.compatibleProperties}
+          stageName={item.stageName}
+          hoursSinceLastCommunication={effectiveHours}
+          neverContacted={item.neverContacted}
+          lastMessagePreview={item.lastMessagePreview}
+          primaryNeed={item.primaryNeed}
+          interestProperty={item.interestProperty}
+          lastCustomerMessageAt={primaryCustomerIso}
+          sessionWindow={liveWindow}
+        />
+      )}
     </Card>
   );
 }

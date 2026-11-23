@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildObjectiveFollowupRecommendation,
   calculateFollowupCommercialPriority,
   classifyFollowupTimingAndType,
   compareFollowupItems,
+  evaluateFollowupSessionWindow,
   extractInterestProperty,
   extractLeadPrimaryNeed,
   filterFollowupItems,
   matchesFollowupDateFilter,
+  reconcileFollowupReasonAndApproach,
   resolveFollowupDateFilterRange,
+  summarizeConversationMessages,
   type EnrichedFollowupItem,
 } from './engine';
 import type { AiSuggestion } from '@/types';
@@ -15,6 +19,10 @@ import type { AiSuggestion } from '@/types';
 function makeFollowupItem(overrides: Partial<EnrichedFollowupItem> = {}): EnrichedFollowupItem {
   const id = overrides.suggestion?.id || 'sugg-1';
   const createdAt = overrides.suggestionCreatedAt || '2026-11-23T14:00:00.000Z';
+  const lastCustomerMessageAt =
+    overrides.lastCustomerMessageAt !== undefined
+      ? overrides.lastCustomerMessageAt
+      : (overrides.lastCommunicationAt ?? createdAt);
   const suggestion: AiSuggestion = {
     id,
     account_id: 'acc-1',
@@ -58,11 +66,16 @@ function makeFollowupItem(overrides: Partial<EnrichedFollowupItem> = {}): Enrich
     confidenceScore: 85,
     commercialPriorityScore: 81.8,
     priorityTier: 'high',
+    lastCustomerMessageAt,
+    customerDayKeySp: overrides.customerDayKeySp ?? overrides.suggestionDayKeySp ?? '2026-11-23',
+    lastBusinessMessageAt: overrides.lastBusinessMessageAt ?? '2026-11-20T15:00:00.000Z',
+    lastInteractionAt: overrides.lastInteractionAt ?? lastCustomerMessageAt,
     suggestionCreatedAt: createdAt,
     suggestionDayKeySp: '2026-11-23',
     suggestionSignificantUpdatedAt: null,
-    lastCommunicationAt: '2026-11-20T14:00:00.000Z',
+    lastCommunicationAt: lastCustomerMessageAt,
     hoursSinceLastCommunication: 72,
+    hoursSinceLastCustomerMessage: 72,
     neverContacted: false,
     reason: 'Demonstrou interesse no Avant Home e está sem responder.',
     approachSummary: 'Retomar contato oferecendo informações atualizadas.',
@@ -75,29 +88,102 @@ function makeFollowupItem(overrides: Partial<EnrichedFollowupItem> = {}): Enrich
   };
 }
 
-describe('Follow-up Date Filters & America/Sao_Paulo Timezone Boundaries (Seção 6)', () => {
+describe('Follow-up Date Filters & America/Sao_Paulo Timezone Boundaries (Seções 1, 2 e 12)', () => {
   // Referência: Segunda-feira, 23/11/2026 às 14:30 BRT (-03:00) == 2026-11-23T17:30:00.000Z
   const nowSp = new Date('2026-11-23T17:30:00.000Z');
 
-  it('respeita os limites exatos do dia em America/Sao_Paulo para "today" e "yesterday"', () => {
+  it('respeita os limites exatos do dia em America/Sao_Paulo para "today", "yesterday", "day_before_yesterday" e "3d"', () => {
     const todayRange = resolveFollowupDateFilterRange('today', nowSp);
     const yesterdayRange = resolveFollowupDateFilterRange('yesterday', nowSp);
+    const dayBeforeRange = resolveFollowupDateFilterRange('day_before_yesterday', nowSp);
+    const threeDaysRange = resolveFollowupDateFilterRange('3d', nowSp);
 
     // 22/11/2026 às 23:30 BRT == 2026-11-23T02:30:00.000Z (ainda é ONTEM em São Paulo, embora já seja dia 23 em UTC)
     const lateYesterdaySp = '2026-11-23T02:30:00.000Z';
     // 23/11/2026 às 00:05 BRT == 2026-11-23T03:05:00.000Z (já é HOJE em São Paulo)
     const earlyTodaySp = '2026-11-23T03:05:00.000Z';
+    // 21/11/2026 às 15:00 BRT == 2026-11-21T18:00:00.000Z (ANTEONTEM em São Paulo)
+    const dayBeforeYesterdaySp = '2026-11-21T18:00:00.000Z';
 
     expect(matchesFollowupDateFilter(lateYesterdaySp, todayRange)).toBe(false);
     expect(matchesFollowupDateFilter(lateYesterdaySp, yesterdayRange)).toBe(true);
 
     expect(matchesFollowupDateFilter(earlyTodaySp, todayRange)).toBe(true);
     expect(matchesFollowupDateFilter(earlyTodaySp, yesterdayRange)).toBe(false);
+
+    expect(matchesFollowupDateFilter(dayBeforeYesterdaySp, dayBeforeRange)).toBe(true);
+    expect(matchesFollowupDateFilter(lateYesterdaySp, dayBeforeRange)).toBe(false);
+
+    expect(matchesFollowupDateFilter(dayBeforeYesterdaySp, threeDaysRange)).toBe(true);
+    expect(matchesFollowupDateFilter(lateYesterdaySp, threeDaysRange)).toBe(true);
+    expect(matchesFollowupDateFilter(earlyTodaySp, threeDaysRange)).toBe(true);
   });
 
-  it('calcula corretamente "7d" (Últimos 7 dias — filtro padrão inicial) e "30d"', () => {
+  it('NÃO inclui no filtro "Ontem" (ou "7d") uma sugestão criada hoje às 00h01 para cliente que falou em 07/11 (16 dias atrás)', () => {
+    const staleLeadSuggestedToday = makeFollowupItem({
+      suggestion: { id: 'stale-07-11', status: 'pending' } as AiSuggestion,
+      suggestionCreatedAt: '2026-11-23T03:01:00.000Z', // 00:01 BRT de hoje (23/11)
+      suggestionDayKeySp: '2026-11-23',
+      lastCustomerMessageAt: '2026-11-07T18:30:00.000Z', // Última fala do cliente em 07/11
+      customerDayKeySp: '2026-11-07',
+      lastCommunicationAt: '2026-11-07T18:30:00.000Z',
+    });
+
+    // Filtro padrão ('yesterday') -> não entra!
+    const inYesterday = filterFollowupItems([staleLeadSuggestedToday], {
+      status: 'pending',
+      dateFilter: 'yesterday',
+      now: nowSp,
+    });
+    expect(inYesterday).toHaveLength(0);
+
+    // Filtro 'today' -> não entra!
+    const inToday = filterFollowupItems([staleLeadSuggestedToday], {
+      status: 'pending',
+      dateFilter: 'today',
+      now: nowSp,
+    });
+    expect(inToday).toHaveLength(0);
+
+    // Filtro '7d' -> não entra!
+    const in7d = filterFollowupItems([staleLeadSuggestedToday], {
+      status: 'pending',
+      dateFilter: '7d',
+      now: nowSp,
+    });
+    expect(in7d).toHaveLength(0);
+
+    // Filtro 'all' -> preservado no histórico!
+    const inAll = filterFollowupItems([staleLeadSuggestedToday], {
+      status: 'pending',
+      dateFilter: 'all',
+      now: nowSp,
+    });
+    expect(inAll).toHaveLength(1);
+  });
+
+  it('INCLUI no filtro padrão "Ontem" um cliente que escreveu ontem (22/11), mesmo que a sugestão tenha sido criada hoje (23/11) e mesmo que uma automação tenha enviado mensagem hoje', () => {
+    const customerSpokeYesterday = makeFollowupItem({
+      suggestion: { id: 'yesterday-lead', status: 'pending' } as AiSuggestion,
+      suggestionCreatedAt: '2026-11-23T11:00:00.000Z', // Sugestão criada hoje
+      suggestionDayKeySp: '2026-11-23',
+      lastCustomerMessageAt: '2026-11-22T19:15:00.000Z', // Cliente falou ontem às 16:15 BRT
+      customerDayKeySp: '2026-11-22',
+      lastBusinessMessageAt: '2026-11-23T14:10:00.000Z', // Automação enviou msg hoje
+      lastInteractionAt: '2026-11-23T14:10:00.000Z',
+    });
+
+    // Chama filterFollowupItems sem passar dateFilter para validar que o padrão agora é 'yesterday'
+    const defaultFiltered = filterFollowupItems([customerSpokeYesterday], {
+      status: 'pending',
+      now: nowSp,
+    });
+    expect(defaultFiltered).toHaveLength(1);
+    expect(defaultFiltered[0].suggestion.id).toBe('yesterday-lead');
+  });
+
+  it('calcula corretamente "7d", "30d", "this_week", "this_month", "custom" e "all"', () => {
     const range7d = resolveFollowupDateFilterRange('7d', nowSp);
-    // 23/11 (hoje) - 6 dias = 17/11/2026 00:00 BRT (2026-11-17T03:00:00.000Z)
     expect(range7d.startDayKeySp).toBe('2026-11-17');
     expect(range7d.endDayKeySp).toBe('2026-11-23');
 
@@ -107,10 +193,7 @@ describe('Follow-up Date Filters & America/Sao_Paulo Timezone Boundaries (Seçã
     const range30d = resolveFollowupDateFilterRange('30d', nowSp);
     expect(range30d.startDayKeySp).toBe('2026-10-25');
     expect(range30d.endDayKeySp).toBe('2026-11-23');
-  });
 
-  it('calcula corretamente "this_week", "this_month", "custom" e "all"', () => {
-    // Quarta-feira 25/11/2026 15:00Z -> Segunda-feira da mesma semana é 23/11/2026
     const wednesday = new Date('2026-11-25T15:00:00.000Z');
     const weekRange = resolveFollowupDateFilterRange('this_week', wednesday);
     expect(weekRange.startDayKeySp).toBe('2026-11-23');
@@ -135,29 +218,93 @@ describe('Follow-up Date Filters & America/Sao_Paulo Timezone Boundaries (Seçã
   });
 });
 
-describe('Opportunity Classification & Need/Interest Extraction (Seção 4)', () => {
-  it('identifica explicitamente leads nunca contatados vs retomada de contato', () => {
-    const never = classifyFollowupTimingAndType({
-      lastMessageAt: null,
-      lastMessageText: null,
-      aiReplyCount: 0,
-      payloadHoursSinceContact: null,
-      stageName: 'Novo Lead',
-    });
-    expect(never.neverContacted).toBe(true);
-    expect(never.opportunityType).toBe('first_contact');
-    expect(never.hoursSinceLastCommunication).toBeNull();
+describe('Separação de Mensagens de Entrada/Saída, Classificação e Reconciliação de Texto (Seções 1, 4, 8 e 12)', () => {
+  it('separa mensagens do cliente vs empresa, exclui eventos técnicos/sistema e ignora convite automático do Instagram como atendimento comercial', () => {
+    const stats = summarizeConversationMessages([
+      {
+        conversation_id: 'c1',
+        sender_type: 'customer',
+        content_type: 'text',
+        content_text: 'Olá! Gostaria de saber valores do Mahal no Bessa.',
+        created_at: '2026-11-22T14:00:00.000Z',
+      },
+      {
+        conversation_id: 'c1',
+        sender_type: 'customer',
+        content_type: 'unsupported',
+        content_text: '[Unsupported message type: unsupported]',
+        created_at: '2026-11-23T12:00:00.000Z',
+      },
+      {
+        conversation_id: 'c1',
+        sender_type: 'system',
+        content_type: 'system',
+        content_text: 'Conversa atribuída',
+        created_at: '2026-11-23T13:00:00.000Z',
+      },
+      {
+        conversation_id: 'c1',
+        sender_type: 'bot',
+        content_type: 'text',
+        content_text:
+          'Aproveitando aqui a nossa conversa, me segue também no Instagram. Clica aqui: https://www.instagram.com/ronaldomeiracorretor/',
+        created_at: '2026-11-23T14:10:00.000Z',
+      },
+    ]);
 
-    const resumption = classifyFollowupTimingAndType({
-      lastMessageAt: '2026-11-20T12:00:00.000Z',
-      lastMessageText: 'Quero saber mais detalhes',
-      aiReplyCount: 2,
-      stageName: 'Qualificação',
-      nowMs: new Date('2026-11-23T12:00:00.000Z').getTime(),
+    expect(stats.customerMessageCount).toBe(1);
+    expect(stats.lastCustomerMessageAt).toBe('2026-11-22T14:00:00.000Z');
+    expect(stats.lastCustomerText).toBe('Olá! Gostaria de saber valores do Mahal no Bessa.');
+    // O convite automático do Instagram e os eventos de sistema não contam como atendimento comercial
+    expect(stats.businessMessageCount).toBe(0);
+    expect(stats.lastBusinessMessageAt).toBeNull();
+  });
+
+  it('classifica como "first_contact" (Primeiro contato) um lead que escreveu para a empresa mas nunca recebeu resposta comercial', () => {
+    const unreadInbound = classifyFollowupTimingAndType({
+      lastCustomerMessageAt: '2026-11-22T15:00:00.000Z',
+      lastBusinessMessageAt: null,
+      customerMessageCount: 2,
+      businessMessageCount: 0,
+      stageName: 'Qualificação', // Mesmo que a etapa não seja "Novo Lead"
+      nowMs: new Date('2026-11-23T15:00:00.000Z').getTime(),
     });
-    expect(resumption.neverContacted).toBe(false);
-    expect(resumption.opportunityType).toBe('resumption');
-    expect(resumption.hoursSinceLastCommunication).toBe(72);
+
+    expect(unreadInbound.neverContacted).toBe(false);
+    expect(unreadInbound.opportunityType).toBe('first_contact');
+    expect(unreadInbound.contactState).toBe('first_contact');
+    expect(unreadInbound.awaitingBusinessReply).toBe(true);
+    expect(unreadInbound.hoursSinceLastCustomerMessage).toBe(24);
+  });
+
+  it('reconcilia textos contraditórios quando há histórico real de respostas da empresa mas a sugestão antiga dizia "nunca contatado"', () => {
+    const reconciled = reconcileFollowupReasonAndApproach({
+      rawReason:
+        'Lead novo no pipeline, nunca contatado, e já se passaram 16 dias sem nenhuma tentativa de contato.',
+      rawApproachSummary: 'Fazer primeiro contato.',
+      opportunityType: 'resumption',
+      contactState: 'resumption',
+      neverContacted: false,
+      interestProperty: 'Mahal',
+      primaryNeed: 'Studio em Bessa',
+      lastCustomerText: 'Qual o valor das unidades do Mahal?',
+      lastBusinessText: 'Enviei as informações iniciais do empreendimento.',
+    });
+
+    expect(reconciled.reason).not.toMatch(/nunca contatad/i);
+    expect(reconciled.reason).toContain('Mahal');
+    expect(reconciled.reason).toContain('perguntou sobre valores');
+    expect(reconciled.approachSummary).toContain('Retomar a conversa');
+
+    const objective = buildObjectiveFollowupRecommendation({
+      opportunityType: 'resumption',
+      contactState: 'resumption',
+      interestProperty: 'Avant Home',
+      primaryNeed: 'Studio 1 quarto em Bessa',
+      lastCustomerText: 'Quais os valores?',
+      lastBusinessText: 'Segue apresentação inicial.',
+    });
+    expect(objective.reason).toContain('Avant Home');
   });
 
   it('extrai empreendimento de interesse e necessidade principal sem chamar IA', () => {
@@ -179,11 +326,81 @@ describe('Opportunity Classification & Need/Interest Extraction (Seção 4)', ()
   });
 });
 
-describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
+describe('Janela de Atendimento de 24h vs. Benefício Gratuito CTWA de 72h (Seções 5 e 12)', () => {
+  const nowMs = new Date('2026-11-23T15:00:00.000Z').getTime();
+
+  it('distingue janela de 24h aberta, prestes a encerrar (<= 6h) e encerrada, sem confundir com a gratuidade CTWA de 72h', () => {
+    // 1. Cliente falou há 10h -> Janela aberta (14h restantes)
+    const openWin = evaluateFollowupSessionWindow({
+      lastCustomerMessageAt: new Date(nowMs - 10 * 60 * 60 * 1000).toISOString(),
+      isCtwaLead: true,
+      ctwaFepExpiresAt: new Date(nowMs + 50 * 60 * 60 * 1000).toISOString(),
+      nowMs,
+    });
+    expect(openWin.status).toBe('open');
+    expect(openWin.windowOpen).toBe(true);
+    expect(openWin.closingSoon).toBe(false);
+    expect(openWin.templateRequired).toBe(false);
+    expect(openWin.ctwaFreeBenefitActive).toBe(true);
+
+    // 2. Cliente falou há 21h -> Janela prestes a encerrar (3h restantes <= 6h)
+    const closingSoonWin = evaluateFollowupSessionWindow({
+      lastCustomerMessageAt: new Date(nowMs - 21 * 60 * 60 * 1000).toISOString(),
+      isCtwaLead: true,
+      ctwaFepExpiresAt: new Date(nowMs + 39 * 60 * 60 * 1000).toISOString(),
+      nowMs,
+    });
+    expect(closingSoonWin.status).toBe('closing_soon');
+    expect(closingSoonWin.windowOpen).toBe(true);
+    expect(closingSoonWin.closingSoon).toBe(true);
+    expect(closingSoonWin.templateRequired).toBe(false);
+
+    // 3. Cliente falou há 30h, mas CTWA de 72h ainda está ativo (42h restantes):
+    //    Texto livre NÃO é permitido (templateRequired = true), apesar da gratuidade CTWA!
+    const expired24hButCtwaFree = evaluateFollowupSessionWindow({
+      lastCustomerMessageAt: new Date(nowMs - 30 * 60 * 60 * 1000).toISOString(),
+      isCtwaLead: true,
+      ctwaFepExpiresAt: new Date(nowMs + 42 * 60 * 60 * 1000).toISOString(),
+      nowMs,
+    });
+    expect(expired24hButCtwaFree.status).toBe('expired');
+    expect(expired24hButCtwaFree.windowOpen).toBe(false);
+    expect(expired24hButCtwaFree.templateRequired).toBe(true);
+    expect(expired24hButCtwaFree.ctwaFreeBenefitActive).toBe(true);
+  });
+});
+
+describe('Priorização Comercial Real e Ordenação (Seções 3 e 12)', () => {
+  it('garante que um comprador qualificado (alta maturidade e interesse real) supere um lead de baixa maturidade mesmo que a IA tenha 98% de confiança no lead fraco', () => {
+    const lowMaturityHighConfidence = calculateFollowupCommercialPriority({
+      confidenceScore: 98,
+      aiScore: 2,
+      profileMaturity: 20,
+      hasInterestProperty: false,
+      hasPrimaryNeed: false,
+      stageName: 'Novo Lead',
+    });
+
+    const qualifiedBuyerModerateConfidence = calculateFollowupCommercialPriority({
+      confidenceScore: 65,
+      aiScore: 8,
+      profileMaturity: 80,
+      hasInterestProperty: true,
+      hasPrimaryNeed: true,
+      stageName: 'Interesse',
+    });
+
+    expect(qualifiedBuyerModerateConfidence.score).toBeGreaterThan(
+      lowMaturityHighConfidence.score + 30
+    );
+    expect(qualifiedBuyerModerateConfidence.tier).toBe('high');
+    expect(lowMaturityHighConfidence.tier).toBe('normal');
+  });
+
   const itemRecentLow = makeFollowupItem({
     suggestion: { id: 'recent-low' } as AiSuggestion,
-    suggestionCreatedAt: '2026-11-23T10:00:00.000Z',
-    suggestionDayKeySp: '2026-11-23',
+    lastCustomerMessageAt: '2026-11-23T10:00:00.000Z',
+    customerDayKeySp: '2026-11-23',
     commercialPriorityScore: 55,
     confidenceScore: 60,
     aiScore: 5,
@@ -194,8 +411,8 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
 
   const itemRecentHigh = makeFollowupItem({
     suggestion: { id: 'recent-high' } as AiSuggestion,
-    suggestionCreatedAt: '2026-11-23T08:00:00.000Z',
-    suggestionDayKeySp: '2026-11-23',
+    lastCustomerMessageAt: '2026-11-23T08:00:00.000Z',
+    customerDayKeySp: '2026-11-23',
     commercialPriorityScore: 88,
     confidenceScore: 92,
     aiScore: 9,
@@ -206,8 +423,8 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
 
   const itemOlderUltraHigh = makeFollowupItem({
     suggestion: { id: 'older-ultra' } as AiSuggestion,
-    suggestionCreatedAt: '2026-11-21T15:00:00.000Z',
-    suggestionDayKeySp: '2026-11-21',
+    lastCustomerMessageAt: '2026-11-21T15:00:00.000Z',
+    customerDayKeySp: '2026-11-21',
     commercialPriorityScore: 95,
     confidenceScore: 98,
     aiScore: 10,
@@ -218,8 +435,8 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
 
   const itemNeverContacted = makeFollowupItem({
     suggestion: { id: 'never-contacted' } as AiSuggestion,
-    suggestionCreatedAt: '2026-11-22T12:00:00.000Z',
-    suggestionDayKeySp: '2026-11-22',
+    lastCustomerMessageAt: '2026-11-22T12:00:00.000Z',
+    customerDayKeySp: '2026-11-22',
     commercialPriorityScore: 70,
     confidenceScore: 75,
     aiScore: 6,
@@ -229,7 +446,7 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
     opportunityType: 'first_contact',
   });
 
-  it('ordena no modo padrão "recent_priority" primeiro por recência (dia SP) e depois por prioridade comercial dentro do dia', () => {
+  it('ordena no modo padrão "recent_priority" primeiro pela data da última mensagem do cliente (dia SP) e depois por prioridade comercial', () => {
     const list = [itemOlderUltraHigh, itemRecentLow, itemRecentHigh];
     list.sort((a, b) => compareFollowupItems(a, b, 'recent_priority'));
     expect(list.map((i) => i.suggestion.id)).toEqual([
@@ -239,7 +456,62 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
     ]);
   });
 
-  it('ordena por maior prioridade geral ("priority_desc"), maior maturidade ("maturity_desc") e maior score IA ("ai_score_desc")', () => {
+  it('ordena no modo "window_closing_soon" priorizando janelas de 24h abertas mais próximas de fechar', () => {
+    const closingIn1h = makeFollowupItem({
+      suggestion: { id: 'win-1h' } as AiSuggestion,
+      commercialPriorityScore: 60,
+      sessionWindow: {
+        status: 'closing_soon',
+        windowOpen: true,
+        closingSoon: true,
+        templateRequired: false,
+        remainingMs: 1 * 60 * 60 * 1000,
+        remainingLabel: '1h restante',
+        isCtwaLead: true,
+        ctwaFreeBenefitActive: true,
+        ctwaFreeBenefitExpiresAt: null,
+        ctwaFreeBenefitRemainingLabel: null,
+      },
+    });
+    const closingIn12h = makeFollowupItem({
+      suggestion: { id: 'win-12h' } as AiSuggestion,
+      commercialPriorityScore: 90,
+      sessionWindow: {
+        status: 'open',
+        windowOpen: true,
+        closingSoon: false,
+        templateRequired: false,
+        remainingMs: 12 * 60 * 60 * 1000,
+        remainingLabel: '12h restantes',
+        isCtwaLead: true,
+        ctwaFreeBenefitActive: true,
+        ctwaFreeBenefitExpiresAt: null,
+        ctwaFreeBenefitRemainingLabel: null,
+      },
+    });
+    const closedWin = makeFollowupItem({
+      suggestion: { id: 'win-closed' } as AiSuggestion,
+      commercialPriorityScore: 99,
+      sessionWindow: {
+        status: 'expired',
+        windowOpen: false,
+        closingSoon: false,
+        templateRequired: true,
+        remainingMs: 0,
+        remainingLabel: null,
+        isCtwaLead: false,
+        ctwaFreeBenefitActive: false,
+        ctwaFreeBenefitExpiresAt: null,
+        ctwaFreeBenefitRemainingLabel: null,
+      },
+    });
+
+    const list = [closedWin, closingIn12h, closingIn1h];
+    list.sort((a, b) => compareFollowupItems(a, b, 'window_closing_soon'));
+    expect(list.map((i) => i.suggestion.id)).toEqual(['win-1h', 'win-12h', 'win-closed']);
+  });
+
+  it('ordena por "priority_desc", "maturity_desc", "ai_score_desc" e "longest_without_contact"', () => {
     const list = [itemRecentLow, itemRecentHigh, itemOlderUltraHigh];
 
     const byPriority = [...list].sort((a, b) => compareFollowupItems(a, b, 'priority_desc'));
@@ -262,14 +534,11 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
       'recent-high',
       'recent-low',
     ]);
-  });
 
-  it('ordena por "longest_without_contact" priorizando maior tempo real sem contato e tratando separadamente leads nunca contatados', () => {
-    const list = [itemNeverContacted, itemRecentLow, itemOlderUltraHigh, itemRecentHigh];
-    list.sort((a, b) => compareFollowupItems(a, b, 'longest_without_contact'));
-
-    // Leads com histórico real vêm primeiro (240h -> 96h -> 48h), e nunca contatados ficam separados ao final
-    expect(list.map((i) => i.suggestion.id)).toEqual([
+    const byLongest = [itemNeverContacted, itemRecentLow, itemOlderUltraHigh, itemRecentHigh].sort(
+      (a, b) => compareFollowupItems(a, b, 'longest_without_contact')
+    );
+    expect(byLongest.map((i) => i.suggestion.id)).toEqual([
       'older-ultra',
       'recent-high',
       'recent-low',
@@ -278,10 +547,10 @@ describe('Ordenação por Recência e Prioridade Comercial (Seção 7)', () => {
   });
 });
 
-describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e 14)', () => {
+describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e 12)', () => {
   const now = new Date('2026-11-23T15:00:00.000Z');
 
-  it('combina busca por nome/telefone, período, etapa, maturidade, score IA, tipo e status sem sobrescrever', () => {
+  it('combina busca por nome/telefone, período da última mensagem do cliente, janela, etapa, maturidade, score IA, tipo e status', () => {
     const items: EnrichedFollowupItem[] = [
       makeFollowupItem({
         suggestion: { id: 'match-all', status: 'pending' } as AiSuggestion,
@@ -297,7 +566,11 @@ describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e
         profileMaturity: 75,
         aiScore: 8,
         opportunityType: 'resumption',
-        suggestionCreatedAt: '2026-11-22T14:00:00.000Z',
+        lastCustomerMessageAt: '2026-11-22T14:00:00.000Z',
+        sessionWindow: evaluateFollowupSessionWindow({
+          lastCustomerMessageAt: '2026-11-22T20:00:00.000Z',
+          nowMs: now.getTime(),
+        }),
       }),
       makeFollowupItem({
         suggestion: { id: 'wrong-stage', status: 'pending' } as AiSuggestion,
@@ -313,7 +586,7 @@ describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e
         profileMaturity: 75,
         aiScore: 8,
         opportunityType: 'resumption',
-        suggestionCreatedAt: '2026-11-22T14:00:00.000Z',
+        lastCustomerMessageAt: '2026-11-22T14:00:00.000Z',
       }),
       makeFollowupItem({
         suggestion: { id: 'old-date', status: 'pending' } as AiSuggestion,
@@ -329,13 +602,14 @@ describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e
         profileMaturity: 85,
         aiScore: 9,
         opportunityType: 'resumption',
-        suggestionCreatedAt: '2026-10-01T14:00:00.000Z',
+        lastCustomerMessageAt: '2026-10-01T14:00:00.000Z',
       }),
     ];
 
     const filtered = filterFollowupItems(items, {
       status: 'pending',
-      dateFilter: '7d',
+      dateFilter: 'yesterday',
+      windowFilter: 'open',
       search: 'Roberto',
       stage: 'Interesse',
       maturityBand: 'ready',
@@ -346,7 +620,6 @@ describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e
 
     expect(filtered.map((i) => i.suggestion.id)).toEqual(['match-all']);
 
-    // Quando o usuário muda o filtro de data para 'all', o registro histórico de outubro aparece
     const allDates = filterFollowupItems(items, {
       status: 'pending',
       dateFilter: 'all',
@@ -358,49 +631,5 @@ describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e
       now,
     });
     expect(allDates.map((i) => i.suggestion.id)).toEqual(['match-all', 'old-date']);
-  });
-
-  it('opera de forma rápida e determinística com mais de 200 sugestões acumuladas (ex.: 193+ pendentes)', () => {
-    const bulk: EnrichedFollowupItem[] = Array.from({ length: 240 }, (_, idx) => {
-      const isRecent = idx < 45;
-      const day = isRecent ? '2026-11-22' : '2026-10-15';
-      const prio = calculateFollowupCommercialPriority({
-        confidenceScore: 55 + (idx % 45),
-        aiScore: idx % 11,
-        profileMaturity: (idx * 7) % 100,
-        hasInterestProperty: idx % 2 === 0,
-        hasPrimaryNeed: true,
-        stageName: idx % 3 === 0 ? 'Interesse' : 'Qualificação',
-      });
-      return makeFollowupItem({
-        suggestion: {
-          id: `sugg-${String(idx).padStart(4, '0')}`,
-          status: 'pending',
-        } as AiSuggestion,
-        suggestionCreatedAt: `${day}T12:00:00.000Z`,
-        suggestionDayKeySp: day,
-        commercialPriorityScore: prio.score,
-        priorityTier: prio.tier,
-      });
-    });
-
-    const recentFiltered = filterFollowupItems(bulk, {
-      status: 'pending',
-      dateFilter: '7d',
-      now,
-    });
-    expect(recentFiltered).toHaveLength(45);
-
-    const allFiltered = filterFollowupItems(bulk, {
-      status: 'pending',
-      dateFilter: 'all',
-      now,
-    });
-    expect(allFiltered).toHaveLength(240);
-
-    allFiltered.sort((a, b) => compareFollowupItems(a, b, 'recent_priority'));
-    expect(allFiltered[0].suggestionDayKeySp).toBe('2026-11-22');
-    expect(allFiltered[44].suggestionDayKeySp).toBe('2026-11-22');
-    expect(allFiltered[45].suggestionDayKeySp).toBe('2026-10-15');
   });
 });

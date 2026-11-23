@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { loadAiConfig } from '@/lib/ai/config'
-import { generateFollowupFreeMessage, selectFollowupTemplate } from '@/lib/ai/followup-message'
+import {
+  generateFollowupFreeMessage,
+  selectFollowupTemplate,
+  type FollowupSelectedPropertyContext,
+} from '@/lib/ai/followup-message'
 import { logAiUsage } from '@/lib/ai/usage'
 import { getConversationSessionStatus } from '@/lib/whatsapp/session-window'
 import type { FollowupPlan } from '@/lib/ai/followup-types'
@@ -25,15 +29,6 @@ interface FollowupPayload {
  * anything — this only produces text/a template selection/a plan for
  * the user to review; persisted into the suggestion's `payload.draft`
  * so it survives a page reload before the user acts on it.
- *
- * `mode: 'template'` can come back with `selection: null` when no
- * approved template fits (or none exist) — the client falls back to
- * offering "Copiar para WhatsApp" only, per the block's spec.
- *
- * `mode: 'plan'` (Follow-up Inteligente) selects up to two approved
- * templates — one for an immediate follow-up, one for a second touch
- * if the first goes unanswered — reusing the same `selectFollowupTemplate`
- * picker twice with a contextualized reason for the second call.
  */
 export async function POST(
   request: Request,
@@ -52,6 +47,46 @@ export async function POST(
       return bad('mode must be "free", "template" or "plan"')
     }
 
+    const interestProperty =
+      typeof body?.interestProperty === 'string' && body.interestProperty.trim()
+        ? body.interestProperty.trim()
+        : null
+    const primaryNeed =
+      typeof body?.primaryNeed === 'string' && body.primaryNeed.trim()
+        ? body.primaryNeed.trim()
+        : null
+    const rawSelectedProp =
+      body?.selectedProperty && typeof body.selectedProperty === 'object'
+        ? (body.selectedProperty as Record<string, unknown>)
+        : null
+    const selectedProperty: FollowupSelectedPropertyContext | null =
+      rawSelectedProp && typeof rawSelectedProp.propertyId === 'string' && rawSelectedProp.propertyId
+        ? {
+            propertyId: String(rawSelectedProp.propertyId),
+            title: String(rawSelectedProp.title || 'Imóvel compatível'),
+            neighborhood:
+              typeof rawSelectedProp.neighborhood === 'string' ? rawSelectedProp.neighborhood : null,
+            city: typeof rawSelectedProp.city === 'string' ? rawSelectedProp.city : null,
+            propertyType:
+              typeof rawSelectedProp.propertyType === 'string' ? rawSelectedProp.propertyType : null,
+            operation:
+              typeof rawSelectedProp.operation === 'string' ? rawSelectedProp.operation : null,
+            deliveryStatus:
+              typeof rawSelectedProp.deliveryStatus === 'string'
+                ? rawSelectedProp.deliveryStatus
+                : null,
+            priceMin:
+              typeof rawSelectedProp.priceMin === 'number' ? rawSelectedProp.priceMin : null,
+            bedroomsMin:
+              typeof rawSelectedProp.bedroomsMin === 'number' ? rawSelectedProp.bedroomsMin : null,
+            areaMin: typeof rawSelectedProp.areaMin === 'number' ? rawSelectedProp.areaMin : null,
+            publicUrl:
+              typeof rawSelectedProp.publicUrl === 'string' && rawSelectedProp.publicUrl.trim()
+                ? rawSelectedProp.publicUrl.trim()
+                : null,
+          }
+        : null
+
     const { data: suggestion, error: fetchError } = await supabase
       .from('ai_suggestions')
       .select('id, category, contact_id, conversation_id, payload, contact:contacts(name)')
@@ -65,7 +100,10 @@ export async function POST(
 
     const config = await loadAiConfig(supabase, accountId)
     if (!config) {
-      return bad('AI is not configured/active for this account yet — set it up in Settings > Agentes de IA', 409)
+      return bad(
+        'AI is not configured/active for this account yet — set it up in Settings > Agentes de IA',
+        409,
+      )
     }
 
     const payload = (suggestion.payload ?? {}) as FollowupPayload
@@ -81,6 +119,9 @@ export async function POST(
         contactName,
         reason: payload.reason ?? null,
         approachSummary: payload.approach_summary ?? null,
+        interestProperty,
+        primaryNeed,
+        selectedProperty,
       })
       void logAiUsage(supabase, {
         accountId,
@@ -97,14 +138,22 @@ export async function POST(
         .update({ payload: { ...payload, draft } })
         .eq('id', id)
 
-      return NextResponse.json({ draft, sessionWindowOpen: sessionStatus.windowOpen })
+      return NextResponse.json({
+        draft,
+        sessionWindowOpen: sessionStatus.windowOpen,
+        sessionWindowRemainingMs: sessionStatus.remainingMs,
+      })
     }
 
     if (mode === 'template') {
-      const { selection, usage } = await selectFollowupTemplate(supabase, accountId, config, {
+      const res = await selectFollowupTemplate(supabase, accountId, config, {
         contactName,
         reason: payload.reason ?? null,
         approachSummary: payload.approach_summary ?? null,
+        interestProperty,
+        primaryNeed,
+        selectedProperty,
+        allowDeterministicFallback: true,
       })
       void logAiUsage(supabase, {
         accountId,
@@ -112,68 +161,83 @@ export async function POST(
         mode: 'followup',
         provider: config.provider,
         model: config.model,
-        usage,
+        usage: res.usage,
       })
 
-      if (!selection) {
-        return NextResponse.json({ draft: null, sessionWindowOpen: sessionStatus.windowOpen })
+      if (!res.selection) {
+        return NextResponse.json({
+          draft: null,
+          sessionWindowOpen: sessionStatus.windowOpen,
+          sessionWindowRemainingMs: sessionStatus.remainingMs,
+          failureCode: res.failureCode ?? 'no_compatible_template',
+          failureReason:
+            res.failureReason ??
+            'Não foi encontrado nenhum template aprovado compatível para este atendimento.',
+          availableApprovedTemplatesCount: res.availableApprovedTemplatesCount ?? 0,
+        })
       }
 
       const draft = {
         mode: 'template' as const,
-        template_id: selection.template.id,
-        template_name: selection.template.name,
-        body_text: selection.template.body_text,
-        values: selection.values,
+        template_id: res.selection.template.id,
+        template_name: res.selection.template.name,
+        body_text: res.selection.template.body_text,
+        values: res.selection.values,
+        generated_by: res.selection.generatedBy ?? 'ai',
+        supports_public_url: Boolean(res.selection.supportsPublicUrlInTemplate),
       }
       await supabase
         .from('ai_suggestions')
         .update({ payload: { ...payload, draft } })
         .eq('id', id)
 
-      return NextResponse.json({ draft })
+      return NextResponse.json({
+        draft,
+        sessionWindowOpen: sessionStatus.windowOpen,
+        sessionWindowRemainingMs: sessionStatus.remainingMs,
+      })
     }
 
     // mode === 'plan' — Follow-up Inteligente: up to two scheduled,
-    // pre-filled template sends. Picked with the same template
-    // selector used by mode "template"; nothing is sent here.
-    const { selection: selection1, usage: usage1 } = await selectFollowupTemplate(
-      supabase,
-      accountId,
-      config,
-      {
-        contactName,
-        reason: payload.reason ?? null,
-        approachSummary: payload.approach_summary ?? null,
-      },
-    )
+    // pre-filled template sends.
+    const res1 = await selectFollowupTemplate(supabase, accountId, config, {
+      contactName,
+      reason: payload.reason ?? null,
+      approachSummary: payload.approach_summary ?? null,
+      interestProperty,
+      primaryNeed,
+      selectedProperty,
+      allowDeterministicFallback: true,
+    })
     void logAiUsage(supabase, {
       accountId,
       conversationId: suggestion.conversation_id,
       mode: 'followup',
       provider: config.provider,
       model: config.model,
-      usage: usage1,
+      usage: res1.usage,
     })
 
-    const { selection: selection2, usage: usage2 } = await selectFollowupTemplate(
-      supabase,
-      accountId,
-      config,
-      {
-        contactName,
-        reason: `${payload.reason ?? ''} (segundo contato, após o primeiro não ter sido respondido)`,
-        approachSummary: 'Enviar um lembrete gentil e verificar se houve algum problema.',
-      },
-    )
+    const res2 = await selectFollowupTemplate(supabase, accountId, config, {
+      contactName,
+      reason: `${payload.reason ?? ''} (segundo contato, após o primeiro não ter sido respondido)`,
+      approachSummary: 'Enviar um lembrete gentil e verificar se houve algum problema.',
+      interestProperty,
+      primaryNeed,
+      selectedProperty,
+      allowDeterministicFallback: true,
+    })
     void logAiUsage(supabase, {
       accountId,
       conversationId: suggestion.conversation_id,
       mode: 'followup',
       provider: config.provider,
       model: config.model,
-      usage: usage2,
+      usage: res2.usage,
     })
+
+    const selection1 = res1.selection
+    const selection2 = res2.selection
 
     const plan: FollowupPlan = {
       contact1: selection1
@@ -199,7 +263,14 @@ export async function POST(
     }
 
     if (!plan.contact1 && !plan.contact2) {
-      return NextResponse.json({ draft: null })
+      return NextResponse.json({
+        draft: null,
+        sessionWindowOpen: sessionStatus.windowOpen,
+        failureCode: res1.failureCode ?? 'no_compatible_template',
+        failureReason:
+          res1.failureReason ??
+          'Não foi encontrado nenhum template aprovado compatível para montar o plano de follow-up.',
+      })
     }
 
     const draft = { mode: 'plan' as const, plan }
@@ -208,7 +279,7 @@ export async function POST(
       .update({ payload: { ...payload, draft } })
       .eq('id', id)
 
-    return NextResponse.json({ draft })
+    return NextResponse.json({ draft, sessionWindowOpen: sessionStatus.windowOpen })
   } catch (err) {
     return toErrorResponse(err)
   }

@@ -12,12 +12,14 @@ vi.mock('@/lib/auth/account', () => ({
 function buildMockSupabase(fixtures: {
   suggestions: Array<Record<string, unknown>>;
   conversations?: Array<Record<string, unknown>>;
+  messages?: Array<Record<string, unknown>>;
   deals?: Array<Record<string, unknown>>;
   intelligence?: Array<Record<string, unknown>>;
   tags?: Array<Record<string, unknown>>;
   pipelines?: Array<Record<string, unknown>>;
   projections?: Array<Record<string, unknown>>;
   matches?: Array<Record<string, unknown>>;
+  contacts?: Array<Record<string, unknown>>;
 }) {
   return {
     from: (table: string) => {
@@ -37,12 +39,14 @@ function buildMockSupabase(fixtures: {
         let rows: Array<Record<string, unknown>> = [];
         if (table === 'ai_suggestions') rows = [...fixtures.suggestions];
         else if (table === 'conversations') rows = [...(fixtures.conversations || [])];
+        else if (table === 'messages') rows = [...(fixtures.messages || [])];
         else if (table === 'deals') rows = [...(fixtures.deals || [])];
         else if (table === 'lead_intelligence') rows = [...(fixtures.intelligence || [])];
         else if (table === 'contact_tags') rows = [...(fixtures.tags || [])];
         else if (table === 'pipelines') rows = [...(fixtures.pipelines || [])];
         else if (table === 'property_match_projections') rows = [...(fixtures.projections || [])];
         else if (table === 'lead_property_matches') rows = [...(fixtures.matches || [])];
+        else if (table === 'contacts') rows = [...(fixtures.contacts || [])];
 
         for (const [k, v] of Object.entries(state.eqFilters)) {
           rows = rows.filter((r) => r[k] === v);
@@ -322,5 +326,194 @@ describe('GET /api/followup — Paginação, Contadores, 193+ Sugestões e Integ
     expect(body.items).toHaveLength(1);
     expect(body.items[0].compatiblePropertiesCount).toBe(0);
     expect(body.items[0].compatibleProperties).toEqual([]);
+  });
+
+  it('filtra pelo timestamp real da última mensagem do cliente (messages), excluindo sugestões criadas hoje para conversas de 16 dias atrás do filtro padrão "yesterday" e resolvendo publicUrl do cover_url', async () => {
+    const now = new Date();
+    const todayIso = now.toISOString();
+    const yesterdayIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const sixteenDaysAgoIso = new Date(now.getTime() - 16 * 24 * 60 * 60 * 1000).toISOString();
+
+    const mockSupabase = buildMockSupabase({
+      suggestions: [
+        {
+          id: 'sugg-stale-created-today',
+          account_id: 'acc-1',
+          contact_id: 'contact-stale',
+          conversation_id: 'conv-stale',
+          category: 'followup',
+          title: 'Lead antigo sugerido hoje',
+          status: 'pending',
+          created_at: todayIso, // Sugestão criada HOJE
+          updated_at: todayIso,
+          payload: { score: 85, reason: 'Lead antigo sugerido hoje' },
+          contact: { id: 'contact-stale', name: 'Cliente 07/11', phone: '5583911110000', ai_score: 6 },
+        },
+        {
+          id: 'sugg-yesterday-customer',
+          account_id: 'acc-1',
+          contact_id: 'contact-yesterday',
+          conversation_id: 'conv-yesterday',
+          category: 'followup',
+          title: 'Cliente conversou ontem sobre Mahal',
+          status: 'pending',
+          created_at: todayIso, // Sugestão criada HOJE
+          updated_at: todayIso,
+          payload: { score: 80, reason: 'Cliente conversou ontem sobre Mahal' },
+          contact: { id: 'contact-yesterday', name: 'Cliente Ontem', phone: '5583922220000', ai_score: 8 },
+        },
+      ],
+      conversations: [
+        {
+          id: 'conv-stale',
+          account_id: 'acc-1',
+          contact_id: 'contact-stale',
+          last_message_at: sixteenDaysAgoIso,
+          last_message_text: 'Mensagem de 16 dias atrás',
+          ai_reply_count: 2,
+        },
+        {
+          id: 'conv-yesterday',
+          account_id: 'acc-1',
+          contact_id: 'contact-yesterday',
+          last_message_at: todayIso, // Automação mandou msg hoje, mas o cliente falou ONTEM
+          last_message_text: 'Aproveitando aqui a nossa conversa, me segue também no Instagram',
+          ai_reply_count: 1,
+        },
+      ],
+      messages: [
+        {
+          conversation_id: 'conv-stale',
+          sender_type: 'customer',
+          content_type: 'text',
+          content_text: 'Falei há 16 dias',
+          created_at: sixteenDaysAgoIso,
+        },
+        {
+          conversation_id: 'conv-yesterday',
+          sender_type: 'customer',
+          content_type: 'text',
+          content_text: 'Quero saber valores do Mahal no Bessa',
+          created_at: yesterdayIso,
+        },
+        {
+          conversation_id: 'conv-yesterday',
+          sender_type: 'bot',
+          content_type: 'text',
+          content_text: 'Aproveitando aqui a nossa conversa, me segue também no Instagram. https://www.instagram.com/ronaldomeiracorretor/',
+          created_at: todayIso,
+        },
+      ],
+      projections: [
+        {
+          property_id: 'prop-mahal',
+          account_id: 'acc-1',
+          status: 'ativo',
+          operation: 'venda',
+          title: 'Mahal Bessa',
+          property_type: 'studio',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 349990,
+          price_max: 390000,
+          bedrooms_min: 1,
+          area_min: 25,
+          delivery_status: 'em_construcao',
+          cover_url: 'https://pub-e28ab031048d44b2aa8b1846c6e6fdc6.r2.dev/properties/dev-7c96eb3e9cf14641/photos/cover.jpg',
+          public_url: null, // public_url nulo no banco -> deve ser resolvido a partir do cover_url
+        },
+      ],
+      matches: [
+        {
+          id: 'match-mahal',
+          account_id: 'acc-1',
+          lead_id: 'contact-yesterday',
+          property_id: 'prop-mahal',
+          match_score: 95,
+          commercial_priority: 90,
+          match_status: 'novo',
+          suppressed: false,
+          score_breakdown: { reasons: ['Studio no Bessa'] },
+        },
+      ],
+    });
+
+    mockGetCurrentAccount.mockResolvedValue({
+      supabase: mockSupabase,
+      accountId: 'acc-1',
+      userId: 'user-1',
+      role: 'owner',
+    });
+
+    // Sem passar date_filter -> deve usar o novo padrão 'yesterday' (Ontem)
+    const res = await GET(new Request('http://localhost/api/followup?status=pending'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.counts.pending).toBe(2);
+    expect(body.pagination.totalItems).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].contact.id).toBe('contact-yesterday');
+    expect(body.items[0].lastCustomerMessageAt).toBe(yesterdayIso);
+    expect(body.items[0].compatibleProperties).toHaveLength(1);
+    expect(body.items[0].compatibleProperties[0].coverUrl).toContain('dev-7c96eb3e9cf14641');
+    expect(body.items[0].compatibleProperties[0].publicUrl).toBe(
+      'https://ronaldomeira.com.br/imovel/dev-7c96eb3e9cf14641'
+    );
+  });
+
+  it('não trunca sugestões pendentes nem infla contadores quando existem milhares de registros ignorados históricos duplicados', async () => {
+    const nowIso = new Date().toISOString();
+    const expiredIgnoredIso = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
+
+    const suggestions: Array<Record<string, unknown>> = [
+      {
+        id: 'pending-1',
+        account_id: 'acc-1',
+        contact_id: 'c-pend-1',
+        conversation_id: 'conv-pend-1',
+        category: 'followup',
+        title: 'Lead pendente válido',
+        status: 'pending',
+        created_at: nowIso,
+        updated_at: nowIso,
+        payload: { score: 85 },
+        contact: { id: 'c-pend-1', name: 'Lead Pendente', phone: '5583999990001', ai_score: 7 },
+      },
+    ];
+
+    // 1.500 registros ignorados antigos para o mesmo contato 'c-ignored-dup'
+    for (let i = 0; i < 1500; i++) {
+      suggestions.push({
+        id: `ignored-old-${i}`,
+        account_id: 'acc-1',
+        contact_id: 'c-ignored-dup',
+        conversation_id: 'conv-ig',
+        category: 'followup',
+        title: 'Ignorado antigo',
+        status: 'ignored',
+        resolved_at: null,
+        created_at: expiredIgnoredIso,
+        updated_at: expiredIgnoredIso,
+        payload: { score: 60 },
+        contact: { id: 'c-ignored-dup', name: 'Ignorado', phone: '5583900001111', ai_score: 3 },
+      });
+    }
+
+    const mockSupabase = buildMockSupabase({ suggestions });
+    mockGetCurrentAccount.mockResolvedValue({
+      supabase: mockSupabase,
+      accountId: 'acc-1',
+      userId: 'user-1',
+      role: 'owner',
+    });
+
+    const res = await GET(new Request('http://localhost/api/followup?status=pending&date_filter=all'));
+    const body = await res.json();
+
+    expect(body.counts.pending).toBe(1);
+    expect(body.counts.ignored).toBe(0);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].contact.id).toBe('c-pend-1');
   });
 });

@@ -3,9 +3,14 @@
 // same discipline as lead-analysis-config.ts.
 // ============================================================
 
-/** A conversation is a follow-up candidate once it's been quiet (no
- *  message from anyone) for at least this long. */
-export const FOLLOWUP_MIN_HOURS_SINCE_CONTACT = 48;
+/** A conversation is a follow-up candidate once it's been quiet for at least
+ *  this long (12h allows leads who spoke yesterday to be prepared before the
+ *  start of the morning workday while excluding active live chats). */
+export const FOLLOWUP_MIN_HOURS_SINCE_CONTACT = 12;
+
+/** Minimum cooldown after a human team member (Ronaldo/Tatiana) sent an outbound
+ *  message without a subsequent customer reply, avoiding insistent duplicate nudges. */
+export const FOLLOWUP_RECENT_TEAM_CONTACT_COOLDOWN_HOURS = 12;
 
 /** Cap on how many candidates one cron run scores, so a large account
  *  with many stale conversations can't blow the run's time/cost budget

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { selectFollowupTemplate } from './followup-message';
+import {
+  buildDeterministicFollowupTemplateSelection,
+  doesTemplateSupportPublicUrl,
+  selectFollowupTemplate,
+} from './followup-message';
 import type { AiConfig } from './types';
 import type { MessageTemplate } from '@/types';
 
@@ -165,5 +169,48 @@ describe('selectFollowupTemplate', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse('not json')));
     const res = await selectFollowupTemplate(db, 'account-1', config(), args);
     expect(res.selection).toBeNull();
+  });
+
+  it('usa fallback determinístico quando allowDeterministicFallback=true e a IA falha ou retorna JSON inválido', async () => {
+    const tpl1Var = template({
+      id: 'tpl-1var',
+      name: 'retorno_novidades_portfolio',
+      body_text: 'Oi, {{1}}! Tudo bem? Consegui reunir algumas opções para você.',
+    });
+    const tpl2Var = template({
+      id: 'tpl-2var',
+      name: 'oportunidade_alinhada',
+      body_text: 'Oi, {{1}}! Apareceu algo bem alinhado com {{2}}. Me chama aqui.',
+    });
+    const db = fakeDb([tpl1Var, tpl2Var]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse('invalid json output')));
+
+    // Com imóvel selecionado -> prioriza template de 2 variáveis preenchendo nome e contexto do imóvel
+    const withProp = await selectFollowupTemplate(db, 'account-1', config(), {
+      ...args,
+      allowDeterministicFallback: true,
+      selectedProperty: {
+        propertyId: 'prop-1',
+        title: 'Mahal Bessa',
+        neighborhood: 'Bessa',
+        propertyType: 'Studio',
+        publicUrl: 'https://ronaldomeira.com.br/imovel/dev-mahal',
+      },
+    });
+    expect(withProp.selection).not.toBeNull();
+    expect(withProp.selection?.template.id).toBe('tpl-2var');
+    expect(withProp.selection?.values.body[0]).toBe('Maria');
+    expect(withProp.selection?.values.body[1]).toContain('Mahal Bessa');
+
+    // Sem empreendimento ou necessidade específica -> prioriza template de 1 variável (apenas nome)
+    const withoutTopic = buildDeterministicFollowupTemplateSelection([tpl1Var, tpl2Var], {
+      contactName: 'Carlos Eduardo',
+      reason: 'Lead parado há dias',
+      approachSummary: null,
+    });
+    expect(withoutTopic).not.toBeNull();
+    expect(withoutTopic?.template.id).toBe('tpl-1var');
+    expect(withoutTopic?.values.body).toEqual(['Carlos']);
+    expect(doesTemplateSupportPublicUrl(tpl1Var)).toBe(false);
   });
 });
