@@ -5,6 +5,12 @@ import { aiRequestTimeoutMs } from '@/lib/ai/defaults';
 import { generateOpenAi } from '@/lib/ai/providers/openai';
 import { generateAnthropic } from '@/lib/ai/providers/anthropic';
 import { generateDeepSeek } from '@/lib/ai/providers/deepseek';
+import { extractVariableIndices } from '@/lib/whatsapp/template-validators';
+import {
+  renderApprovedTemplatePreview,
+  validateApprovedTemplateSubmission,
+} from '@/lib/whatsapp/session-window';
+import type { MessageTemplate } from '@/types';
 import type { DeliveryStatus, PropertyOperation } from './types';
 
 export type TemplateAngleId =
@@ -64,6 +70,26 @@ export interface GeneratedMatchPropertyMessage {
   templateLabel: string;
   generatedBy: 'ai' | 'fallback';
   fallbackReason?: 'ai_unavailable' | 'ai_error' | 'empty_response';
+  usage: AiUsage | null;
+  usedHistoryCount: number;
+}
+
+export interface ApprovedMatchTemplateSelection {
+  template: MessageTemplate;
+  values: {
+    body: string[];
+    headerText?: string;
+  };
+  previewText: string;
+}
+
+export interface SelectApprovedMatchTemplateResult {
+  selection: ApprovedMatchTemplateSelection | null;
+  templateAngle: TemplateAngleId;
+  templateLabel: string;
+  generatedBy: 'ai' | 'fallback' | 'none';
+  noTemplateReason?: string;
+  availableApprovedTemplatesCount: number;
   usage: AiUsage | null;
   usedHistoryCount: number;
 }
@@ -526,4 +552,304 @@ export async function generateMatchPropertyMessage(args: {
       usedHistoryCount: messages.length,
     };
   }
+}
+
+const INCOMPATIBLE_ADMIN_TEMPLATE_PATTERN =
+  /\b(boleto|fatura|cobranca|cobrança|cancelamento|nota\s+fiscal|senha|codigo\s+de\s+verificacao|código\s+de\s+verificação|otp|2fa)\b/i;
+
+const PREFERRED_MATCH_TEMPLATE_NAMES = [
+  'oportunidade_alinhada',
+  'recomendacao_personalizada',
+  'retorno_busca_atualizada',
+  'aviso_de_novidade',
+  'retorno_de_busca',
+  'confirmacao_de_informacao',
+  'atualizacao_de_status',
+  'reativacao_de_contato',
+];
+
+function formatPropertyTypeLabel(rawType: string | null | undefined): string {
+  const norm = String(rawType || '').trim().toLowerCase();
+  if (!norm || norm === 'imovel' || norm === 'imóvel') return 'imóvel';
+  return norm;
+}
+
+function isReadyDelivery(status: DeliveryStatus | string | null | undefined): boolean {
+  return String(status || '').trim().toLowerCase() === 'pronto';
+}
+
+function isTemplateSuitableForMatchOutreach(template: MessageTemplate): boolean {
+  if (String(template.status || '').toUpperCase() !== 'APPROVED') return false;
+  if (String(template.category || '').toUpperCase() === 'AUTHENTICATION') return false;
+  const combinedText = `${template.name || ''} ${template.body_text || ''}`;
+  if (INCOMPATIBLE_ADMIN_TEMPLATE_PATTERN.test(combinedText)) return false;
+  return Boolean(template.body_text && template.body_text.trim());
+}
+
+function buildContextualTemplateSecondVar(
+  template: MessageTemplate,
+  ctx: SmartSendMatchContext
+): string {
+  const prop = ctx.property;
+  const typeLabel = formatPropertyTypeLabel(prop.propertyType);
+  const neighborhood = prop.neighborhood?.trim() || prop.city?.trim() || 'João Pessoa';
+  const bodyLower = (template.body_text || '').toLowerCase();
+
+  if (bodyLower.includes('lembrei de {{2}}')) {
+    return `você ao separar uma opção de ${typeLabel} em ${neighborhood}`;
+  }
+  if (bodyLower.includes('alinhado com {{2}}')) {
+    return `o que você procura em ${neighborhood} (${typeLabel})`;
+  }
+  if (
+    bodyLower.includes('perfil de {{2}}') ||
+    bodyLower.includes('busca por {{2}}') ||
+    bodyLower.includes('conversa sobre {{2}}')
+  ) {
+    return `${typeLabel} em ${neighborhood}`;
+  }
+  return `uma oportunidade de ${typeLabel} em ${neighborhood}`;
+}
+
+export function buildDeterministicApprovedTemplateSelection(
+  eligibleTemplates: MessageTemplate[],
+  ctx: SmartSendMatchContext
+): ApprovedMatchTemplateSelection | null {
+  if (eligibleTemplates.length === 0) return null;
+
+  const ranked = [...eligibleTemplates].sort((a, b) => {
+    const idxA = PREFERRED_MATCH_TEMPLATE_NAMES.indexOf(a.name);
+    const idxB = PREFERRED_MATCH_TEMPLATE_NAMES.indexOf(b.name);
+    const rankA = idxA === -1 ? 999 : idxA;
+    const rankB = idxB === -1 ? 999 : idxB;
+    if (rankA !== rankB) return rankA - rankB;
+    return a.name.localeCompare(b.name);
+  });
+
+  const firstName = sanitizeFirstName(ctx.lead.leadName) || 'tudo bem';
+  const prop = ctx.property;
+  const typeLabel = formatPropertyTypeLabel(prop.propertyType);
+  const neighborhood = prop.neighborhood?.trim() || prop.city?.trim() || 'João Pessoa';
+
+  for (const template of ranked) {
+    const bodyVarIndices = extractVariableIndices(template.body_text);
+    const bodyValues: string[] = bodyVarIndices.map((varIdx) => {
+      if (varIdx === 1) return firstName;
+      if (varIdx === 2) return buildContextualTemplateSecondVar(template, ctx);
+      if (varIdx === 3) return ctx.publicUrl || `${typeLabel} em ${neighborhood}`;
+      return `${typeLabel} em ${neighborhood}`;
+    });
+
+    const headerVarIndices =
+      String(template.header_type || '').toLowerCase() === 'text' && template.header_content
+        ? extractVariableIndices(template.header_content)
+        : [];
+    const headerText =
+      headerVarIndices.length > 0 ? prop.title?.trim() || firstName : undefined;
+
+    const check = validateApprovedTemplateSubmission(template, bodyValues, headerText);
+    if (!check.valid) continue;
+
+    return {
+      template,
+      values: {
+        body: bodyValues,
+        ...(headerText ? { headerText } : {}),
+      },
+      previewText: renderApprovedTemplatePreview(template.body_text, bodyValues),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Seleciona e preenche um template APROVADO (`status = 'APPROVED'`) da conta para
+ * apresentação de imóvel compatível quando a janela de 24 horas do WhatsApp está encerrada.
+ *
+ * Regras estritas:
+ * - Nunca inventa nem altera o texto fixo do template aprovado.
+ * - Preenche exclusivamente as variáveis `{{1}}..{{N}}` existentes no template.
+ * - Respeita as diretrizes comerciais da Clara (não expõe preço nem construtora de imóvel na planta/em obra).
+ * - Se não houver template aprovado compatível, retorna `selection: null` com `noTemplateReason`.
+ */
+export async function selectApprovedMatchTemplate(args: {
+  db: SupabaseClient;
+  accountId: string;
+  config: AiConfig | null;
+  conversationId: string;
+  context: SmartSendMatchContext;
+  historyLimit?: number;
+}): Promise<SelectApprovedMatchTemplateResult> {
+  const { db, accountId, config, conversationId, context, historyLimit = 10 } = args;
+
+  let messages: ChatMessage[] = [];
+  try {
+    messages = await buildConversationContext(db, conversationId, historyLimit);
+  } catch {
+    messages = [];
+  }
+
+  const angle = selectCommercialTemplateAngle(context, messages);
+
+  const { data: templateRows, error } = await db
+    .from('message_templates')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('status', 'APPROVED');
+
+  const allApproved = ((error ? [] : templateRows || []) as MessageTemplate[]).filter(
+    (t) => String(t.status || '').toUpperCase() === 'APPROVED'
+  );
+
+  if (allApproved.length === 0) {
+    return {
+      selection: null,
+      templateAngle: angle.id,
+      templateLabel: angle.label,
+      generatedBy: 'none',
+      noTemplateReason:
+        'A janela de atendimento de 24 horas está encerrada e a conta não possui nenhum template aprovado pela Meta disponível para envio.',
+      availableApprovedTemplatesCount: 0,
+      usage: null,
+      usedHistoryCount: messages.length,
+    };
+  }
+
+  const eligibleTemplates = allApproved.filter(isTemplateSuitableForMatchOutreach);
+  if (eligibleTemplates.length === 0) {
+    return {
+      selection: null,
+      templateAngle: angle.id,
+      templateLabel: angle.label,
+      generatedBy: 'none',
+      noTemplateReason:
+        'A janela de atendimento de 24 horas está encerrada e não há nenhum template aprovado compatível com a apresentação comercial de imóvel.',
+      availableApprovedTemplatesCount: allApproved.length,
+      usage: null,
+      usedHistoryCount: messages.length,
+    };
+  }
+
+  if (config) {
+    try {
+      const catalog = eligibleTemplates.map((t) => ({
+        id: t.id,
+        name: t.name,
+        category: t.category,
+        language: t.language,
+        body_text: t.body_text,
+        body_variables_count: extractVariableIndices(t.body_text).length,
+        header_text:
+          String(t.header_type || '').toLowerCase() === 'text' ? t.header_content : undefined,
+      }));
+
+      const ready = isReadyDelivery(context.property.deliveryStatus);
+      const systemPrompt = [
+        'Você é a assistente comercial Clara, do corretor imobiliário Ronaldo Meira em João Pessoa/PB.',
+        'A janela de 24 horas do WhatsApp para esta conversa está ENCERRADA. Pela política oficial do WhatsApp Cloud API, NÃO é permitido texto livre: você deve escolher o template aprovado mais adequado da lista abaixo e preencher SOMENTE as variáveis {{1}}..{{N}} dele.',
+        'REGRAS INEGOCIÁVEIS:',
+        '1. NUNCA altere o texto fixo do template. Você retorna apenas o template_id escolhido e o array body_values correspondente a cada {{N}} na ordem 1..N.',
+        '2. As variáveis preenchidas devem se encaixar gramaticalmente de forma natural após as palavras fixas do template (ex.: após "alinhado com {{2}}" use algo como "o que você busca no Bessa"; após "sobre {{2}}" use "apartamento no Bessa").',
+        ready
+          ? '3. O imóvel está pronto para morar. Ainda assim, mantenha as variáveis concisas e elegantes.'
+          : '3. O imóvel NÃO está pronto (na planta/em construção): é PROIBIDO colocar preço ou nome de construtora dentro das variáveis do template.',
+        '4. Se nenhum template da lista for minimamente compatível com a abordagem comercial imobiliária, retorne {"template_id": null, "body_values": []}.',
+        `Templates aprovados disponíveis:\n${JSON.stringify(catalog, null, 2)}`,
+        'Responda APENAS com um objeto JSON válido, sem markdown:\n{"template_id": "string|null", "body_values": ["string"], "header_value": "string|null"}',
+      ].join('\n\n');
+
+      const firstName = sanitizeFirstName(context.lead.leadName) || context.lead.leadName || 'Cliente';
+      const userPrompt = [
+        `Cliente: ${firstName}`,
+        `Ângulo comercial: ${angle.label} — ${angle.guidance}`,
+        `Imóvel: ${context.property.title} (${formatPropertyTypeLabel(context.property.propertyType)} em ${context.property.neighborhood || context.property.city || 'João Pessoa'})`,
+        context.matchReasons?.length
+          ? `Motivos do Match: ${context.matchReasons.slice(0, 3).join('; ')}`
+          : null,
+        messages.length > 0
+          ? `Últimas mensagens:\n${formatConversationTranscript(messages.slice(-6))}`
+          : 'Sem histórico recente na conversa.',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const res = await callConfiguredProvider(config, systemPrompt, userPrompt);
+      const stripped = (res.text || '')
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim();
+      const parsed = JSON.parse(stripped) as {
+        template_id?: unknown;
+        body_values?: unknown;
+        header_value?: unknown;
+      };
+
+      const chosen = eligibleTemplates.find((t) => t.id === parsed.template_id);
+      if (chosen) {
+        const bodyVars = extractVariableIndices(chosen.body_text);
+        const rawValues = Array.isArray(parsed.body_values)
+          ? parsed.body_values.map((v) => (typeof v === 'string' ? v.trim() : ''))
+          : [];
+        const headerVarCount =
+          String(chosen.header_type || '').toLowerCase() === 'text' && chosen.header_content
+            ? extractVariableIndices(chosen.header_content).length
+            : 0;
+        const headerVal =
+          typeof parsed.header_value === 'string' && parsed.header_value.trim()
+            ? parsed.header_value.trim()
+            : headerVarCount > 0
+              ? context.property.title
+              : undefined;
+
+        const check = validateApprovedTemplateSubmission(chosen, rawValues, headerVal);
+        if (rawValues.length === bodyVars.length && check.valid) {
+          return {
+            selection: {
+              template: chosen,
+              values: {
+                body: rawValues,
+                ...(headerVal ? { headerText: headerVal } : {}),
+              },
+              previewText: renderApprovedTemplatePreview(chosen.body_text, rawValues),
+            },
+            templateAngle: angle.id,
+            templateLabel: angle.label,
+            generatedBy: 'ai',
+            availableApprovedTemplatesCount: allApproved.length,
+            usage: res.usage,
+            usedHistoryCount: messages.length,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[match/smart-send] Fallback determinístico na seleção de template aprovado:', err);
+    }
+  }
+
+  const fallbackSelection = buildDeterministicApprovedTemplateSelection(eligibleTemplates, context);
+  if (!fallbackSelection) {
+    return {
+      selection: null,
+      templateAngle: angle.id,
+      templateLabel: angle.label,
+      generatedBy: 'none',
+      noTemplateReason:
+        'A janela de atendimento de 24 horas está encerrada e não foi possível preencher um template aprovado compatível.',
+      availableApprovedTemplatesCount: allApproved.length,
+      usage: null,
+      usedHistoryCount: messages.length,
+    };
+  }
+
+  return {
+    selection: fallbackSelection,
+    templateAngle: angle.id,
+    templateLabel: angle.label,
+    generatedBy: 'fallback',
+    availableApprovedTemplatesCount: allApproved.length,
+    usage: null,
+    usedHistoryCount: messages.length,
+  };
 }

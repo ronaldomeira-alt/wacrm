@@ -16,13 +16,14 @@ const matchStatusUpdates: Array<Record<string, unknown>> = []
 // Toggles for the per-test scenario.
 let existingConversation: Record<string, unknown> | null = null
 let contactRow: Record<string, unknown> | null = null
-// The caller's role, as `requireRole` reads it off the profile. Sending
-// requires 'agent'; 'viewer' must be refused before anything reaches Meta.
 let callerRole: string = 'admin'
-// A conversation created during the request becomes retrievable by id —
-// the shared send core re-loads the conversation (with its contact) from
-// just the id, so the mock must model insert-then-select-by-id.
 let createdConversation: Record<string, unknown> | null = null
+let latestCustomerMessage: Record<string, unknown> | null = {
+  id: 'cust-msg-1',
+  sender_type: 'customer',
+  created_at: new Date().toISOString(),
+}
+let templateRowMock: Record<string, unknown> | null = null
 
 const CONTACT = {
   id: 'contact-1',
@@ -63,7 +64,9 @@ function makeSupabaseMock() {
             error: null,
           }
         case 'message_templates':
-          return { data: null, error: null }
+          return { data: templateRowMock, error: null }
+        case 'messages':
+          return { data: latestCustomerMessage, error: null }
         case 'lead_property_matches':
           return { data: { id: 'match-1', match_score: 94, score_breakdown: {} }, error: null }
         default:
@@ -346,9 +349,17 @@ describe('POST /api/whatsapp/send — match_share_context confirmation', () => {
     createdConversation = null
     contactRow = CONTACT
     callerRole = 'agent'
+    latestCustomerMessage = {
+      id: 'cust-msg-1',
+      sender_type: 'customer',
+      created_at: new Date().toISOString(),
+    }
+    templateRowMock = null
     supabaseMock = makeSupabaseMock()
     sendTextMessage.mockReset()
     sendTextMessage.mockResolvedValue({ messageId: 'wamid-text-1' })
+    sendTemplateMessage.mockReset()
+    sendTemplateMessage.mockResolvedValue({ messageId: 'wamid-tpl-1' })
   })
 
   afterEach(() => {
@@ -408,5 +419,127 @@ describe('POST /api/whatsapp/send — match_share_context confirmation', () => {
     expect(res.status).toBeGreaterThanOrEqual(400)
     expect(propertyShareInserts).toHaveLength(0)
     expect(matchStatusUpdates).toHaveLength(0)
+  })
+
+  it('rejects free-text send with 409 when 24h customer window is closed (expired between prep and send or direct API bypass attempt)', async () => {
+    latestCustomerMessage = {
+      id: 'cust-msg-old',
+      sender_type: 'customer',
+      created_at: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+    }
+
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'text',
+          content_text: 'Texto livre fora da janela de 24h',
+          match_share_context: {
+            match_id: 'match-1',
+            lead_id: 'contact-1',
+            property_id: '00000000-0000-0000-0000-000000000101',
+          },
+        }),
+      }),
+    )
+    const json = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(json.error).toMatch(/janela de atendimento de 24 horas/i)
+    expect(sendTextMessage).not.toHaveBeenCalled()
+    expect(propertyShareInserts).toHaveLength(0)
+    expect(matchStatusUpdates).toHaveLength(0)
+  })
+
+  it('allows approved template outside 24h window and records property_shares + marks match enviado after Meta confirms', async () => {
+    latestCustomerMessage = {
+      id: 'cust-msg-old',
+      sender_type: 'customer',
+      created_at: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    }
+    templateRowMock = {
+      id: 'tpl-1',
+      user_id: 'user-1',
+      account_id: 'acct-1',
+      name: 'oportunidade_alinhada',
+      language: 'pt_BR',
+      category: 'MARKETING',
+      status: 'APPROVED',
+      header_type: null,
+      header_content: null,
+      body_text: 'Oi, {{1}}! Tudo certo? Apareceu algo bem alinhado com {{2}}. Me chama aqui.',
+      footer_text: null,
+      buttons: [],
+      created_at: '2026-01-01T00:00:00Z',
+    }
+
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'template',
+          template_name: 'oportunidade_alinhada',
+          template_language: 'pt_BR',
+          template_message_params: {
+            body: ['Ana', 'o que você procura no Bessa (apartamento)'],
+          },
+          template_params: ['Ana', 'o que você procura no Bessa (apartamento)'],
+          content_text:
+            'Oi, Ana! Tudo certo? Apareceu algo bem alinhado com o que você procura no Bessa (apartamento). Me chama aqui.',
+          match_share_context: {
+            match_id: 'match-1',
+            lead_id: 'contact-1',
+            property_id: '00000000-0000-0000-0000-000000000101',
+          },
+        }),
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1)
+    expect(propertyShareInserts).toHaveLength(1)
+    expect(matchStatusUpdates.some((u) => u.match_status === 'enviado')).toBe(true)
+  })
+
+  it('rejects unapproved (REJECTED / PAUSED) template with 422 and never calls Meta', async () => {
+    templateRowMock = {
+      id: 'tpl-rejected',
+      user_id: 'user-1',
+      account_id: 'acct-1',
+      name: 'oportunidade_rejeitada',
+      language: 'pt_BR',
+      category: 'MARKETING',
+      status: 'REJECTED',
+      header_type: null,
+      header_content: null,
+      body_text: 'Oi {{1}}, veja {{2}}',
+      footer_text: null,
+      buttons: [],
+      created_at: '2026-01-01T00:00:00Z',
+    }
+
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'template',
+          template_name: 'oportunidade_rejeitada',
+          template_language: 'pt_BR',
+          template_message_params: { body: ['Ana', 'apartamento no Bessa'] },
+          template_params: ['Ana', 'apartamento no Bessa'],
+        }),
+      }),
+    )
+    const json = await res.json()
+
+    expect(res.status).toBe(422)
+    expect(json.error).toMatch(/não está aprovado/i)
+    expect(sendTemplateMessage).not.toHaveBeenCalled()
   })
 })

@@ -1,5 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { LeadSearchProfile, InfoProvenance, DeliveryStatus, PropertyOperation } from './types';
+import type {
+  LeadSearchProfile,
+  InfoProvenance,
+  DeliveryStatus,
+  LeadCommercialOperation,
+} from './types';
 
 export interface ContactRow {
   id: string;
@@ -104,11 +109,16 @@ export function buildProfileFromData(
     return 'conversation';
   };
 
-  // 1. Finalidade (resolvida antes da operação para diferenciar investidor de locatário)
+  // 1. Finalidade (agrega estado atual do summary + tags de Finalidade)
   const rawPurpose = Array.isArray(rawSummary.purpose)
     ? (rawSummary.purpose as unknown[]).map((p) => String(p))
     : [];
   const notesText = typeof rawSummary.notes === 'string' ? rawSummary.notes : '';
+  const stageSignalText = typeof rawSummary.stage_signal === 'string' ? rawSummary.stage_signal : '';
+  const intentText = typeof rawSummary.intent === 'string' ? rawSummary.intent : '';
+  const profileArrText = Array.isArray(rawSummary.profile)
+    ? (rawSummary.profile as unknown[]).map((p) => String(p)).join(' ')
+    : '';
 
   const purposeList = [...rawPurpose];
   const finalidadeTags = tagCategories['Finalidade'] || [];
@@ -118,48 +128,7 @@ export function buildProfileFromData(
     }
   }
 
-  const hasBuyerPurpose = purposeList.some((p) => {
-    const norm = normalizeString(p);
-    return (
-      norm.includes('invest') ||
-      norm.includes('moradia') ||
-      norm.includes('compra') ||
-      norm.includes('venda')
-    );
-  });
-
-  // 2. Operação (compra vs aluguel)
-  // Se o lead tem finalidade de Investimento ou Moradia, menções a "temporada" ou "locação"
-  // nas notas referem-se à rentabilidade do imóvel comprado (ex: flat para Airbnb), e NÃO que ele quer alugar.
-  let operation: PropertyOperation = 'venda';
-  let isShortStayOnly = false;
-
-  if (!hasBuyerPurpose) {
-    const wantsShortStay =
-      rawPurpose.some((p) => normalizeString(p).includes('temporada')) ||
-      (notesText.toLowerCase().includes('temporada') &&
-        !notesText.toLowerCase().includes('planta') &&
-        !notesText.toLowerCase().includes('invest'));
-
-    if (wantsShortStay) {
-      isShortStayOnly = true;
-    }
-
-    const wantsRentOnly =
-      rawPurpose.some((p) => {
-        const norm = normalizeString(p);
-        return norm.includes('aluguel') || norm.includes('loca');
-      }) ||
-      ((notesText.toLowerCase().includes('busca locação') ||
-        notesText.toLowerCase().includes('procura aluguel')) &&
-        !notesText.toLowerCase().includes('planta'));
-
-    if (wantsRentOnly) {
-      operation = 'locacao';
-    }
-  }
-
-  // 3. Tipologias
+  // 2. Tipologias
   const propertyTypes = Array.isArray(rawSummary.property_type)
     ? (rawSummary.property_type as unknown[]).map((t) => String(t))
     : [];
@@ -170,7 +139,7 @@ export function buildProfileFromData(
     }
   }
 
-  // 4. Localizações / Bairros
+  // 3. Localizações / Bairros
   const locations = Array.isArray(rawSummary.location)
     ? (rawSummary.location as unknown[]).map((l) => String(l))
     : [];
@@ -181,40 +150,80 @@ export function buildProfileFromData(
     }
   }
 
-  // 5. Preço (suporta number ou string numérica como "300000" / "R$ 450.000")
+  // 4. Preço (suporta number, string numérica ou faixas como "Até 3000", "3.500-4.000", "300k-400k", "700k-1M")
+  const parsePriceRangeTag = (rawText: string): { min: number | null; max: number | null } => {
+    const norm = normalizeString(rawText);
+    const parsedValues: number[] = [];
+    const tokenRegex = /(\d+(?:\.\d{3})+|\d+(?:,\d+)?)\s*(m\b|milhao|milhoes|k\b|mil\b)?/gi;
+    let m: RegExpExecArray | null;
+    while ((m = tokenRegex.exec(norm)) !== null) {
+      const rawNum = m[1].replace(/\./g, '').replace(',', '.');
+      const unit = (m[2] || '').toLowerCase();
+      let val = Number(rawNum);
+      if (Number.isNaN(val) || val <= 0) continue;
+      if (unit.startsWith('m') && unit !== 'mil') {
+        val *= 1_000_000;
+      } else if (unit === 'k' || unit === 'mil') {
+        val *= 1_000;
+      } else if (val < 1500) {
+        val *= 1_000;
+      }
+      parsedValues.push(Math.round(val));
+    }
+    if (parsedValues.length === 0) return { min: null, max: null };
+    if (norm.includes('acima de')) {
+      return { min: parsedValues[0], max: null };
+    }
+    if (parsedValues.length === 1) {
+      return { min: null, max: parsedValues[0] };
+    }
+    return { min: parsedValues[0], max: parsedValues[parsedValues.length - 1] };
+  };
+
   const parsePriceValue = (val: unknown): number | null => {
     if (typeof val === 'number' && !Number.isNaN(val) && val > 0) {
-      return val < 2000 ? val * 1000 : val;
+      return val < 1500 ? val * 1000 : val;
     }
     if (typeof val === 'string' && val.trim() !== '') {
+      const rangeParsed = parsePriceRangeTag(val);
+      if (rangeParsed.max !== null) return rangeParsed.max;
+      if (rangeParsed.min !== null) return rangeParsed.min;
       const cleaned = val.replace(/[R$\s.]/g, '').replace(',', '.');
       const num = Number(cleaned);
       if (!Number.isNaN(num) && num > 0) {
-        return num < 2000 ? num * 1000 : num;
+        return num < 1500 ? num * 1000 : num;
       }
     }
     return null;
   };
 
-  const priceMin = parsePriceValue(rawSummary.price_min);
+  let priceMin = parsePriceValue(rawSummary.price_min);
   let priceMax = parsePriceValue(rawSummary.price_max);
   const priceFlexMax = parsePriceValue(rawSummary.price_flex_max);
 
   // Extrai de tag 'Faixa de valor' se não estiver no summary
-  if (priceMax === null) {
-    const valorTags = tagCategories['Faixa de valor'] || [];
-    for (const vt of valorTags) {
-      for (const name of vt.names) {
-        const numbers = name.replace(/\./g, '').match(/\d+/g);
-        if (numbers && numbers.length > 0) {
-          const parsed = parseInt(numbers[numbers.length - 1], 10);
-          if (parsed > 0) priceMax = parsed < 2000 ? parsed * 1000 : parsed;
-        }
+  const valorTags = tagCategories['Faixa de valor'] || [];
+  let hasRentalValueTag = false;
+  let hasPurchaseValueTag = false;
+  for (const vt of valorTags) {
+    for (const name of vt.names) {
+      const parsed = parsePriceRangeTag(name);
+      if (parsed.max !== null && parsed.max > 0 && parsed.max <= 15000) {
+        hasRentalValueTag = true;
+      }
+      if ((parsed.max !== null && parsed.max >= 50000) || (parsed.min !== null && parsed.min >= 50000)) {
+        hasPurchaseValueTag = true;
+      }
+      if (priceMax === null && parsed.max !== null) {
+        priceMax = parsed.max;
+      }
+      if (priceMin === null && parsed.min !== null) {
+        priceMin = parsed.min;
       }
     }
   }
 
-  // 6. Quartos (suporta number ou string como "2" / "2 quartos")
+  // 5. Quartos (suporta number ou string como "2" / "2 quartos")
   const bedrooms: number[] = [];
   if (Array.isArray(rawSummary.bedrooms)) {
     for (const item of rawSummary.bedrooms) {
@@ -240,7 +249,7 @@ export function buildProfileFromData(
     }
   }
 
-  // 7. Pronto / Planta
+  // 6. Pronto / Planta / Em construção
   const deliveryStatus: DeliveryStatus[] = [];
   const statusTags = tagCategories['Status'] || [];
   const allStatusTexts = [
@@ -250,9 +259,191 @@ export function buildProfileFromData(
   ].map((t) => t.toLowerCase());
 
   if (allStatusTexts.some((t) => t.includes('pronto'))) deliveryStatus.push('pronto');
-  if (allStatusTexts.some((t) => t.includes('planta'))) deliveryStatus.push('planta');
+  if (allStatusTexts.some((t) => t.includes('planta') || t.includes('lancamento') || t.includes('lançamento'))) {
+    deliveryStatus.push('planta');
+  }
   if (allStatusTexts.some((t) => t.includes('constru') || t.includes('obra'))) {
     deliveryStatus.push('em_construcao');
+  }
+
+  // 7. Classificação estrita de Modalidade Comercial (compra/venda vs locação vs indefinido)
+  // Regra de negócio WACRM: O catálogo do Match é exclusivo de VENDA.
+  // - Clientes de locação são inelegíveis (critério eliminatório).
+  // - Clientes sem intenção comercial definida ('indefinido') não são tratados automaticamente como compradores.
+  // - 'Moradia' isolada define uso habitacional (pode ser compra ou aluguel) e é confrontada com todos os sinais de locação.
+  // - Mudança recente para locação prevalece sobre intenção antiga de compra.
+  const rawOperationField =
+    typeof rawSummary.operation === 'string'
+      ? normalizeString(rawSummary.operation)
+      : typeof rawSummary.modalidade === 'string'
+        ? normalizeString(rawSummary.modalidade)
+        : '';
+
+  const summaryPurposes = rawPurpose.map(normalizeString);
+  const tagPurposes = finalidadeTags.flatMap((ft) => ft.names).map(normalizeString);
+  const allPurposes = purposeList.map(normalizeString);
+
+  const notesNorm = normalizeString(
+    [notesText, stageSignalText, intentText, profileArrText].filter(Boolean).join(' ')
+  );
+  const ctwaNorm = normalizeString(
+    [
+      typeof ctwaReferral?.headline === 'string' ? ctwaReferral.headline : '',
+      typeof ctwaReferral?.body === 'string' ? ctwaReferral.body : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
+
+  const hasRentalBudget =
+    (priceMax !== null && priceMax > 0 && priceMax <= 15000) || hasRentalValueTag;
+  const hasPurchaseBudget =
+    (priceMax !== null && priceMax >= 50000) ||
+    (priceMin !== null && priceMin >= 50000) ||
+    hasPurchaseValueTag;
+
+  const summaryHasInvestment = summaryPurposes.some((p) => p.includes('invest'));
+  const summaryHasExplicitPurchase = summaryPurposes.some(
+    (p) => p.includes('compra') || p.includes('venda') || p.includes('aquisicao')
+  );
+  const summaryHasRental = summaryPurposes.some(
+    (p) =>
+      (p.includes('locacao') || p.includes('aluguel') || p.includes('alugar') || p.includes('temporada')) &&
+      !p.includes('invest')
+  );
+
+  const tagsHaveInvestment = tagPurposes.some((p) => p.includes('invest'));
+  const tagsHaveExplicitPurchase = tagPurposes.some(
+    (p) => p.includes('compra') || p.includes('venda') || p.includes('aquisicao')
+  );
+  const tagsHaveRental = tagPurposes.some(
+    (p) =>
+      (p.includes('locacao') || p.includes('aluguel') || p.includes('alugar') || p.includes('temporada')) &&
+      !p.includes('invest')
+  );
+
+  const hasInvestmentPurpose = summaryHasInvestment || tagsHaveInvestment;
+  // Se o summary consolidado atual tem apenas locação (e não tem compra/investimento),
+  // uma tag legada de 'Compra' não prevalece sobre o estado atual da conversa.
+  const latestSummaryOverridesStalePurchaseTag =
+    summaryHasRental && !summaryHasInvestment && !summaryHasExplicitPurchase;
+  const hasExplicitPurchasePurpose =
+    summaryHasExplicitPurchase || (tagsHaveExplicitPurchase && !latestSummaryOverridesStalePurchaseTag);
+  const hasRentalPurpose = summaryHasRental || tagsHaveRental;
+
+  // Menções a locação em contexto de compra para investimento (rentabilidade Airbnb/Stay) ou "sair do aluguel"
+  const isInvestmentOrExitRentMention =
+    /\b(sair\s+do\s+aluguel|retorno\s+com\s+locacao|renda\s+por\s+locacao|renda\s+com\s+locacao|investir\s+com\s+locacao|investir\s+em\s+aluguel|investimento\/locacao|deixar\s+em\s+locacao|colocar\s+para\s+alugar|rentabilidade|gestao\s+via\s+stay|locacao\s+por\s+temporada\s+[^.;]*nao\s+foi\s+confirmad)\b/.test(
+      notesNorm
+    ) ||
+    (hasInvestmentPurpose &&
+      !hasRentalBudget &&
+      /\b(locacao\s+por\s+temporada|aluguel\s+por\s+temporada|investidor)\b/.test(notesNorm));
+
+  // Sinais explícitos de transição recente para locação ou busca exclusiva de aluguel nas notas da conversa
+  const notesIndicateRentalPivot =
+    !isInvestmentOrExitRentMention &&
+    /\b(depois\s+perguntou\s+por\s+[^.;]*(aluguel|locacao)|passou\s+a\s+buscar\s+[^.;]*(aluguel|locacao)|agora\s+busca\s+[^.;]*(aluguel|locacao)|ultima\s+pergunta\s+foi\s+sobre\s+locacao|mudou\s+para\s+(aluguel|locacao)|so\s+tem\s+interesse\s+em\s+(aluguel|locacao)|apenas\s+para\s+(aluguel|locacao)|somente\s+(aluguel|locacao)|so\s+para\s+locacao|locacao\s+anual|contrato\s+anual|12\s+meses|processo\s+de\s+aluguel|forma\s+da\s+locacao|condicoes\s+para\s+locacao|ninguem\s+alugue\s+antes|orcamento\s+considerado:\s*aluguel|busca\s+locacao|procura\s+aluguel|quer\s+alugar|locatario\s+interessado)\b/.test(
+      notesNorm
+    );
+
+  const notesMentionRental =
+    !isInvestmentOrExitRentMention &&
+    (notesIndicateRentalPivot ||
+      /\b(locacao|aluguel|alugar|locatario)\b|\/\s*mes\b|\bpor\s+mes\b|\bmensal\b/.test(notesNorm));
+
+  const notesConfirmPurchase =
+    !notesIndicateRentalPivot &&
+    (/\b(compra|comprar|comprador|aquisicao|investimento|investir|investidor|financiamento|financiar|fgts|condicoes\s+de\s+pagamento|entrada\s+e\s+parcelas|sair\s+do\s+aluguel|pre-lancamento|na\s+planta|em\s+construcao|repasse|avant\s+home|live\s+park|vela\s+e\s+mar|mahal|toscano\s+flat)\b/.test(
+      notesNorm
+    ) ||
+      /\b[1-9]\d{2}\s*(mil|\.000)\b/.test(notesNorm) ||
+      isInvestmentOrExitRentMention);
+
+  const ctwaHasSaleMarkers =
+    /\b(pre-lancamento|lancamento|em\s+construcao|na\s+planta|venda|compra|financiamento|investir\s+em\s+aluguel|investir\s+com\s+locacao)\b/.test(
+      ctwaNorm
+    ) || /\b[1-9]\d{2}\s*(mil|\.000)\b/.test(ctwaNorm);
+
+  const ctwaIsRental =
+    /\/\s*mes\b|\bpor\s+mes\b|\bmensal\b|\blocacao\s+anual\b|\bso\s+locacao\b|\bsomente\s+locacao\b/.test(
+      ctwaNorm
+    ) ||
+    (!ctwaHasSaleMarkers && /\b(locacao|aluguel|alugar)\b/.test(ctwaNorm));
+
+  const ctwaIsSale = !ctwaIsRental && ctwaHasSaleMarkers;
+
+  const hasOffPlanDelivery =
+    deliveryStatus.includes('planta') || deliveryStatus.includes('em_construcao');
+
+  let isShortStayOnly = false;
+  if (!hasInvestmentPurpose && !hasExplicitPurchasePurpose && !hasPurchaseBudget && !hasOffPlanDelivery) {
+    const wantsShortStay =
+      allPurposes.some((p) => p.includes('temporada')) ||
+      (notesNorm.includes('temporada') && !isInvestmentOrExitRentMention);
+    if (wantsShortStay) {
+      isShortStayOnly = true;
+    }
+  }
+
+  let operation: LeadCommercialOperation = 'indefinido';
+
+  if (rawOperationField === 'locacao' || rawOperationField === 'aluguel') {
+    operation = 'locacao';
+  } else if (isShortStayOnly || hasRentalBudget || notesIndicateRentalPivot) {
+    operation = 'locacao';
+  } else if (hasRentalPurpose) {
+    if (hasInvestmentPurpose) {
+      // Investidor buscando imóvel para renda com locação por temporada
+      operation = 'venda';
+    } else if (hasExplicitPurchasePurpose) {
+      // Interesse simultâneo em compra e locação: só é elegível quando há evidência confiável de interesse atual em compra
+      if (
+        hasPurchaseBudget ||
+        hasOffPlanDelivery ||
+        notesConfirmPurchase ||
+        rawOperationField === 'venda' ||
+        rawOperationField === 'compra'
+      ) {
+        operation = 'venda';
+      } else if (notesMentionRental || ctwaIsRental) {
+        operation = 'locacao';
+      } else {
+        operation = 'indefinido';
+      }
+    } else {
+      operation = 'locacao';
+    }
+  } else if (
+    (ctwaIsRental || notesMentionRental) &&
+    !hasInvestmentPurpose &&
+    !hasExplicitPurchasePurpose &&
+    !hasPurchaseBudget &&
+    !hasOffPlanDelivery &&
+    !notesConfirmPurchase
+  ) {
+    operation = 'locacao';
+  } else if (
+    rawOperationField === 'venda' ||
+    rawOperationField === 'compra' ||
+    hasInvestmentPurpose ||
+    hasExplicitPurchasePurpose ||
+    hasPurchaseBudget ||
+    hasOffPlanDelivery ||
+    notesConfirmPurchase ||
+    ctwaIsSale
+  ) {
+    operation = 'venda';
+  } else if (
+    allPurposes.some((p) => p.includes('moradia')) &&
+    !ctwaIsRental &&
+    !notesMentionRental &&
+    !hasRentalPurpose &&
+    !hasRentalBudget
+  ) {
+    operation = 'venda';
+  } else {
+    operation = 'indefinido';
   }
 
   // 8. Requisitos obrigatórios vs Preferências

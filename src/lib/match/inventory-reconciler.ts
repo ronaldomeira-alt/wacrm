@@ -153,7 +153,9 @@ export function inventoryRowToProjectionRow(
   const developmentWithoutUnits = Boolean(raw.is_development && (!hasUnitInventory || !hasAvailableUnit));
   const unitInventoryExhausted = Boolean(!raw.is_development && hasUnitInventory && !hasAvailableUnit);
 
+  // Regra de negócio: o catálogo do Match é exclusivo de VENDA.
   const isAtivo =
+    operation === 'venda' &&
     !isVendido &&
     !isArquivado &&
     !isInativo &&

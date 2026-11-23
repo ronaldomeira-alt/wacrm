@@ -2906,8 +2906,11 @@ export function MessageThread({
       onNewMessage(optimisticMsg);
       scrollToBottom(true);
 
-      const followupSuggestionId = followupPrimeRef.current?.suggestionId;
+      const activePrime = followupPrimeRef.current;
+      const followupSuggestionId = activePrime?.suggestionId;
+      const matchSharePrime = activePrime?.matchShare;
       setFollowupPrime(null);
+      followupPrimeRef.current = null;
       setFollowupTemplateSelection(null);
 
       try {
@@ -2933,6 +2936,15 @@ export function MessageThread({
             ...(followupSuggestionId
               ? { followup_suggestion_id: followupSuggestionId }
               : {}),
+            ...(matchSharePrime
+              ? {
+                  match_share_context: {
+                    match_id: matchSharePrime.matchId || null,
+                    lead_id: matchSharePrime.leadId,
+                    property_id: matchSharePrime.propertyId,
+                  },
+                }
+              : {}),
           }),
         });
 
@@ -2943,6 +2955,10 @@ export function MessageThread({
           console.error('Failed to send template:', reason);
           toast.error(`Failed to send template: ${reason}`);
           onUpdateMessage(tempId, { status: 'failed' });
+          if (activePrime) {
+            setFollowupPrime(activePrime);
+            followupPrimeRef.current = activePrime;
+          }
           return;
         }
 
@@ -2952,6 +2968,10 @@ export function MessageThread({
         const reason = err instanceof Error ? err.message : 'network error';
         toast.error(`Failed to send template: ${reason}`);
         onUpdateMessage(tempId, { status: 'failed' });
+        if (activePrime) {
+          setFollowupPrime(activePrime);
+          followupPrimeRef.current = activePrime;
+        }
       }
     },
     [conversation, onNewMessage, onUpdateMessage, user?.id, scrollToBottom]
@@ -3794,35 +3814,89 @@ export function MessageThread({
       {followupPrime?.matchShare && (
         <div
           data-match-draft-banner
-          className="border-t border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 flex flex-wrap items-center justify-between gap-2"
+          data-match-draft-mode={followupPrime.mode}
+          className={cn(
+            'border-t px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2',
+            followupPrime.mode === 'no_template' ||
+              (followupPrime.mode === 'free' && sessionInfo.expired)
+              ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+              : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+          )}
         >
-          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-            <Building2 className="size-3.5 text-emerald-400 shrink-0" />
-            <span className="truncate">
-              Mensagem preparada para{' '}
-              <strong className="font-semibold text-foreground">
-                {followupPrime.matchShare.propertyTitle}
-              </strong>{' '}
-              — revise antes de enviar.
-            </span>
-            {followupPrime.matchShare.alreadySentBefore && (
-              <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300 shrink-0">
-                Já apresentado antes
-              </span>
+          <div className="flex flex-col gap-1 min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+              <Building2
+                className={cn(
+                  'size-3.5 shrink-0',
+                  followupPrime.mode === 'no_template' ||
+                    (followupPrime.mode === 'free' && sessionInfo.expired)
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                )}
+              />
+              {followupPrime.mode === 'template' ? (
+                <span className="truncate">
+                  Janela de 24h encerrada — template aprovado{' '}
+                  <strong className="font-semibold text-foreground">
+                    {followupPrime.templateName || 'selecionado'}
+                  </strong>{' '}
+                  preparado para{' '}
+                  <strong className="font-semibold text-foreground">
+                    {followupPrime.matchShare.propertyTitle}
+                  </strong>
+                  . Revise as variáveis antes de enviar.
+                </span>
+              ) : followupPrime.mode === 'no_template' ? (
+                <span>
+                  {followupPrime.noTemplateReason ||
+                    'Janela de 24 horas encerrada e não há template aprovado compatível disponível para este envio.'}{' '}
+                  Você pode escolher manualmente outro template aprovado ou cadastrar um novo em Configurações.
+                </span>
+              ) : sessionInfo.expired ? (
+                <span>
+                  A janela de atendimento de 24 horas está encerrada para{' '}
+                  <strong className="font-semibold text-foreground">
+                    {followupPrime.matchShare.propertyTitle}
+                  </strong>
+                  . Pela política oficial do WhatsApp, utilize um template aprovado para retomar o contato.
+                </span>
+              ) : (
+                <span className="truncate">
+                  Mensagem preparada para{' '}
+                  <strong className="font-semibold text-foreground">
+                    {followupPrime.matchShare.propertyTitle}
+                  </strong>{' '}
+                  — revise antes de enviar.
+                </span>
+              )}
+              {followupPrime.matchShare.alreadySentBefore && (
+                <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300 shrink-0">
+                  Já apresentado antes
+                </span>
+              )}
+            </div>
+            {followupPrime.mode === 'template' && followupPrime.previewText && (
+              <p
+                data-match-template-preview
+                className="text-[11px] text-muted-foreground line-clamp-2 italic pl-5"
+              >
+                &ldquo;{followupPrime.previewText}&rdquo;
+              </p>
             )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {sessionInfo.expired && followupPrime.text && (
+            {(followupPrime.mode === 'template' ||
+              followupPrime.mode === 'no_template' ||
+              sessionInfo.expired) && (
               <button
                 type="button"
-                onClick={() => {
-                  navigator.clipboard?.writeText(followupPrime.text || '');
-                  toast.success('Mensagem preparada copiada!');
-                }}
-                className="inline-flex items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/25 transition-colors"
+                data-match-review-template-btn
+                onClick={() => setTemplateModalOpen(true)}
+                className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/15 px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-primary/25 transition-colors"
               >
-                <Copy className="size-3" />
-                Copiar texto
+                {followupPrime.mode === 'template'
+                  ? 'Revisar variáveis e enviar'
+                  : 'Escolher template aprovado'}
               </button>
             )}
             <button
@@ -3831,6 +3905,7 @@ export function MessageThread({
               onClick={() => {
                 setFollowupPrime(null);
                 followupPrimeRef.current = null;
+                setFollowupTemplateSelection(null);
               }}
               className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
             >
@@ -3852,7 +3927,9 @@ export function MessageThread({
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
         initialText={
-          followupPrime?.mode === 'free' ? followupPrime.text : undefined
+          followupPrime?.mode === 'free' && !sessionInfo.expired
+            ? followupPrime.text
+            : undefined
         }
         pdfPreviewContainerRef={messagesAreaRef}
       />
@@ -3861,7 +3938,9 @@ export function MessageThread({
         open={templateModalOpen}
         onOpenChange={(open) => {
           setTemplateModalOpen(open);
-          if (!open) setFollowupTemplateSelection(null);
+          if (!open && followupPrimeRef.current?.mode !== 'template') {
+            setFollowupTemplateSelection(null);
+          }
         }}
         onSelect={handleSendTemplate}
         initialSelection={followupTemplateSelection}

@@ -2,13 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AiConfig, ChatMessage } from '@/lib/ai/types';
 import {
+  buildDeterministicApprovedTemplateSelection,
   buildMatchPropertyPrompts,
   ensurePublicUrlInDraft,
   generateMatchPropertyMessage,
   resolveValidatedPublicPropertyUrl,
+  selectApprovedMatchTemplate,
   selectCommercialTemplateAngle,
   type SmartSendMatchContext,
 } from './smart-send';
+import {
+  evaluateSessionWindowFromTimestamp,
+  renderApprovedTemplatePreview,
+  validateApprovedTemplateSubmission,
+} from '@/lib/whatsapp/session-window';
+import type { MessageTemplate } from '@/types';
 
 function makeConfig(overrides: Partial<AiConfig> = {}): AiConfig {
   return {
@@ -279,5 +287,120 @@ describe('generateMatchPropertyMessage', () => {
     const url = 'https://ronaldomeira.com.br/imovel/abc';
     const text = `Veja esse imóvel:\n${url}`;
     expect(ensurePublicUrlInDraft(text, url)).toBe(text);
+  });
+});
+
+describe('Regra de 24h e Seleção de Templates Aprovados do WhatsApp (Frente 2)', () => {
+  const nowMs = new Date('2026-11-22T22:00:00Z').getTime();
+
+  function makeTemplate(overrides: Partial<MessageTemplate> = {}): MessageTemplate {
+    return {
+      id: 'tpl-1',
+      user_id: 'user-1',
+      name: 'oportunidade_alinhada',
+      language: 'pt_BR',
+      category: 'Marketing',
+      status: 'APPROVED',
+      body_text:
+        'Oi, {{1}}! Tudo certo? Apareceu algo bem alinhado com {{2}}. Acho que vale você dar uma olhada. Me chama aqui.',
+      buttons: [],
+      created_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('calcula janela de 24h corretamente (aberta < 24h, encerrada >= 24h ou sem mensagem do cliente)', () => {
+    const openStatus = evaluateSessionWindowFromTimestamp('2026-11-22T10:00:00Z', nowMs);
+    expect(openStatus.windowOpen).toBe(true);
+    expect(openStatus.expired).toBe(false);
+
+    const exact24hStatus = evaluateSessionWindowFromTimestamp('2026-11-21T22:00:00Z', nowMs);
+    expect(exact24hStatus.windowOpen).toBe(false);
+    expect(exact24hStatus.expired).toBe(true);
+
+    const noCustomerMsgStatus = evaluateSessionWindowFromTimestamp(null, nowMs);
+    expect(noCustomerMsgStatus.windowOpen).toBe(false);
+    expect(noCustomerMsgStatus.expired).toBe(true);
+  });
+
+  it('preenche apenas as variáveis {{1}} e {{2}} sem jamais alterar o texto fixo do template aprovado', () => {
+    const tpl = makeTemplate();
+    const sel = buildDeterministicApprovedTemplateSelection([tpl], makeContext());
+
+    expect(sel).not.toBeNull();
+    expect(sel?.template.id).toBe('tpl-1');
+    expect(sel?.values.body).toEqual([
+      'Maria',
+      'o que você procura em Bessa (apartamento)',
+    ]);
+    expect(sel?.previewText).toBe(
+      'Oi, Maria! Tudo certo? Apareceu algo bem alinhado com o que você procura em Bessa (apartamento). Acho que vale você dar uma olhada. Me chama aqui.'
+    );
+  });
+
+  it('mantém texto fixo 100% inalterado quando o template aprovado não possui variáveis', () => {
+    const fixedTpl = makeTemplate({
+      id: 'tpl-fixed',
+      name: 'retorno_fixo',
+      body_text: 'Olá! Temos novidades no seu perfil de busca em João Pessoa. Me chame quando puder.',
+    });
+    const sel = buildDeterministicApprovedTemplateSelection([fixedTpl], makeContext());
+
+    expect(sel).not.toBeNull();
+    expect(sel?.values.body).toEqual([]);
+    expect(sel?.previewText).toBe(fixedTpl.body_text);
+    expect(renderApprovedTemplatePreview(fixedTpl.body_text, [])).toBe(fixedTpl.body_text);
+  });
+
+  it('rejeita templates com status REJECTED, PAUSED ou PENDING e templates com variáveis faltantes', () => {
+    const rejected = makeTemplate({ status: 'REJECTED' });
+    const paused = makeTemplate({ status: 'PAUSED' });
+    const pending = makeTemplate({ status: 'PENDING' });
+
+    expect(validateApprovedTemplateSubmission(rejected, ['Maria', 'Bessa']).valid).toBe(false);
+    expect(validateApprovedTemplateSubmission(paused, ['Maria', 'Bessa']).valid).toBe(false);
+    expect(validateApprovedTemplateSubmission(pending, ['Maria', 'Bessa']).valid).toBe(false);
+    expect(validateApprovedTemplateSubmission(makeTemplate(), ['Maria', '']).valid).toBe(false);
+  });
+
+  it('selectApprovedMatchTemplate ignora templates não aprovados/incompatíveis e retorna impedimento claro quando nenhum serve', async () => {
+    const fakeDb = {
+      from(table: string) {
+        const b: Record<string, unknown> = {};
+        const chain = () => b;
+        for (const m of ['select', 'eq', 'in', 'order', 'limit']) b[m] = vi.fn(chain);
+        b.then = (resolve: (val: unknown) => void) => {
+          if (table === 'message_templates') {
+            resolve({
+              data: [
+                makeTemplate({ id: 't-rej', status: 'REJECTED' }),
+                makeTemplate({
+                  id: 't-otp',
+                  category: 'Authentication',
+                  name: 'codigo_otp',
+                  body_text: 'Seu código de verificação é {{1}}',
+                }),
+              ],
+              error: null,
+            });
+          } else {
+            resolve({ data: [], error: null });
+          }
+        };
+        return b;
+      },
+    } as unknown as SupabaseClient;
+
+    const res = await selectApprovedMatchTemplate({
+      db: fakeDb,
+      accountId: 'acc-1',
+      config: null,
+      conversationId: 'conv-1',
+      context: makeContext(),
+    });
+
+    expect(res.selection).toBeNull();
+    expect(res.generatedBy).toBe('none');
+    expect(res.noTemplateReason).toMatch(/janela de atendimento de 24 horas está encerrada/i);
   });
 });

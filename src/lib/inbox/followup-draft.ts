@@ -24,12 +24,19 @@ export interface MatchShareDraftContext {
 
 export interface FollowupDraft {
   suggestionId?: string;
-  mode: 'free' | 'template';
+  mode: 'free' | 'template' | 'no_template';
   /** mode: 'free' */
   text?: string;
   /** mode: 'template' */
   templateId?: string;
+  templateName?: string;
+  templateLanguage?: string;
+  bodyText?: string;
+  previewText?: string;
   values?: { body: string[]; headerText?: string; buttonParams?: Record<number, string> };
+  /** mode: 'no_template' */
+  noTemplateReason?: string;
+  availableApprovedTemplatesCount?: number;
   /** Origem no módulo Match ("Enviar" no card do lead) */
   matchShare?: MatchShareDraftContext;
 }

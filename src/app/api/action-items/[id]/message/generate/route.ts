@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit
 import { loadAiConfig } from "@/lib/ai/config";
 import { generateFollowupFreeMessage, selectFollowupTemplate } from "@/lib/ai/followup-message";
 import { logAiUsage } from "@/lib/ai/usage";
+import { getConversationSessionStatus } from "@/lib/whatsapp/session-window";
 
 function bad(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
@@ -66,6 +67,35 @@ export async function POST(
     const reason = item.title;
     const approachSummary = item.description ?? null;
 
+    // Verifica a janela oficial de 24 horas do WhatsApp Cloud API para a conversa
+    const sessionStatus = await getConversationSessionStatus(supabase, item.conversation_id);
+
+    if (sessionStatus.windowOpen) {
+      // Janela de 24h aberta: permite rascunho em texto livre contextualizado
+      const { text, usage: freeUsage } = await generateFollowupFreeMessage({
+        db: supabase,
+        config,
+        conversationId: item.conversation_id,
+        contactName,
+        reason,
+        approachSummary,
+      });
+      void logAiUsage(supabase, {
+        accountId,
+        conversationId: item.conversation_id,
+        mode: "followup",
+        provider: config.provider,
+        model: config.model,
+        usage: freeUsage,
+      });
+
+      return NextResponse.json({
+        sessionWindowOpen: true,
+        draft: { mode: "free" as const, text },
+      });
+    }
+
+    // Janela de 24h encerrada: exige template aprovado da conta (nunca faz fallback para texto livre)
     const { selection, usage: templateUsage } = await selectFollowupTemplate(
       supabase,
       accountId,
@@ -83,6 +113,7 @@ export async function POST(
 
     if (selection) {
       return NextResponse.json({
+        sessionWindowOpen: false,
         draft: {
           mode: "template" as const,
           template_id: selection.template.id,
@@ -94,26 +125,14 @@ export async function POST(
       });
     }
 
-    // No approved template fit — fall back to a free-style draft so
-    // the corretor still has something to review instead of a dead end.
-    const { text, usage: freeUsage } = await generateFollowupFreeMessage({
-      db: supabase,
-      config,
-      conversationId: item.conversation_id,
-      contactName,
-      reason,
-      approachSummary,
+    return NextResponse.json({
+      sessionWindowOpen: false,
+      draft: {
+        mode: "no_template" as const,
+        reason:
+          "A janela de atendimento de 24 horas desta conversa está encerrada e nenhum template aprovado compatível foi encontrado para esta abordagem.",
+      },
     });
-    void logAiUsage(supabase, {
-      accountId,
-      conversationId: item.conversation_id,
-      mode: "followup",
-      provider: config.provider,
-      model: config.model,
-      usage: freeUsage,
-    });
-
-    return NextResponse.json({ draft: { mode: "free" as const, text } });
   } catch (err) {
     return toErrorResponse(err);
   }

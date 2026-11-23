@@ -45,6 +45,10 @@ type MessageDraft =
       bodyText: string;
       values: string[];
       headerText?: string;
+    }
+  | {
+      mode: "no_template";
+      reason: string;
     };
 
 interface ActionItemDetailSheetProps {
@@ -202,6 +206,13 @@ export function ActionItemDetailSheet({
         });
       } else if (d?.mode === "free") {
         setDraft({ mode: "free", text: d.text });
+      } else if (d?.mode === "no_template") {
+        setDraft({
+          mode: "no_template",
+          reason:
+            d.reason ||
+            "Janela de 24 horas encerrada e nenhum template aprovado compatível foi encontrado.",
+        });
       } else {
         toast.error(t("messageGenerateError"));
       }
@@ -223,7 +234,7 @@ export function ActionItemDetailSheet({
   // existing "o que aconteceu / próximo passo" flow — sending IS the
   // follow-up contact, so there's no separate "mark done" click needed.
   async function sendMessage() {
-    if (!item?.conversation_id || !draft) return;
+    if (!item?.conversation_id || !draft || draft.mode === "no_template") return;
     setSending(true);
     try {
       const body: Record<string, unknown> = {
@@ -381,7 +392,14 @@ export function ActionItemDetailSheet({
               ) : (
                 draft && (
                   <>
-                    {draft.mode === "free" ? (
+                    {draft.mode === "no_template" ? (
+                      <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-2.5 text-xs text-amber-200 space-y-1.5">
+                        <p>{draft.reason}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          Abra a conversa no Inbox para escolher outro template aprovado ou cadastre um novo template em Configurações.
+                        </p>
+                      </div>
+                    ) : draft.mode === "free" ? (
                       <Textarea
                         value={draft.text}
                         onChange={(e) => setDraft({ ...draft, text: e.target.value })}
@@ -414,10 +432,12 @@ export function ActionItemDetailSheet({
                         ))}
                       </div>
                     )}
-                    <Button size="sm" onClick={sendMessage} disabled={sending}>
-                      {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                      {sending ? t("sending") : t("sendMessageButton")}
-                    </Button>
+                    {draft.mode !== "no_template" && (
+                      <Button size="sm" onClick={sendMessage} disabled={sending}>
+                        {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                        {sending ? t("sending") : t("sendMessageButton")}
+                      </Button>
+                    )}
                   </>
                 )
               )}

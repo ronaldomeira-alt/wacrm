@@ -37,6 +37,10 @@ import {
   interactivePayloadPreviewText,
   type InteractiveMessagePayload,
 } from '@/lib/whatsapp/interactive';
+import {
+  getConversationSessionStatus,
+  validateApprovedTemplateSubmission,
+} from '@/lib/whatsapp/session-window';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { maybeActivateCtwaFep } from '@/lib/whatsapp/ctwa-fep';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
@@ -323,6 +327,19 @@ export async function sendMessageToConversation(
     throw new SendMessageError('not_found', 'Conversation not found', 404);
   }
 
+  // Enforce WhatsApp 24-hour customer service window server-side for all non-template messages.
+  // If the 24-hour window is closed (or expired between preparation and send), block free-text/media/interactive sending.
+  if (messageType !== 'template') {
+    const sessionStatus = await getConversationSessionStatus(db, conversationId);
+    if (!sessionStatus.windowOpen) {
+      throw new SendMessageError(
+        'session_expired',
+        'A janela de atendimento de 24 horas está encerrada. Envie uma mensagem utilizando um template aprovado do WhatsApp.',
+        409
+      );
+    }
+  }
+
   // Idempotency: claim `clientRef` atomically via the DB's UNIQUE
   // constraint (messages_client_ref_unique, migration 20260903230000 +
   // 20260903231500) rather than a plain app-level check-then-insert. A
@@ -546,6 +563,21 @@ export async function sendMessageToConversation(
       );
     }
     templateRow = data ?? null;
+    if (templateRow) {
+      const structuredParams = templateMessageParams as
+        | { body?: string[]; headerText?: string }
+        | undefined;
+      const bodyVars = structuredParams?.body ?? templateParams ?? [];
+      const headerVar = structuredParams?.headerText ?? null;
+      const validation = validateApprovedTemplateSubmission(templateRow, bodyVars, headerVar);
+      if (!validation.valid) {
+        throw new SendMessageError(
+          'template_not_approved',
+          validation.reason || 'Template não aprovado ou variáveis obrigatórias ausentes.',
+          422
+        );
+      }
+    }
   }
 
   // `mediaUrl` as persisted/passed in may be an R2 key (private media)

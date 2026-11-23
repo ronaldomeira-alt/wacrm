@@ -90,6 +90,8 @@ describe('POST /api/match/prepare-send', () => {
     projection?: unknown[];
     priorShares?: unknown[];
     matchRow?: unknown;
+    latestCustomerMessage?: unknown;
+    templates?: unknown[];
   } = {}) {
     mocks.supabaseFrom.mockImplementation((table: string) => {
       if (table === 'contacts') {
@@ -154,6 +156,37 @@ describe('POST /api/match/prepare-send', () => {
       }
       if (table === 'contact_tags') {
         return makeQuery({ data: [] });
+      }
+      if (table === 'messages') {
+        return makeQuery({
+          data:
+            overrides.latestCustomerMessage !== undefined
+              ? overrides.latestCustomerMessage
+              : { created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+        });
+      }
+      if (table === 'message_templates') {
+        return makeQuery({
+          data:
+            overrides.templates !== undefined
+              ? overrides.templates
+              : [
+                  {
+                    id: 'tpl-1',
+                    account_id: 'acc-1',
+                    name: 'oportunidade_alinhada',
+                    language: 'pt_BR',
+                    category: 'MARKETING',
+                    status: 'APPROVED',
+                    header_type: null,
+                    header_content: null,
+                    body_text:
+                      'Oi, {{1}}! Tudo certo? Apareceu algo bem alinhado com {{2}}. Acho que vale você dar uma olhada. Me chama aqui.',
+                    footer_text: null,
+                    buttons: [],
+                  },
+                ],
+        });
       }
       return makeQuery({ data: null });
     });
@@ -299,8 +332,136 @@ describe('POST /api/match/prepare-send', () => {
     );
     expect(res.status).toBe(200);
     const body = await res.json();
+    expect(body.mode).toBe('free');
+    expect(body.sessionWindowOpen).toBe(true);
     expect(body.publicUrl).toBe('https://ronaldomeira.com.br/imovel/dev-bd1ac8a946d4bfb0');
     expect(insertMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('quando janela de 24h está encerrada, bloqueia texto livre e prepara template aprovado com variáveis preenchidas', async () => {
+    setupTables({
+      latestCustomerMessage: {
+        created_at: new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+    // Força fallback determinístico do seletor de template aprovado (config null)
+    mocks.loadAiConfig.mockResolvedValueOnce(null);
+
+    const res = await POST(
+      new Request('http://localhost/api/match/prepare-send', {
+        method: 'POST',
+        body: JSON.stringify({ lead_id: 'lead-1', property_id: 'prop-1' }),
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mode).toBe('template');
+    expect(body.sessionWindowOpen).toBe(false);
+    expect(body.draftText).toBeNull();
+    expect(body.template).toBeTruthy();
+    expect(body.template.name).toBe('oportunidade_alinhada');
+    expect(body.template.values.body).toEqual([
+      'Ana',
+      'o que você procura em Bessa (apartamento)',
+    ]);
+    expect(body.template.previewText).toContain(
+      'Oi, Ana! Tudo certo? Apareceu algo bem alinhado com o que você procura em Bessa (apartamento).'
+    );
+    expect(mocks.generateMatchPropertyMessage).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('quando janela de 24h está encerrada e não há template aprovado compatível, retorna mode=no_template sem texto livre', async () => {
+    setupTables({
+      latestCustomerMessage: null,
+      templates: [
+        {
+          id: 'tpl-rejected',
+          account_id: 'acc-1',
+          name: 'oportunidade_rejeitada',
+          language: 'pt_BR',
+          category: 'MARKETING',
+          status: 'REJECTED',
+          body_text: 'Oi {{1}}',
+        },
+        {
+          id: 'tpl-boleto',
+          account_id: 'acc-1',
+          name: 'cobranca_boleto',
+          language: 'pt_BR',
+          category: 'UTILITY',
+          status: 'APPROVED',
+          body_text: 'Seu boleto {{1}} venceu.',
+        },
+      ],
+    });
+    mocks.loadAiConfig.mockResolvedValueOnce(null);
+
+    const res = await POST(
+      new Request('http://localhost/api/match/prepare-send', {
+        method: 'POST',
+        body: JSON.stringify({ lead_id: 'lead-1', property_id: 'prop-1' }),
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mode).toBe('no_template');
+    expect(body.sessionWindowOpen).toBe(false);
+    expect(body.draftText).toBeNull();
+    expect(body.template).toBeNull();
+    expect(body.noTemplateReason).toMatch(/janela de atendimento de 24 horas está encerrada/i);
+    expect(mocks.generateMatchPropertyMessage).not.toHaveBeenCalled();
+  });
+
+  it('quando cliente volta a responder (< 24h), janela reabre e mensagem livre volta a ser permitida', async () => {
+    setupTables({
+      latestCustomerMessage: {
+        created_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+      },
+    });
+
+    const res = await POST(
+      new Request('http://localhost/api/match/prepare-send', {
+        method: 'POST',
+        body: JSON.stringify({ lead_id: 'lead-1', property_id: 'prop-1' }),
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mode).toBe('free');
+    expect(body.sessionWindowOpen).toBe(true);
+    expect(body.draftText).toContain('https://ronaldomeira.com.br/imovel/bessa-1');
+    expect(mocks.generateMatchPropertyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('bloqueia compartilhamento de imóvel de locação no Match (409)', async () => {
+    setupTables({
+      projection: [
+        {
+          property_id: 'prop-rent-1',
+          account_id: 'acc-1',
+          title: 'Flat Locação Intermares',
+          operation: 'locacao',
+          property_type: 'flat',
+          neighborhood: 'Intermares',
+          status: 'ativo',
+          public_url: 'https://ronaldomeira.com.br/imovel/flat-rent',
+        },
+      ],
+    });
+
+    const res = await POST(
+      new Request('http://localhost/api/match/prepare-send', {
+        method: 'POST',
+        body: JSON.stringify({ lead_id: 'lead-1', property_id: 'prop-rent-1' }),
+      })
+    );
+
+    expect(res.status).toBe(409);
   });
 });

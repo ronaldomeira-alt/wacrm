@@ -7,6 +7,7 @@ import {
   type MatchLifecycleAction,
 } from '@/lib/match/service';
 import { reconcileInventoryWithProjections } from '@/lib/match/inventory-reconciler';
+import { compareMatchGroups } from '@/lib/match/ordering';
 import type { MatchStatus } from '@/lib/match/types';
 
 const DEFAULT_PAGE_SIZE = 36;
@@ -49,7 +50,7 @@ export async function GET(request: Request) {
     const dateFilter = (searchParams.get('date_filter') || 'all').trim(); // all | today | 24h | 7d | 30d | older
     const viewFilter = (searchParams.get('view_filter') || 'all').trim(); // all | unread | viewed
     const sortBy = (
-      searchParams.get('sort_by') || (status === 'novo' ? 'recent_desc' : 'score_desc')
+      searchParams.get('sort_by') || 'score_desc'
     ).trim();
     const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
     const pageSize = Math.min(
@@ -87,14 +88,14 @@ export async function GET(request: Request) {
         ctx.supabase
           .from('property_match_projections')
           .select(
-            'property_id, status, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
+            'property_id, status, operation, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
           )
           .eq('account_id', ctx.accountId)
           .eq('property_id', propertyIdFilter)
           .maybeSingle(),
         adminDb
           .from('property_match_projections')
-          .select('property_id, status, updated_at')
+          .select('property_id, status, operation, updated_at')
           .eq('account_id', ctx.accountId),
       ]);
 
@@ -260,7 +261,10 @@ export async function GET(request: Request) {
         else if (isActiveTabStatus && isContactPaused) effectiveStatusForFilter = 'pausado';
 
         if (effectiveStatusForFilter !== status) continue;
-        if ((status === 'novo' || status === 'em_analise') && selectedProp.status !== 'ativo') {
+        if (
+          (status === 'novo' || status === 'em_analise') &&
+          (selectedProp.status !== 'ativo' || (selectedProp.operation || 'venda') !== 'venda')
+        ) {
           continue;
         }
 
@@ -358,28 +362,7 @@ export async function GET(request: Request) {
         });
       }
 
-      filteredGroups.sort((a, b) => {
-        if (sortBy === 'recent_desc') {
-          const timeA = a.latestMatchAt ? new Date(a.latestMatchAt).getTime() : 0;
-          const timeB = b.latestMatchAt ? new Date(b.latestMatchAt).getTime() : 0;
-          if (timeB !== timeA) return timeB - timeA;
-          const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-          if (scoreDiff !== 0) return scoreDiff;
-          return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
-        }
-        if (sortBy === 'priority_desc') {
-          const prioDiff = Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
-          if (prioDiff !== 0) return prioDiff;
-          return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-        }
-        if (sortBy === 'ai_score_desc') {
-          if (b.aiScore !== a.aiScore) return b.aiScore - a.aiScore;
-          return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-        }
-        const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-        if (scoreDiff !== 0) return scoreDiff;
-        return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
-      });
+      filteredGroups.sort((a, b) => compareMatchGroups(a, b, sortBy));
 
       const totalGroups = filteredGroups.length;
       const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));
@@ -542,7 +525,7 @@ export async function GET(request: Request) {
     const { data: allProjections } = await ctx.supabase
       .from('property_match_projections')
       .select(
-        'property_id, status, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
+        'property_id, status, operation, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
       )
       .eq('account_id', ctx.accountId);
 
@@ -638,10 +621,11 @@ export async function GET(request: Request) {
       const isContactArchived = Boolean(contact.archived_at);
       const isContactPaused = Boolean(contact.paused_at);
 
-      // Contabiliza nas abas respeitando contatos ativos e imóveis ativos
+      // Contabiliza nas abas respeitando contatos ativos e imóveis ativos de venda
       const isActiveTabStatus = lc.effectiveStatus === 'novo' || lc.effectiveStatus === 'em_analise';
+      const isPropSaleActive = prop.status === 'ativo' && (prop.operation || 'venda') === 'venda';
       if (isActiveTabStatus) {
-        if (prop.status === 'ativo' && !isContactArchived && !isContactPaused) {
+        if (isPropSaleActive && !isContactArchived && !isContactPaused) {
           tabLeadSets[lc.effectiveStatus].add(leadId);
         } else if (isContactArchived) {
           tabLeadSets.arquivado.add(leadId);
@@ -658,7 +642,7 @@ export async function GET(request: Request) {
       else if (isActiveTabStatus && isContactPaused) effectiveStatusForFilter = 'pausado';
 
       if (effectiveStatusForFilter !== status) continue;
-      if ((status === 'novo' || status === 'em_analise') && prop.status !== 'ativo') continue;
+      if ((status === 'novo' || status === 'em_analise') && !isPropSaleActive) continue;
 
       const matchScore = Number(rawRow.match_score || 0);
       const profileMaturity = Number(rawRow.profile_maturity || 0);
@@ -762,6 +746,8 @@ export async function GET(request: Request) {
       const sortedMatches = [...g.matches].sort((a, b) => {
         const sDiff = Number(b.match_score || 0) - Number(a.match_score || 0);
         if (sDiff !== 0) return sDiff;
+        const mDiff = Number(b.profile_maturity || 0) - Number(a.profile_maturity || 0);
+        if (mDiff !== 0) return mDiff;
         const pDiff = Number(b.commercial_priority || 0) - Number(a.commercial_priority || 0);
         if (pDiff !== 0) return pDiff;
         return new Date(String(b.created_at || 0)).getTime() - new Date(String(a.created_at || 0)).getTime();
@@ -812,28 +798,7 @@ export async function GET(request: Request) {
       };
     });
 
-    allGroups.sort((a, b) => {
-      if (sortBy === 'recent_desc') {
-        const timeA = a.latestMatchAt ? new Date(a.latestMatchAt).getTime() : 0;
-        const timeB = b.latestMatchAt ? new Date(b.latestMatchAt).getTime() : 0;
-        if (timeB !== timeA) return timeB - timeA;
-        const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-        if (scoreDiff !== 0) return scoreDiff;
-        return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
-      }
-      if (sortBy === 'priority_desc') {
-        const prioDiff = Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
-        if (prioDiff !== 0) return prioDiff;
-        return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-      }
-      if (sortBy === 'ai_score_desc') {
-        if (b.aiScore !== a.aiScore) return b.aiScore - a.aiScore;
-        return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-      }
-      const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
-      if (scoreDiff !== 0) return scoreDiff;
-      return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
-    });
+    allGroups.sort((a, b) => compareMatchGroups(a, b, sortBy));
 
     const totalGroups = allGroups.length;
     const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));

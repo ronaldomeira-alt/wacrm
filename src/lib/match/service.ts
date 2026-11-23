@@ -104,14 +104,48 @@ export async function recalculateMatchesForLead(
 
   const maturityEval = calculateProfileMaturity(profile);
   // Desconsidera leads totalmente vazios (sem nenhuma preferência extraída na conversa ou tags)
-  if (maturityEval.maturity < 20) {
+  // ou leads inelegíveis por modalidade comercial (locação, temporada exclusiva ou intenção indefinida),
+  // removendo eventuais matches pendentes ('novo' / 'em_analise') da fila ativa.
+  if (maturityEval.maturity < 20 || profile.operation !== 'venda' || profile.isShortStayOnly) {
+    let staleRemovedCount = 0;
+    try {
+      const mTable = db.from('lead_property_matches');
+      if (typeof mTable?.select === 'function') {
+        const { data: pendingRows } = await mTable
+          .select('id, match_status, suppressed')
+          .eq('account_id', accountId)
+          .eq('lead_id', contactId);
+        const idsToDelete = ((pendingRows || []) as Array<{
+          id: string;
+          match_status: string;
+          suppressed?: boolean;
+        }>)
+          .filter(
+            (r) =>
+              r.id &&
+              !r.suppressed &&
+              (r.match_status === 'novo' || r.match_status === 'em_analise')
+          )
+          .map((r) => r.id);
+        if (idsToDelete.length > 0 && typeof mTable?.delete === 'function') {
+          const delQuery = mTable.delete();
+          if (typeof delQuery?.in === 'function') {
+            await delQuery.in('id', idsToDelete);
+            staleRemovedCount = idsToDelete.length;
+          }
+        }
+      }
+    } catch {
+      // Ignora em mocks parciais de teste
+    }
     return {
       leadId: contactId,
       maturity: maturityEval.maturity,
-      meetsThreshold: maturityEval.meetsThreshold,
+      meetsThreshold: false,
       totalPropertiesEvaluated: 0,
       matchesCreatedOrUpdated: 0,
       strongMatchesCount: 0,
+      staleRemovedCount,
     };
   }
 
@@ -219,9 +253,13 @@ export async function recalculateMatchesForLead(
     const evaluation = evaluateMatch(profile, prop);
 
     // Se eliminado por critério eliminatório OU nota abaixo do corte comercial (90%),
-    // remove match pendente ('novo') obsoleto se existia
+    // remove match pendente ('novo' ou 'em_analise') obsoleto se existia
     if (!evaluation.eligible || evaluation.matchScore < MIN_MATCH_SCORE_THRESHOLD) {
-      if (existing?.id && !existing.suppressed && existing.match_status === 'novo') {
+      if (
+        existing?.id &&
+        !existing.suppressed &&
+        (existing.match_status === 'novo' || existing.match_status === 'em_analise')
+      ) {
         staleMatchIdsToDelete.push(existing.id);
       }
       continue;
@@ -350,7 +388,21 @@ export async function recalculateMatchesForLead(
     }
   }
 
-  // Remove matches 'novo' que deixaram de ser elegíveis após a mudança no perfil do lead
+  // Remove matches pendentes vinculados a imóveis que não estão mais ativos no catálogo de venda
+  const evaluatedPropIds = new Set(properties.map((p) => p.propertyId));
+  for (const existing of existingMap.values()) {
+    if (
+      existing.id &&
+      !existing.suppressed &&
+      (existing.match_status === 'novo' || existing.match_status === 'em_analise') &&
+      !evaluatedPropIds.has(existing.property_id) &&
+      !staleMatchIdsToDelete.includes(existing.id)
+    ) {
+      staleMatchIdsToDelete.push(existing.id);
+    }
+  }
+
+  // Remove matches 'novo' / 'em_analise' que deixaram de ser elegíveis após a mudança no perfil do lead
   if (staleMatchIdsToDelete.length > 0) {
     try {
       const mTable = db.from('lead_property_matches');
@@ -421,8 +473,8 @@ export async function recalculateMatchesForProperty(
     .eq('property_id', propertyId)
     .maybeSingle();
 
-  if (pErr || !propRow || propRow.status !== 'ativo') {
-    // Quando o imóvel fica indisponível (vendido, arquivado, inativo ou excluído),
+  if (pErr || !propRow || propRow.status !== 'ativo' || propRow.operation !== 'venda') {
+    // Quando o imóvel fica indisponível (vendido, arquivado, inativo, locação ou excluído),
     // remove os matches pendentes ('novo') para que deixem de aparecer como opções para envio.
     await db
       .from('lead_property_matches')

@@ -47,6 +47,7 @@ export interface MatchLifecycleMeta {
 
 export type DeliveryStatus = 'pronto' | 'planta' | 'em_construcao';
 export type PropertyOperation = 'venda' | 'locacao';
+export type LeadCommercialOperation = 'venda' | 'locacao' | 'indefinido';
 
 /**
  * Perfil estruturado de busca do lead para cálculo de Maturidade e Match.
@@ -61,7 +62,7 @@ export interface LeadSearchProfile {
   isArchived: boolean;
   
   // Preferências e requisitos
-  operation: PropertyOperation;
+  operation: LeadCommercialOperation;
   purpose: string[];               // ['moradia', 'investimento']
   propertyTypes: string[];         // ['apartamento', 'flat', 'casa', 'terreno']
   propertyTypeStrict: boolean;     // true = "somente casa", false = "prefiro casa"

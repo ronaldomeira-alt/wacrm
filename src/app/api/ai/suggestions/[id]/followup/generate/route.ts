@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit
 import { loadAiConfig } from '@/lib/ai/config'
 import { generateFollowupFreeMessage, selectFollowupTemplate } from '@/lib/ai/followup-message'
 import { logAiUsage } from '@/lib/ai/usage'
+import { getConversationSessionStatus } from '@/lib/whatsapp/session-window'
 import type { FollowupPlan } from '@/lib/ai/followup-types'
 
 function bad(message: string, status = 400) {
@@ -70,6 +71,7 @@ export async function POST(
     const payload = (suggestion.payload ?? {}) as FollowupPayload
     const contactName =
       (suggestion.contact as { name?: string } | null)?.name || 'Lead'
+    const sessionStatus = await getConversationSessionStatus(supabase, suggestion.conversation_id)
 
     if (mode === 'free') {
       const { text, usage } = await generateFollowupFreeMessage({
@@ -95,7 +97,7 @@ export async function POST(
         .update({ payload: { ...payload, draft } })
         .eq('id', id)
 
-      return NextResponse.json({ draft })
+      return NextResponse.json({ draft, sessionWindowOpen: sessionStatus.windowOpen })
     }
 
     if (mode === 'template') {
@@ -114,7 +116,7 @@ export async function POST(
       })
 
       if (!selection) {
-        return NextResponse.json({ draft: null })
+        return NextResponse.json({ draft: null, sessionWindowOpen: sessionStatus.windowOpen })
       }
 
       const draft = {

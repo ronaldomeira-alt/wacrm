@@ -53,25 +53,26 @@ export function evaluateMatch(
   // 1. CRITÉRIOS ELIMINATÓRIOS INEQUÍVOCOS
   // ------------------------------------------------------------
 
-  // 1.1 Venda vs Locação
+  // 1.1 Modalidade comercial (estoque do Match é exclusivo de VENDA)
   if (profile.isShortStayOnly) {
     return eliminated('Cliente busca exclusivamente hospedagem/temporada — incompatível com estoque comum', breakdown);
   }
 
-  if (profile.operation && property.operation) {
-    const profOp = normalizeString(profile.operation);
-    const propOp = normalizeString(property.operation);
-    const isProfRent = profOp === 'aluguel' || profOp === 'locacao';
-    const isPropRent = propOp === 'aluguel' || propOp === 'locacao';
-    const isProfSale = profOp === 'compra' || profOp === 'venda';
-    const isPropSale = propOp === 'compra' || propOp === 'venda';
+  const profOp = normalizeString(profile.operation || '');
+  const propOp = normalizeString(property.operation || '');
+  const isProfRent = profOp === 'aluguel' || profOp === 'locacao';
+  const isPropRent = propOp === 'aluguel' || propOp === 'locacao';
+  const isProfSale = profOp === 'compra' || profOp === 'venda';
+  const isPropSale = propOp === 'compra' || propOp === 'venda';
 
-    if (isProfRent && isPropSale) {
-      return eliminated('Cliente procura locação/aluguel e imóvel é somente para venda', breakdown);
-    }
-    if (isProfSale && isPropRent) {
-      return eliminated('Cliente procura compra/venda e imóvel é somente para locação', breakdown);
-    }
+  if (isPropRent || !isPropSale) {
+    return eliminated('Catálogo do Match é exclusivo para imóveis à venda — imóvel de locação inelegível', breakdown);
+  }
+  if (isProfRent) {
+    return eliminated('Cliente procura locação/aluguel e imóvel é somente para venda', breakdown);
+  }
+  if (!isProfSale) {
+    return eliminated('Intenção comercial de compra ainda não confirmada para o cliente', breakdown);
   }
 
   // 1.2 Tipologia: incompatibilidade absoluta natural de mercado

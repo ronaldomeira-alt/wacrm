@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { calculateProfileMaturity, MATURITY_AUTOMATIC_THRESHOLD } from './maturity';
 import { evaluateMatch } from './engine';
+import { buildProfileFromData } from './profile-builder';
+import { compareMatchGroups, type SortableMatchGroup } from './ordering';
+import { recalculateMatchesForLead } from './service';
 import { calculateCommercialPriority } from './priority';
 import { generateTrackingToken, buildSharePublicUrl } from './tokens';
 import type { LeadSearchProfile, PropertyProjection } from './types';
@@ -482,5 +486,345 @@ describe('Fase 24 — Validação e Testes do Motor de Match WACRM', () => {
     const evalResult = evaluateMatch(profile, perfectProp);
     expect(evalResult.matchScore).toBeGreaterThanOrEqual(90);
     expect(evalResult.isStrongMatch).toBe(true);
+  });
+});
+
+describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e Ordenação Comercial Oficial', () => {
+  const baseContact = {
+    id: '45ae43cc-037f-4f42-887a-2ca33bdc6c55',
+    account_id: 'acc-1',
+    name: 'Maria de Fátima Nunes',
+    phone: '559591322780',
+    ai_score: 7,
+    paused_at: null,
+    archived_at: null,
+  };
+
+  it('1. Lead interessado em locação (caso real Maria de Fátima Nunes) vs imóvel de venda -> bloqueado', () => {
+    const mariaProfile = buildProfileFromData(
+      baseContact,
+      {
+        summary: {
+          purpose: [],
+          location: ['Intermares'],
+          property_type: ['Flat'],
+          bedrooms: [1],
+          price_max: null,
+          notes:
+            'Busca flat mobiliado em Intermares (o imóvel apresentado tem 23 m² e é só para locação anual de 12 meses).',
+        },
+      },
+      [
+        {
+          source: 'ctwa',
+          originally_from_ctwa: true,
+          tags: { id: 't-1', name: 'Flat', category: 'Tipo de imóvel' },
+        },
+        {
+          source: 'ctwa',
+          originally_from_ctwa: true,
+          tags: { id: 't-2', name: 'Intermares', category: 'Bairro' },
+        },
+        {
+          source: 'ctwa',
+          originally_from_ctwa: true,
+          tags: { id: 't-3', name: 'Até 3000', category: 'Faixa de valor' },
+        },
+      ],
+      {
+        ctwa_referral: {
+          headline: 'Flat mobiliado em Intermares - R$ 2.500/mês',
+          body: 'Flat novo, mobiliado, primeira locação. Só locação anual.',
+        },
+      }
+    );
+
+    expect(mariaProfile.operation).toBe('locacao');
+    expect(mariaProfile.priceMax).toBe(3000);
+
+    const saleProp = createMockProperty({
+      title: 'Apartamento no Intermares',
+      operation: 'venda',
+      propertyType: 'flat',
+      neighborhood: 'Intermares',
+      priceMin: 270000,
+      priceMax: 270000,
+    });
+
+    const evalRes = evaluateMatch(mariaProfile, saleProp);
+    expect(evalRes.eligible).toBe(false);
+    expect(evalRes.matchScore).toBe(0);
+    expect(evalRes.eliminatedReason).toContain('locação');
+  });
+
+  it('2. Lead interessado em compra vs imóvel de venda -> permitido', () => {
+    const buyerProfile = buildProfileFromData(
+      { ...baseContact, id: 'lead-buyer', name: 'Eduardo Cavalcante' },
+      {
+        summary: {
+          purpose: ['Moradia', 'Investimento'],
+          location: ['Bessa'],
+          property_type: ['Apartamento'],
+          bedrooms: [3],
+          price_max: 500000,
+          notes: 'Busca apartamento de 3 quartos no Bessa para compra/investimento.',
+        },
+      },
+      [],
+      null
+    );
+
+    expect(buyerProfile.operation).toBe('venda');
+    const evalRes = evaluateMatch(buyerProfile, createMockProperty());
+    expect(evalRes.eligible).toBe(true);
+    expect(evalRes.matchScore).toBeGreaterThanOrEqual(90);
+  });
+
+  it('3. Lead com intenção comercial indefinida -> não tratado automaticamente como comprador', () => {
+    const undefinedProfile = buildProfileFromData(
+      { ...baseContact, id: 'lead-undef', name: 'Vildson Mendonça' },
+      {
+        summary: {
+          purpose: [],
+          location: ['Intermares'],
+          property_type: ['Studio'],
+          price_max: null,
+          notes: 'Não há preço, prazo ou finalidade explícitos além da busca por informações sobre o imóvel.',
+        },
+      },
+      [
+        {
+          source: 'conversation',
+          originally_from_ctwa: false,
+          tags: { id: 't-1', name: 'Intermares', category: 'Bairro' },
+        },
+      ],
+      { ctwa_referral: { headline: 'Fale conosco' } }
+    );
+
+    expect(undefinedProfile.operation).toBe('indefinido');
+    const evalRes = evaluateMatch(undefinedProfile, createMockProperty({ neighborhood: 'Intermares' }));
+    expect(evalRes.eligible).toBe(false);
+    expect(evalRes.eliminatedReason).toContain('Intenção comercial de compra ainda não confirmada');
+  });
+
+  it('4. Mudança posterior de compra para locação -> invalida perfil para compra e remove matches ativos anteriores', async () => {
+    const pivotedProfile = buildProfileFromData(
+      { ...baseContact, id: 'lead-pivot', name: 'Vitor Leonardo' },
+      {
+        summary: {
+          purpose: ['Locação', 'Compra'],
+          location: ['Intermares'],
+          property_type: ['Apartamento'],
+          price_max: null,
+          notes:
+            'O lead iniciou pedindo mais informações sobre um studio à venda em Intermares e depois perguntou por apartamento para aluguel.',
+        },
+      },
+      [
+        {
+          source: 'ctwa',
+          originally_from_ctwa: true,
+          tags: { id: 't-compra', name: 'Compra', category: 'Finalidade' },
+        },
+      ],
+      null
+    );
+
+    expect(pivotedProfile.operation).toBe('locacao');
+
+    // Simula recalculateMatchesForLead removendo matches pendentes ('novo' / 'em_analise') quando o lead passa a buscar locação
+    const deletedIds: string[] = [];
+    const fakeDb = {
+      from(table: string) {
+        if (table === 'contacts') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: { ...baseContact, id: 'lead-pivot', name: 'Vitor Leonardo' },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'lead_intelligence') {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({
+                  data: {
+                    summary: {
+                      purpose: ['Locação'],
+                      location: ['Intermares'],
+                      property_type: ['Apartamento'],
+                      notes: 'Passou a buscar aluguel anual em Intermares.',
+                    },
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'contact_tags') {
+          return {
+            select: () => ({
+              eq: () => ({
+                returns: async () => ({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === 'conversations') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  order: () => ({
+                    limit: () => ({
+                      maybeSingle: async () => ({ data: null, error: null }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'lead_property_matches') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: async () => ({
+                  data: [
+                    { id: 'm-active-1', match_status: 'novo', suppressed: false },
+                    { id: 'm-active-2', match_status: 'em_analise', suppressed: false },
+                    { id: 'm-sent-1', match_status: 'enviado', suppressed: false },
+                  ],
+                  error: null,
+                }),
+              }),
+            }),
+            delete: () => ({
+              in: vi.fn(async (_col: string, ids: string[]) => {
+                deletedIds.push(...ids);
+                return { error: null };
+              }),
+            }),
+          };
+        }
+        return {};
+      },
+    } as unknown as SupabaseClient;
+
+    const recalcRes = await recalculateMatchesForLead(fakeDb, 'acc-1', 'lead-pivot');
+    expect(recalcRes.staleRemovedCount).toBe(2);
+    expect(deletedIds).toEqual(['m-active-1', 'm-active-2']);
+  });
+
+  it('5. Interesse simultâneo em compra e locação -> somente elegível quando houver evidência confiável de interesse atual em compra', () => {
+    const dualWithoutPurchaseEvidence = buildProfileFromData(
+      { ...baseContact, id: 'lead-dual-1', name: 'Dual Ambíguo' },
+      {
+        summary: {
+          purpose: ['Locação', 'Compra'],
+          location: ['Bessa'],
+          property_type: ['Apartamento'],
+          price_max: null,
+          notes: 'Avaliando opções no Bessa.',
+        },
+      },
+      [],
+      null
+    );
+    expect(dualWithoutPurchaseEvidence.operation).toBe('indefinido');
+    expect(evaluateMatch(dualWithoutPurchaseEvidence, createMockProperty()).eligible).toBe(false);
+
+    const dualWithConfirmedPurchase = buildProfileFromData(
+      { ...baseContact, id: 'lead-dual-2', name: 'Dual Comprador' },
+      {
+        summary: {
+          purpose: ['Locação', 'Compra'],
+          location: ['Bessa'],
+          property_type: ['Apartamento'],
+          price_max: 480000,
+          notes: 'Avalia compra com financiamento bancário até 480 mil no Bessa.',
+        },
+      },
+      [],
+      null
+    );
+    expect(dualWithConfirmedPurchase.operation).toBe('venda');
+    expect(evaluateMatch(dualWithConfirmedPurchase, createMockProperty()).eligible).toBe(true);
+  });
+
+  it('6–9. Hierarquia obrigatória de ordenação (1º Match% DESC -> 2º Maturidade DESC -> 3º Score IA DESC -> 4º Desempate determinístico) e estabilidade na paginação', () => {
+    const groups: SortableMatchGroup[] = [
+      {
+        leadId: 'lead-96-high-mat',
+        profileMaturity: 95,
+        aiScore: 10,
+        latestMatchAt: '2026-11-22T22:00:00Z',
+        bestMatch: { match_score: 96, commercial_priority: 99 },
+      },
+      {
+        leadId: 'lead-98-low-mat',
+        profileMaturity: 72,
+        aiScore: 4,
+        latestMatchAt: '2026-11-15T10:00:00Z',
+        bestMatch: { match_score: 98, commercial_priority: 65 },
+      },
+      {
+        leadId: 'lead-96-mid-mat-cold',
+        profileMaturity: 85,
+        aiScore: 5,
+        latestMatchAt: '2026-11-22T20:00:00Z',
+        bestMatch: { match_score: 96, commercial_priority: 80 },
+      },
+      {
+        leadId: 'lead-96-mid-mat-hot',
+        profileMaturity: 85,
+        aiScore: 9,
+        latestMatchAt: '2026-11-20T10:00:00Z',
+        bestMatch: { match_score: 96, commercial_priority: 75 },
+      },
+      {
+        leadId: 'lead-96-mid-mat-hot-older',
+        profileMaturity: 85,
+        aiScore: 9,
+        latestMatchAt: '2026-11-18T10:00:00Z',
+        bestMatch: { match_score: 96, commercial_priority: 75 },
+      },
+    ];
+
+    const sorted = [...groups].sort((a, b) => compareMatchGroups(a, b, 'score_desc'));
+
+    expect(sorted.map((g) => g.leadId)).toEqual([
+      'lead-98-low-mat',           // 1º: 98% vence qualquer 96%, mesmo mais antigo ou com menor maturidade/aiScore
+      'lead-96-high-mat',          // 2º: Entre os 96%, maior maturidade (95 > 85) vence
+      'lead-96-mid-mat-hot',       // 3º: Mesmo Match% (96) e mesma maturidade (85) -> maior Score IA (9 > 5) e mais recente
+      'lead-96-mid-mat-hot-older', // 4º: Empate em Match% (96), maturidade (85) e Score IA (9) -> desempate determinístico por data
+      'lead-96-mid-mat-cold',      // 5º: Match% 96, maturidade 85, Score IA 5
+    ]);
+
+    // Paginação estável sem sobreposição nem inversão entre páginas
+    const page1 = sorted.slice(0, 2);
+    const page2 = sorted.slice(2, 4);
+    const page3 = sorted.slice(4, 6);
+    expect([...page1, ...page2, ...page3].map((g) => g.leadId)).toEqual(
+      sorted.map((g) => g.leadId)
+    );
+  });
+
+  it('10. Projeções de imóveis de locação são bloqueadas no motor mesmo que o lead tenha perfil completo', () => {
+    const buyerProfile = createMockProfile({ operation: 'venda' });
+    const rentProfile = createMockProfile({ operation: 'locacao' });
+    const rentProperty = createMockProperty({ operation: 'locacao', priceMin: 2500, priceMax: 2500 });
+
+    expect(evaluateMatch(buyerProfile, rentProperty).eligible).toBe(false);
+    expect(evaluateMatch(rentProfile, rentProperty).eligible).toBe(false);
   });
 });

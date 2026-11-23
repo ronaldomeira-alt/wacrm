@@ -81,8 +81,8 @@ const DATE_FILTER_LABELS: Record<string, string> = {
 };
 
 const SORT_BY_LABELS: Record<string, string> = {
-  recent_desc: 'Mais recentes primeiro',
   score_desc: 'Maior compatibilidade',
+  recent_desc: 'Mais recentes primeiro',
   priority_desc: 'Maior prioridade comercial',
   ai_score_desc: 'Maior Score IA',
 };
@@ -125,7 +125,7 @@ export default function MatchPage() {
   const [scoreFilter, setScoreFilter] = useState<'all' | 'elite' | 'strong'>('all');
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
   const [minAiScore, setMinAiScore] = useState<string>('0');
-  const [sortBy, setSortBy] = useState<'recent_desc' | 'score_desc' | 'priority_desc' | 'ai_score_desc'>('recent_desc');
+  const [sortBy, setSortBy] = useState<'recent_desc' | 'score_desc' | 'priority_desc' | 'ai_score_desc'>('score_desc');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   const activeSecondaryFiltersCount = useMemo(() => {
@@ -172,6 +172,7 @@ export default function MatchPage() {
     setScoreFilter('all');
     setMaturityFilter('all');
     setMinAiScore('0');
+    setSortBy('score_desc');
     clearPropertyIdFilter();
   }, [clearPropertyIdFilter]);
   const [page, setPage] = useState<number>(1);
@@ -515,24 +516,55 @@ export default function MatchPage() {
         }
 
         setDuplicateConfirmState(null);
-        writeFollowupDraft(data.conversationId, {
-          mode: 'free',
-          text: data.draftText,
-          matchShare: {
-            matchId: data.matchId || bestMatch?.id || null,
-            leadId: group.leadId,
-            propertyId: data.propertyId || propertyId,
-            propertyTitle: data.propertyTitle || bestMatch?.property?.title || 'Imóvel selecionado',
-            publicUrl: data.publicUrl,
-            alreadySentBefore: Boolean(data.duplicateInfo?.alreadySent),
-            templateAngle: data.templateAngle,
-          },
-        });
+        const matchSharePayload = {
+          matchId: data.matchId || bestMatch?.id || null,
+          leadId: group.leadId,
+          propertyId: data.propertyId || propertyId,
+          propertyTitle: data.propertyTitle || bestMatch?.property?.title || 'Imóvel selecionado',
+          publicUrl: data.publicUrl,
+          alreadySentBefore: Boolean(data.duplicateInfo?.alreadySent),
+          templateAngle: data.templateAngle,
+        };
 
-        if (data.generatedBy === 'fallback') {
+        if (data.mode === 'template' && data.template) {
+          writeFollowupDraft(data.conversationId, {
+            mode: 'template',
+            templateId: data.template.id,
+            templateName: data.template.name,
+            templateLanguage: data.template.language,
+            bodyText: data.template.bodyText,
+            previewText: data.template.previewText,
+            values: data.template.values,
+            matchShare: matchSharePayload,
+          });
           toast.info(
-            'Mensagem segura preparada com os dados do imóvel (IA indisponível no momento).'
+            `Janela de 24h encerrada: template aprovado "${data.template.name}" preparado com variáveis preenchidas.`
           );
+        } else if (data.mode === 'no_template') {
+          writeFollowupDraft(data.conversationId, {
+            mode: 'no_template',
+            noTemplateReason:
+              data.noTemplateReason ||
+              'Janela de 24 horas encerrada e não há template aprovado compatível disponível.',
+            availableApprovedTemplatesCount: Number(data.availableApprovedTemplatesCount || 0),
+            matchShare: matchSharePayload,
+          });
+          toast.warning(
+            data.noTemplateReason ||
+              'Janela de 24h encerrada: nenhum template aprovado compatível disponível para envio automático.'
+          );
+        } else {
+          writeFollowupDraft(data.conversationId, {
+            mode: 'free',
+            text: data.draftText,
+            matchShare: matchSharePayload,
+          });
+
+          if (data.generatedBy === 'fallback') {
+            toast.info(
+              'Mensagem segura preparada com os dados do imóvel (IA indisponível no momento).'
+            );
+          }
         }
 
         router.push(`/inbox?c=${encodeURIComponent(data.conversationId)}`);
@@ -572,8 +604,10 @@ export default function MatchPage() {
   }, [fetchMatches]);
 
   // Separação entre oportunidades recentes (últimos 7 dias) e anteriores na aba 'novo'
+  // Aplicada somente quando o usuário seleciona explicitamente a ordenação cronológica ('recent_desc');
+  // na ordenação padrão ('score_desc'), mantém a lista unificada ordenada por 1º Match% → 2º Maturidade → 3º Score IA.
   const { recentGroups, historicalGroups, showSplitView } = useMemo(() => {
-    if (activeTab !== 'novo' || dateFilter !== 'all') {
+    if (activeTab !== 'novo' || dateFilter !== 'all' || sortBy !== 'recent_desc') {
       return {
         recentGroups: groups,
         historicalGroups: [] as LeadMatchGroup[],
@@ -596,7 +630,7 @@ export default function MatchPage() {
       historicalGroups: historical,
       showSplitView: true,
     };
-  }, [groups, activeTab, dateFilter]);
+  }, [groups, activeTab, dateFilter, sortBy]);
 
   return (
     <div className="-m-4 sm:-m-6 flex min-h-[calc(100%+2rem)] sm:min-h-[calc(100%+3rem)] flex-col">
@@ -775,17 +809,17 @@ export default function MatchPage() {
                   <label className="text-[10px] text-muted-foreground uppercase font-semibold">Ordenação</label>
                   <Select
                     value={sortBy}
-                    onValueChange={(val) => setSortBy((val as typeof sortBy) || 'recent_desc')}
+                    onValueChange={(val) => setSortBy((val as typeof sortBy) || 'score_desc')}
                   >
                     <SelectTrigger className="h-8 text-xs bg-background">
                       <ArrowUpDown className="size-3 mr-1 text-muted-foreground shrink-0" />
                       <SelectValue placeholder="Ordenar por">
-                        {SORT_BY_LABELS[sortBy] || 'Mais recentes primeiro'}
+                        {SORT_BY_LABELS[sortBy] || 'Maior compatibilidade'}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent className="text-xs">
-                      <SelectItem value="recent_desc">Mais recentes primeiro</SelectItem>
                       <SelectItem value="score_desc">Maior compatibilidade</SelectItem>
+                      <SelectItem value="recent_desc">Mais recentes primeiro</SelectItem>
                       <SelectItem value="priority_desc">Maior prioridade comercial</SelectItem>
                       <SelectItem value="ai_score_desc">Maior Score IA</SelectItem>
                     </SelectContent>
@@ -983,17 +1017,17 @@ export default function MatchPage() {
           {/* Ordenação */}
           <Select
             value={sortBy}
-            onValueChange={(val) => setSortBy((val as typeof sortBy) || 'recent_desc')}
+            onValueChange={(val) => setSortBy((val as typeof sortBy) || 'score_desc')}
           >
             <SelectTrigger className="h-8 text-xs">
               <ArrowUpDown className="size-3 mr-1 text-muted-foreground shrink-0" />
               <SelectValue placeholder="Ordenar por">
-                {SORT_BY_LABELS[sortBy] || 'Mais recentes primeiro'}
+                {SORT_BY_LABELS[sortBy] || 'Maior compatibilidade'}
               </SelectValue>
             </SelectTrigger>
             <SelectContent className="text-xs">
-              <SelectItem value="recent_desc">Mais recentes primeiro</SelectItem>
               <SelectItem value="score_desc">Maior compatibilidade</SelectItem>
+              <SelectItem value="recent_desc">Mais recentes primeiro</SelectItem>
               <SelectItem value="priority_desc">Maior prioridade comercial</SelectItem>
               <SelectItem value="ai_score_desc">Maior Score IA</SelectItem>
             </SelectContent>

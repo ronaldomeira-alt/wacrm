@@ -22,6 +22,7 @@ interface ActivePropertyRow {
   neighborhood: string | null
   cover_url: string | null
   status: string | null
+  operation?: string | null
 }
 
 /**
@@ -43,7 +44,7 @@ export async function GET() {
     // Fetch active properties in parallel with the paginated active-window matches
     const propertiesPromise = ctx.supabase
       .from('property_match_projections')
-      .select('property_id, title, neighborhood, cover_url, status')
+      .select('property_id, title, neighborhood, cover_url, status, operation')
       .eq('account_id', ctx.accountId)
       .eq('status', 'ativo')
 
@@ -54,7 +55,7 @@ export async function GET() {
       const { data: batch, error: batchErr } = await ctx.supabase
         .from('lead_property_matches')
         .select(
-          'id, lead_id, property_id, match_score, commercial_priority, match_status, suppressed, created_at, reopened_at, score_breakdown',
+          'id, lead_id, property_id, match_score, profile_maturity, commercial_priority, match_status, suppressed, created_at, reopened_at, score_breakdown',
         )
         .eq('account_id', ctx.accountId)
         .eq('suppressed', false)
@@ -81,7 +82,9 @@ export async function GET() {
 
     const activePropertiesMap = new Map<string, ActivePropertyRow>()
     for (const p of (activePropsData ?? []) as ActivePropertyRow[]) {
-      if (p.property_id) activePropertiesMap.set(p.property_id, p)
+      if (p.property_id && (p.operation || 'venda') === 'venda') {
+        activePropertiesMap.set(p.property_id, p)
+      }
     }
 
     // Fetch only the distinct contact IDs referenced by eligible property/window rows
@@ -95,12 +98,13 @@ export async function GET() {
     )
 
     const activeLeadIds = new Set<string>()
+    const leadAiScoreMap = new Map<string, number>()
     const CONTACT_CHUNK = 200
     for (let i = 0; i < distinctLeadIds.length; i += CONTACT_CHUNK) {
       const chunk = distinctLeadIds.slice(i, i + CONTACT_CHUNK)
       const { data: contactsBatch, error: contactsErr } = await ctx.supabase
         .from('contacts')
-        .select('id, paused_at, archived_at')
+        .select('id, ai_score, paused_at, archived_at')
         .eq('account_id', ctx.accountId)
         .in('id', chunk)
 
@@ -111,7 +115,9 @@ export async function GET() {
 
       for (const c of contactsBatch ?? []) {
         if (!c.paused_at && !c.archived_at) {
-          activeLeadIds.add(c.id as string)
+          const cid = c.id as string
+          activeLeadIds.add(cid)
+          leadAiScoreMap.set(cid, Number((c as { ai_score?: number | null }).ai_score ?? 0))
         }
       }
     }
@@ -123,10 +129,13 @@ export async function GET() {
       coverUrl: string | null
       leadIds: Set<string>
       maxMatchScore: number
+      maxProfileMaturity: number
+      maxAiScore: number
       maxCommercialPriority: number
       topLeadId: string
       topLeadScore: number
-      topLeadPriority: number
+      topLeadMaturity: number
+      topLeadAiScore: number
     }
 
     const byProperty = new Map<string, PropertyAccumulator>()
@@ -148,6 +157,8 @@ export async function GET() {
 
       const score = Number(row.match_score || 0)
       if (score < MIN_ELIGIBLE_SCORE) continue
+      const maturity = Number(row.profile_maturity || 0)
+      const aiScore = leadAiScoreMap.get(row.lead_id) ?? 0
       const priority = Number(row.commercial_priority || 0)
 
       totalPendingMatches++
@@ -162,25 +173,32 @@ export async function GET() {
           coverUrl: prop.cover_url || null,
           leadIds: new Set<string>(),
           maxMatchScore: score,
+          maxProfileMaturity: maturity,
+          maxAiScore: aiScore,
           maxCommercialPriority: priority,
           topLeadId: row.lead_id,
           topLeadScore: score,
-          topLeadPriority: priority,
+          topLeadMaturity: maturity,
+          topLeadAiScore: aiScore,
         }
         byProperty.set(row.property_id, acc)
       }
 
       acc.leadIds.add(row.lead_id)
       if (score > acc.maxMatchScore) acc.maxMatchScore = score
+      if (maturity > acc.maxProfileMaturity) acc.maxProfileMaturity = maturity
+      if (aiScore > acc.maxAiScore) acc.maxAiScore = aiScore
       if (priority > acc.maxCommercialPriority) acc.maxCommercialPriority = priority
 
       if (
         score > acc.topLeadScore ||
-        (score === acc.topLeadScore && priority > acc.topLeadPriority)
+        (score === acc.topLeadScore && maturity > acc.topLeadMaturity) ||
+        (score === acc.topLeadScore && maturity === acc.topLeadMaturity && aiScore > acc.topLeadAiScore)
       ) {
         acc.topLeadId = row.lead_id
         acc.topLeadScore = score
-        acc.topLeadPriority = priority
+        acc.topLeadMaturity = maturity
+        acc.topLeadAiScore = aiScore
       }
     }
 
@@ -197,10 +215,11 @@ export async function GET() {
       }))
       .sort((a, b) => {
         if (b.leadsCount !== a.leadsCount) return b.leadsCount - a.leadsCount
+        if (b.maxMatchScore !== a.maxMatchScore) return b.maxMatchScore - a.maxMatchScore
         if (b.maxCommercialPriority !== a.maxCommercialPriority) {
           return b.maxCommercialPriority - a.maxCommercialPriority
         }
-        return b.maxMatchScore - a.maxMatchScore
+        return a.propertyId.localeCompare(b.propertyId)
       })
 
     const payload: DashboardMatchSummary = {

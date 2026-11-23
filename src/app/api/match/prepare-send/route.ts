@@ -5,9 +5,11 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit
 import { loadAiConfig } from '@/lib/ai/config';
 import { logAiUsage } from '@/lib/ai/usage';
 import { ensurePropertyUuid } from '@/lib/tunnel/auth';
+import { getConversationSessionStatus } from '@/lib/whatsapp/session-window';
 import {
   generateMatchPropertyMessage,
   resolveValidatedPublicPropertyUrl,
+  selectApprovedMatchTemplate,
   type SmartSendPropertyContext,
 } from '@/lib/match/smart-send';
 
@@ -105,7 +107,7 @@ async function resolveActiveProperty(
   }
 
   if (row) {
-    if (row.status !== 'ativo') {
+    if (row.status !== 'ativo' || (row.operation && row.operation !== 'venda')) {
       return { property: null, rawPublicUrl: null, publicPageId: null, unavailable: true };
     }
 
@@ -402,26 +404,113 @@ export async function POST(request: Request) {
       aiConfig = null;
     }
 
+    const matchContext = {
+      lead: {
+        leadId,
+        leadName: contact.name || 'Cliente',
+        aiScore: contact.ai_score,
+        tags,
+        intelligenceSummary: (intel?.summary as Record<string, unknown> | undefined) || null,
+      },
+      property: resolvedProp.property,
+      publicUrl: resolvedLink.url,
+      matchScore: matchRow?.match_score ? Number(matchRow.match_score) : null,
+      matchReasons,
+      priorSharesCount: (allLeadShares || []).length,
+      priorSharedTitles,
+      lastMessageAt: conv.last_message_at || conv.created_at || null,
+    };
+
+    // 6. Avalia a janela de atendimento de 24 horas da conversa no WhatsApp Cloud API
+    const sessionStatus = await getConversationSessionStatus(ctx.supabase, conv.id);
+
+    if (!sessionStatus.windowOpen) {
+      // CENÁRIO B / C — Janela de 24h encerrada: exige template aprovado da Meta (nunca texto livre)
+      const templateResult = await selectApprovedMatchTemplate({
+        db: ctx.supabase,
+        accountId: ctx.accountId,
+        config: aiConfig,
+        conversationId: conv.id,
+        context: matchContext,
+      });
+
+      if (aiConfig && templateResult.generatedBy === 'ai' && templateResult.usage) {
+        void logAiUsage(ctx.supabase, {
+          accountId: ctx.accountId,
+          conversationId: conv.id,
+          mode: 'followup',
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          usage: templateResult.usage,
+        });
+      }
+
+      if (!templateResult.selection) {
+        // CENÁRIO C — Janela fechada e sem template aprovado compatível
+        return NextResponse.json({
+          ok: true,
+          requiresConfirmation: false,
+          mode: 'no_template',
+          sessionWindowOpen: false,
+          sessionStatus,
+          conversationId: conv.id,
+          matchId: matchRow?.id || matchIdInput || null,
+          propertyId: canonicalPropertyId,
+          propertyTitle: resolvedProp.property.title,
+          publicUrl: resolvedLink.url,
+          draftText: null,
+          template: null,
+          noTemplateReason:
+            templateResult.noTemplateReason ||
+            'A janela de 24 horas está encerrada e não há um template aprovado compatível disponível para esta abordagem.',
+          availableApprovedTemplatesCount: templateResult.availableApprovedTemplatesCount,
+          templateAngle: templateResult.templateAngle,
+          templateLabel: templateResult.templateLabel,
+          generatedBy: 'none',
+          fallbackReason: null,
+          duplicateInfo,
+        });
+      }
+
+      // CENÁRIO B — Janela fechada e template aprovado compatível selecionado com variáveis preenchidas
+      const sel = templateResult.selection;
+      return NextResponse.json({
+        ok: true,
+        requiresConfirmation: false,
+        mode: 'template',
+        sessionWindowOpen: false,
+        sessionStatus,
+        conversationId: conv.id,
+        matchId: matchRow?.id || matchIdInput || null,
+        propertyId: canonicalPropertyId,
+        propertyTitle: resolvedProp.property.title,
+        publicUrl: resolvedLink.url,
+        draftText: null,
+        template: {
+          id: sel.template.id,
+          name: sel.template.name,
+          language: sel.template.language,
+          category: sel.template.category,
+          bodyText: sel.template.body_text,
+          headerType: sel.template.header_type,
+          headerContent: sel.template.header_content,
+          values: sel.values,
+          previewText: sel.previewText,
+        },
+        templateAngle: templateResult.templateAngle,
+        templateLabel: templateResult.templateLabel,
+        generatedBy: templateResult.generatedBy,
+        fallbackReason: null,
+        duplicateInfo,
+      });
+    }
+
+    // CENÁRIO A — Janela de 24h aberta: permite mensagem livre contextualizada
     const generated = await generateMatchPropertyMessage({
       db: ctx.supabase,
       config: aiConfig,
       conversationId: conv.id,
-      context: {
-        lead: {
-          leadId,
-          leadName: contact.name || 'Cliente',
-          aiScore: contact.ai_score,
-          tags,
-          intelligenceSummary: (intel?.summary as Record<string, unknown> | undefined) || null,
-        },
-        property: resolvedProp.property,
-        publicUrl: resolvedLink.url,
-        matchScore: matchRow?.match_score ? Number(matchRow.match_score) : null,
-        matchReasons,
-        priorSharesCount: (allLeadShares || []).length,
-        priorSharedTitles,
-        lastMessageAt: conv.last_message_at || conv.created_at || null,
-      },
+      context: matchContext,
     });
 
     if (aiConfig && generated.generatedBy === 'ai' && generated.usage) {
@@ -438,12 +527,16 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       requiresConfirmation: false,
+      mode: 'free',
+      sessionWindowOpen: true,
+      sessionStatus,
       conversationId: conv.id,
       matchId: matchRow?.id || matchIdInput || null,
       propertyId: canonicalPropertyId,
       propertyTitle: resolvedProp.property.title,
       publicUrl: resolvedLink.url,
       draftText: generated.text,
+      template: null,
       templateAngle: generated.templateAngle,
       templateLabel: generated.templateLabel,
       generatedBy: generated.generatedBy,
