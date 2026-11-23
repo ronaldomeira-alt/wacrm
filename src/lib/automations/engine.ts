@@ -152,6 +152,63 @@ export async function resumePendingExecution(pending: {
   }
 
   try {
+    // If the wait step that parked this row uses `before_window_close`,
+    // re-check the live 24h customer-service window and 72h CTWA ceiling
+    // before resuming. Active conversations push the 24h clock forward,
+    // so we reschedule instead of interrupting an ongoing chat.
+    if (pending.next_step_position > 0) {
+      const prevStepQuery = db
+        .from('automation_steps')
+        .select('step_type, step_config')
+        .eq('automation_id', pending.automation_id)
+        .eq('position', pending.next_step_position - 1)
+      const scopedPrev =
+        pending.parent_step_id === null
+          ? prevStepQuery.is('parent_step_id', null)
+          : prevStepQuery
+              .eq('parent_step_id', pending.parent_step_id)
+              .eq('branch', pending.branch ?? 'yes')
+      const { data: prevStep } = await scopedPrev.maybeSingle()
+
+      if (prevStep?.step_type === 'wait') {
+        const waitCfg = prevStep.step_config as WaitStepConfig
+        if (waitCfg?.mode === 'before_window_close') {
+          const target = await resolveBeforeWindowCloseTarget(
+            db,
+            {
+              accountId: (automation as Automation).account_id,
+              contactId: pending.contact_id,
+              conversationId: pending.context?.conversation_id,
+            },
+            waitCfg.lead_before_close_minutes,
+          )
+          if (target) {
+            if (target.windowClosed) {
+              const reason = 'wait before_window_close: 24h customer service window already closed — skipped'
+              await markPending(pending.id, 'failed')
+              await appendResults(
+                pending.log_id,
+                [{ step_id: pending.id, step_type: 'wait', status: 'failed', detail: reason }],
+                'failed',
+                reason,
+              )
+              return
+            }
+            if (target.targetAt.getTime() > Date.now() + WINDOW_TARGET_TOLERANCE_MS) {
+              await db
+                .from('automation_pending_executions')
+                .update({
+                  status: 'pending',
+                  run_at: target.targetAt.toISOString(),
+                })
+                .eq('id', pending.id)
+              return
+            }
+          }
+        }
+      }
+    }
+
     await executeStepsFrom({
       automation: automation as Automation,
       contactId: pending.contact_id,
@@ -278,7 +335,27 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
     // scope. The cron endpoint will pick it up later.
     if (step.step_type === 'wait') {
       const cfg = step.step_config as WaitStepConfig
-      const ms = waitMs(cfg)
+      let runAt = new Date(Date.now() + waitMs(cfg))
+      let detail = `waiting ${cfg.amount} ${cfg.unit}`
+      if (cfg.mode === 'before_window_close') {
+        const target = await resolveBeforeWindowCloseTarget(
+          db,
+          {
+            accountId: args.automation.account_id,
+            contactId: args.contactId,
+            conversationId: args.context.conversation_id,
+          },
+          cfg.lead_before_close_minutes,
+        )
+        if (target && target.targetAt.getTime() > Date.now()) {
+          runAt = target.targetAt
+        }
+        const leadMins =
+          typeof cfg.lead_before_close_minutes === 'number' && cfg.lead_before_close_minutes > 0
+            ? cfg.lead_before_close_minutes
+            : 60
+        detail = `waiting until ${leadMins}m before window close (${runAt.toISOString()})`
+      }
       await db.from('automation_pending_executions').insert({
         automation_id: args.automation.id,
         // Tenancy: account_id required NOT NULL post-017.
@@ -290,14 +367,14 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         branch: args.branch,
         next_step_position: step.position + 1,
         context: args.context,
-        run_at: new Date(Date.now() + ms).toISOString(),
+        run_at: runAt.toISOString(),
         status: 'pending',
       })
       results.push({
         step_id: step.id,
         step_type: step.step_type,
         status: 'success',
-        detail: `waiting ${cfg.amount} ${cfg.unit}`,
+        detail,
       })
       status = 'partial'
       await appendResults(args.logId, results, status, errorMessage)
@@ -755,6 +832,107 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
     default:
       return false
   }
+}
+
+const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000
+/** Tolerance so a target within 60s of `now` runs immediately instead of
+ *  bouncing back to `pending` for a few seconds until the next cron tick. */
+const WINDOW_TARGET_TOLERANCE_MS = 60 * 1000
+
+/**
+ * Pure computation of the `before_window_close` target timestamp:
+ *   min(lastCustomerMessageAt + 24h - lead, ctwaFepExpiresAt - lead)
+ *
+ * - While the customer keeps replying, `lastCustomerMessageAt + 24h` keeps
+ *   advancing, deferring the automation until the conversation actually goes
+ *   quiet (23h after the customer's last message, with default 60m lead).
+ * - If the customer replies every day, the linear 72h CTWA Free Entry Point
+ *   ceiling (`ctwa_fep_expires_at`) caps the deferral at hour 71 (1h before
+ *   CTWA ends), while the 24h window is still open.
+ */
+export function computeBeforeWindowCloseTarget(input: {
+  lastCustomerMessageAt: string | null
+  ctwaFepExpiresAt: string | null
+  leadBeforeCloseMinutes?: number
+  nowMs?: number
+}): { targetAt: Date; windowClosed: boolean } | null {
+  const leadMinutes =
+    typeof input.leadBeforeCloseMinutes === 'number' &&
+    Number.isFinite(input.leadBeforeCloseMinutes) &&
+    input.leadBeforeCloseMinutes > 0
+      ? input.leadBeforeCloseMinutes
+      : 60
+  const leadMs = leadMinutes * 60 * 1000
+
+  const candidates: number[] = []
+  let sessionExpiresMs: number | null = null
+
+  if (input.lastCustomerMessageAt) {
+    const lastMs = new Date(input.lastCustomerMessageAt).getTime()
+    if (Number.isFinite(lastMs)) {
+      sessionExpiresMs = lastMs + SERVICE_WINDOW_MS
+      candidates.push(sessionExpiresMs - leadMs)
+    }
+  }
+
+  if (input.ctwaFepExpiresAt) {
+    const fepMs = new Date(input.ctwaFepExpiresAt).getTime()
+    if (Number.isFinite(fepMs)) {
+      candidates.push(fepMs - leadMs)
+    }
+  }
+
+  if (candidates.length === 0) return null
+
+  const nowMs = input.nowMs ?? Date.now()
+  const targetMs = Math.min(...candidates)
+  const windowClosed = sessionExpiresMs !== null && nowMs >= sessionExpiresMs
+  return { targetAt: new Date(targetMs), windowClosed }
+}
+
+async function resolveBeforeWindowCloseTarget(
+  db: ReturnType<typeof supabaseAdmin>,
+  lookup: { accountId: string; contactId: string | null; conversationId?: string },
+  leadBeforeCloseMinutes?: number,
+): Promise<{ targetAt: Date; windowClosed: boolean } | null> {
+  let conversationId = lookup.conversationId ?? null
+  let ctwaFepExpiresAt: string | null = null
+
+  if (conversationId) {
+    const { data: conv } = await db
+      .from('conversations')
+      .select('id, ctwa_fep_expires_at')
+      .eq('id', conversationId)
+      .eq('account_id', lookup.accountId)
+      .maybeSingle()
+    ctwaFepExpiresAt = (conv?.ctwa_fep_expires_at as string | null) ?? null
+  } else if (lookup.contactId) {
+    const { data: conv } = await db
+      .from('conversations')
+      .select('id, ctwa_fep_expires_at')
+      .eq('account_id', lookup.accountId)
+      .eq('contact_id', lookup.contactId)
+      .maybeSingle()
+    conversationId = (conv?.id as string | null) ?? null
+    ctwaFepExpiresAt = (conv?.ctwa_fep_expires_at as string | null) ?? null
+  }
+
+  if (!conversationId) return null
+
+  const { data: lastCustomerMsg } = await db
+    .from('messages')
+    .select('created_at')
+    .eq('conversation_id', conversationId)
+    .eq('sender_type', 'customer')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  return computeBeforeWindowCloseTarget({
+    lastCustomerMessageAt: (lastCustomerMsg?.created_at as string | null) ?? null,
+    ctwaFepExpiresAt,
+    leadBeforeCloseMinutes,
+  })
 }
 
 function waitMs(cfg: WaitStepConfig): number {

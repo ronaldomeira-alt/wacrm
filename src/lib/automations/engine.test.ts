@@ -8,8 +8,11 @@ const h = vi.hoisted(() => ({
     ownedCustomField: null as { id: string } | null,
     automations: [] as Record<string, unknown>[],
     steps: [] as Record<string, unknown>[],
+    conversation: null as Record<string, unknown> | null,
+    lastCustomerMessage: null as { created_at: string } | null,
     fromCalls: [] as string[],
     updateCalls: [] as { table: string; filters: [string, string, unknown][] }[],
+    pendingUpdates: [] as Record<string, unknown>[],
     upsertCalls: [] as { table: string; payload: unknown }[],
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
@@ -45,7 +48,26 @@ vi.mock("./admin-client", () => {
       }
       return { data: null, error: null };
     }
-    if (table === "automations") return { data: state.automations, error: null };
+    if (table === "automations") {
+      const idFilter = ops.filters.find(([, k]) => k === "id");
+      if (idFilter) {
+        const match = state.automations.find((a) => a.id === idFilter[2]) ?? null;
+        return { data: match, error: null };
+      }
+      return { data: state.automations, error: null };
+    }
+    if (table === "conversations") {
+      return { data: state.conversation, error: null };
+    }
+    if (table === "messages") {
+      return { data: state.lastCustomerMessage, error: null };
+    }
+    if (table === "automation_pending_executions") {
+      if (type === "update") {
+        state.pendingUpdates.push(ops.payload as Record<string, unknown>);
+      }
+      return { data: null, error: null };
+    }
     if (table === "automation_logs") {
       if (type === "insert") {
         state.logInserts.push(ops.payload as Record<string, unknown>);
@@ -57,7 +79,21 @@ vi.mock("./admin-client", () => {
       }
       return { data: { steps_executed: [], status: "success" }, error: null };
     }
-    if (table === "automation_steps") return { data: state.steps, error: null };
+    if (table === "automation_steps") {
+      const posEq = ops.filters.find(([op, k]) => op === "eq" && k === "position");
+      if (posEq) {
+        const match = state.steps.find((s) => s.position === posEq[2]) ?? null;
+        return { data: match, error: null };
+      }
+      const posGte = ops.filters.find(([op, k]) => op === "gte" && k === "position");
+      if (posGte) {
+        return {
+          data: state.steps.filter((s) => Number(s.position) >= Number(posGte[2])),
+          error: null,
+        };
+      }
+      return { data: state.steps, error: null };
+    }
     return { data: null, error: null };
   }
 
@@ -75,7 +111,7 @@ vi.mock("./admin-client", () => {
       delete: () => ((ops.type = "delete"), b),
       upsert: (p: unknown) => ((ops.type = "upsert"), (ops.payload = p), b),
       eq: (k: string, v: unknown) => (ops.filters.push(["eq", k, v]), b),
-      gte: () => b,
+      gte: (k: string, v: unknown) => (ops.filters.push(["gte", k, v]), b),
       is: () => b,
       order: () => b,
       limit: () => b,
@@ -104,7 +140,13 @@ vi.mock("./meta-send", () => ({
   engineSendInteractive: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
 }));
 
-import { runAutomationsForTrigger, triggerMatches } from "./engine";
+import {
+  computeBeforeWindowCloseTarget,
+  resumePendingExecution,
+  runAutomationsForTrigger,
+  triggerMatches,
+} from "./engine";
+import { engineSendText } from "./meta-send";
 import type { Automation } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -114,11 +156,15 @@ beforeEach(() => {
   h.state.ownedCustomField = null;
   h.state.automations = [];
   h.state.steps = [];
+  h.state.conversation = null;
+  h.state.lastCustomerMessage = null;
   h.state.fromCalls = [];
   h.state.updateCalls = [];
+  h.state.pendingUpdates = [];
   h.state.upsertCalls = [];
   h.state.logInserts = [];
   h.state.logUpdates = [];
+  vi.mocked(engineSendText).mockClear();
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -448,5 +494,173 @@ describe("tag_added — conversation policy", () => {
       status: "failed",
       error_message: "tag_added automation cannot send: contact has no existing conversation",
     }));
+  });
+});
+
+describe("computeBeforeWindowCloseTarget", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it("defers to 23h after last customer message while CTWA 72h still has headroom", () => {
+    const now = Date.UTC(2026, 10, 23, 14, 13, 0); // 11:13 BRT
+    const lastCustomer = new Date(now - 1 * HOUR).toISOString(); // replied 1h ago
+    const ctwaFepExpires = new Date(now + 44 * HOUR).toISOString(); // 44h left on CTWA
+
+    const res = computeBeforeWindowCloseTarget({
+      lastCustomerMessageAt: lastCustomer,
+      ctwaFepExpiresAt: ctwaFepExpires,
+      nowMs: now,
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.windowClosed).toBe(false);
+    // 23h after last customer msg = now + 22h
+    expect(res!.targetAt.getTime()).toBe(now + 22 * HOUR);
+  });
+
+  it("caps at hour 71 (1h before CTWA 72h expiry) when customer keeps replying daily", () => {
+    const now = Date.UTC(2026, 10, 25, 15, 0, 0);
+    const lastCustomer = new Date(now - 2 * HOUR).toISOString(); // 22h left on 24h window
+    const ctwaFepExpires = new Date(now + 1 * HOUR).toISOString(); // 71st hour reached!
+
+    const res = computeBeforeWindowCloseTarget({
+      lastCustomerMessageAt: lastCustomer,
+      ctwaFepExpiresAt: ctwaFepExpires,
+      nowMs: now,
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.windowClosed).toBe(false);
+    expect(res!.targetAt.getTime()).toBe(now);
+  });
+
+  it("marks windowClosed when 24h customer service window already expired", () => {
+    const now = Date.UTC(2026, 10, 24, 15, 0, 0);
+    const lastCustomer = new Date(now - 25 * HOUR).toISOString();
+
+    const res = computeBeforeWindowCloseTarget({
+      lastCustomerMessageAt: lastCustomer,
+      ctwaFepExpiresAt: new Date(now + 20 * HOUR).toISOString(),
+      nowMs: now,
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.windowClosed).toBe(true);
+  });
+});
+
+describe("resumePendingExecution — wait before_window_close", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  function setupInstagramAutomation() {
+    h.state.automations = [{
+      id: "auto-ig",
+      account_id: ACCOUNT,
+      user_id: "u1",
+      name: "Envio do perfil do instagram",
+      trigger_type: "first_agent_message",
+      trigger_config: {},
+      is_active: true,
+    }];
+    h.state.steps = [
+      {
+        id: "step-wait",
+        automation_id: "auto-ig",
+        parent_step_id: null,
+        branch: null,
+        position: 0,
+        step_type: "wait",
+        step_config: { amount: 22, unit: "hours", mode: "before_window_close", lead_before_close_minutes: 60 },
+      },
+      {
+        id: "step-send",
+        automation_id: "auto-ig",
+        parent_step_id: null,
+        branch: null,
+        position: 1,
+        step_type: "send_message",
+        step_config: { text: "Me segue no Instagram!" },
+      },
+    ];
+  }
+
+  function pendingRow() {
+    return {
+      id: "pend-1",
+      automation_id: "auto-ig",
+      account_id: ACCOUNT,
+      user_id: "u1",
+      contact_id: "c1",
+      log_id: "log-1",
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 1,
+      context: { conversation_id: "conv-1" },
+    };
+  }
+
+  it("reschedules and does NOT send when the customer replied recently (active conversation)", async () => {
+    setupInstagramAutomation();
+    const lastReply = new Date(Date.now() - 1 * HOUR);
+    h.state.conversation = {
+      id: "conv-1",
+      ctwa_fep_expires_at: new Date(Date.now() + 44 * HOUR).toISOString(),
+    };
+    h.state.lastCustomerMessage = { created_at: lastReply.toISOString() };
+
+    await resumePendingExecution(pendingRow());
+
+    expect(engineSendText).not.toHaveBeenCalled();
+    expect(h.state.pendingUpdates).toHaveLength(1);
+    expect(h.state.pendingUpdates[0]).toEqual({
+      status: "pending",
+      run_at: new Date(lastReply.getTime() + 23 * HOUR).toISOString(),
+    });
+  });
+
+  it("sends in the last hour before the 24h window closes once customer stops replying", async () => {
+    setupInstagramAutomation();
+    const lastReply = new Date(Date.now() - 23 * HOUR);
+    h.state.conversation = {
+      id: "conv-1",
+      ctwa_fep_expires_at: new Date(Date.now() + 30 * HOUR).toISOString(),
+    };
+    h.state.lastCustomerMessage = { created_at: lastReply.toISOString() };
+
+    await resumePendingExecution(pendingRow());
+
+    expect(engineSendText).toHaveBeenCalledTimes(1);
+    expect(h.state.pendingUpdates).toContainEqual({ status: "done" });
+  });
+
+  it("sends at hour 71 (1h before CTWA 72h ends) even if customer replied recently", async () => {
+    setupInstagramAutomation();
+    h.state.conversation = {
+      id: "conv-1",
+      ctwa_fep_expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    };
+    h.state.lastCustomerMessage = {
+      created_at: new Date(Date.now() - 2 * HOUR).toISOString(),
+    };
+
+    await resumePendingExecution(pendingRow());
+
+    expect(engineSendText).toHaveBeenCalledTimes(1);
+    expect(h.state.pendingUpdates).toContainEqual({ status: "done" });
+  });
+
+  it("skips without calling Meta when the 24h customer service window already expired", async () => {
+    setupInstagramAutomation();
+    h.state.conversation = {
+      id: "conv-1",
+      ctwa_fep_expires_at: new Date(Date.now() + 10 * HOUR).toISOString(),
+    };
+    h.state.lastCustomerMessage = {
+      created_at: new Date(Date.now() - 25 * HOUR).toISOString(),
+    };
+
+    await resumePendingExecution(pendingRow());
+
+    expect(engineSendText).not.toHaveBeenCalled();
+    expect(h.state.pendingUpdates).toContainEqual({ status: "failed" });
   });
 });

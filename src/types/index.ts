@@ -1102,6 +1102,17 @@ export interface CreateDealStepConfig {
 export interface WaitStepConfig {
   amount: number;
   unit: 'minutes' | 'hours' | 'days';
+  /**
+   * - 'fixed' (default): wait `amount` `unit` from when the step runs.
+   * - 'before_window_close': wait until `lead_before_close_minutes` (default 60)
+   *   before the earliest of (last customer message + 24h) and
+   *   (conversations.ctwa_fep_expires_at, the 72h CTWA ceiling). If the customer
+   *   keeps replying, the pending execution is rescheduled instead of firing
+   *   mid-conversation.
+   */
+  mode?: 'fixed' | 'before_window_close';
+  /** Minutes before window close when `mode === 'before_window_close'` (default 60). */
+  lead_before_close_minutes?: number;
 }
 
 export type ConditionSubject =
