@@ -37,7 +37,7 @@ import { AiPlayground } from '@/components/agents/ai-playground';
 import { AiBehaviorSettings } from '@/components/agents/ai-behavior-settings';
 import { AiEvolutionDashboard } from '@/components/agents/ai-evolution-dashboard';
 import {
-  AI_SUGGESTION_CATEGORIES,
+  CENTRAL_IA_SUGGESTION_CATEGORIES,
   aiSuggestionCategoryConfig,
   IGNORED_SUGGESTION_RETENTION_DAYS,
 } from '@/lib/ai-suggestion-status';
@@ -150,7 +150,7 @@ function AgentsPageInner() {
     [loadSuggestions, patchSuggestion, t],
   );
 
-  const itemsByCategory = AI_SUGGESTION_CATEGORIES.reduce<
+  const itemsByCategory = CENTRAL_IA_SUGGESTION_CATEGORIES.reduce<
     Record<AiSuggestionCategory, AiSuggestion[]>
   >(
     (acc, cat) => {
@@ -160,12 +160,16 @@ function AgentsPageInner() {
     {} as Record<AiSuggestionCategory, AiSuggestion[]>,
   );
 
-  const counts = AI_SUGGESTION_CATEGORIES.reduce<Record<string, number>>(
+  const counts = CENTRAL_IA_SUGGESTION_CATEGORIES.reduce<Record<string, number>>(
     (acc, cat) => {
       acc[cat] = itemsByCategory[cat].length;
       return acc;
     },
     {},
+  );
+
+  const hasVisibleCentralIaSuggestions = CENTRAL_IA_SUGGESTION_CATEGORIES.some(
+    (cat) => (counts[cat] ?? 0) > 0,
   );
 
   const [groupBulkRunning, setGroupBulkRunning] = useState<
@@ -376,9 +380,9 @@ function AgentsPageInner() {
               <div className="flex h-48 items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-primary" />
               </div>
-            ) : suggestions.length > 0 ? (
+            ) : hasVisibleCentralIaSuggestions ? (
               <div className="space-y-3">
-                {AI_SUGGESTION_CATEGORIES.filter((cat) => counts[cat] > 0).map((cat) => {
+                {CENTRAL_IA_SUGGESTION_CATEGORIES.filter((cat) => counts[cat] > 0).map((cat) => {
                   const meta = aiSuggestionCategoryConfig[cat];
                   const Icon = meta.icon;
                   const items = itemsByCategory[cat];

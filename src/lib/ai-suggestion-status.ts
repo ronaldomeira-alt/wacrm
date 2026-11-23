@@ -78,6 +78,14 @@ export const AI_SUGGESTION_CATEGORIES: readonly AiSuggestionCategory[] = [
   'other',
 ];
 
+/**
+ * Categorias exibidas na aba Sugestões da Central de IA.
+ * O módulo Follow-up possui rota e navegação independentes (`/followup`),
+ * preservando aqui Movimentações de pipeline, Aprendizados pendentes e demais categorias.
+ */
+export const CENTRAL_IA_SUGGESTION_CATEGORIES: readonly AiSuggestionCategory[] =
+  AI_SUGGESTION_CATEGORIES.filter((cat) => cat !== 'followup');
+
 export const AI_SUGGESTION_STATUSES: readonly AiSuggestionStatus[] = [
   'pending',
   'approved',

@@ -100,6 +100,7 @@ const INTERNAL_APP_PREFIXES = [
   '/dashboard',
   '/inbox',
   '/match',
+  '/followup',
   '/settings',
   '/api/',
   '/api',

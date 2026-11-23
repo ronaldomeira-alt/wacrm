@@ -10,6 +10,7 @@ import { usePendingActionItemsCount } from "@/hooks/use-pending-action-items-cou
 import {
   BrainCircuit,
   Calculator,
+  CalendarCheck2,
   Crown,
   GitBranch,
   LayoutDashboard,
@@ -94,6 +95,7 @@ const navItems: NavItem[] = [
   { href: "/notifications", labelKey: "actionCenter", icon: ListChecks },
   { href: "/contacts", labelKey: "contacts", icon: Users },
   { href: "/match", labelKey: "match", icon: Sparkles },
+  { href: "/followup", labelKey: "followup", icon: CalendarCheck2 },
   { href: "/pipelines", labelKey: "pipelines", icon: GitBranch },
   { href: "/campaigns", labelKey: "broadcasts", icon: Megaphone },
   { href: "/automations", labelKey: "automations", icon: Zap },

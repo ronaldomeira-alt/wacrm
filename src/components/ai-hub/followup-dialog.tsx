@@ -1,16 +1,20 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import {
   Ban,
+  Building2,
   Check,
+  ChevronDown,
   Clock,
   Copy,
+  ExternalLink,
   Loader2,
   MessageSquare,
+  Plus,
   RotateCcw,
   ShoppingBag,
   Sparkles,
@@ -30,6 +34,7 @@ import {
 import { writeFollowupDraft } from '@/lib/inbox/followup-draft';
 import { renderTemplatePreview } from '@/lib/whatsapp/template-validators';
 import type { FollowupPlan, FollowupPlanContact } from '@/lib/ai/followup-types';
+import type { CompatiblePropertySummary } from '@/lib/followup/engine';
 import type { AiSuggestion } from '@/types';
 
 /** Default "Adiar" window — a single click, no duration picker, kept
@@ -109,11 +114,25 @@ export function FollowupDialog({
   open,
   onOpenChange,
   onResolved,
+  compatibleProperties: initialCompatibleProperties,
+  stageName: overrideStageName,
+  hoursSinceLastCommunication,
+  neverContacted,
+  lastMessagePreview,
+  primaryNeed,
+  interestProperty,
 }: {
   suggestion: AiSuggestion;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onResolved: () => void;
+  compatibleProperties?: CompatiblePropertySummary[];
+  stageName?: string | null;
+  hoursSinceLastCommunication?: number | null;
+  neverContacted?: boolean;
+  lastMessagePreview?: string | null;
+  primaryNeed?: string | null;
+  interestProperty?: string | null;
 }) {
   const t = useTranslations('AiHub.followup');
   const router = useRouter();
@@ -143,6 +162,87 @@ export function FollowupDialog({
   );
   const [plan, setPlan] = useState<FollowupPlan | null>(
     payload.draft?.mode === 'plan' ? payload.draft.plan : null,
+  );
+  const [compatibleProperties, setCompatibleProperties] = useState<CompatiblePropertySummary[]>(
+    initialCompatibleProperties ?? [],
+  );
+  const [loadingMatches, setLoadingMatches] = useState(false);
+  const [matchesExpanded, setMatchesExpanded] = useState(false);
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialCompatibleProperties) {
+      setCompatibleProperties(initialCompatibleProperties);
+      return;
+    }
+    if (!open || !suggestion.contact_id) return;
+    let active = true;
+    setLoadingMatches(true);
+    fetch(`/api/match/lead/${encodeURIComponent(suggestion.contact_id)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data?.matches) return;
+        const mapped: CompatiblePropertySummary[] = (
+          data.matches as Array<Record<string, unknown>>
+        )
+          .filter((m) => Number(m.match_score ?? 0) >= 70 && m.match_status !== 'ignorado')
+          .slice(0, 5)
+          .map((m) => {
+            const prop = (m.property ?? {}) as Record<string, unknown>;
+            const breakdown = (m.score_breakdown ?? {}) as Record<string, unknown>;
+            return {
+              matchId: String(m.id || ''),
+              propertyId: String(prop.propertyId || m.property_id || ''),
+              title: String(prop.title || 'Imóvel compatível'),
+              code: prop.code ? String(prop.code) : null,
+              neighborhood: String(prop.neighborhood || ''),
+              city: String(prop.city || 'João Pessoa'),
+              operation: String(data.searchProfile?.operation || 'venda'),
+              propertyType: null,
+              priceMin: Number(prop.priceMin || 0),
+              priceMax: Number(prop.priceMax || 0),
+              bedroomsMin: prop.bedroomsMin != null ? Number(prop.bedroomsMin) : null,
+              bedroomsMax: prop.bedroomsMax != null ? Number(prop.bedroomsMax) : null,
+              areaMin: prop.areaMin != null ? Number(prop.areaMin) : null,
+              deliveryStatus: prop.deliveryStatus ? String(prop.deliveryStatus) : null,
+              coverUrl: prop.coverUrl ? String(prop.coverUrl) : null,
+              publicUrl: prop.publicUrl ? String(prop.publicUrl) : null,
+              matchScore: Math.round(Number(m.match_score || 0)),
+              commercialPriority: Number(m.commercial_priority || 0),
+              matchStatus: String(m.match_status || 'novo'),
+              reasons: Array.isArray(breakdown.reasons)
+                ? (breakdown.reasons as unknown[]).map((r) => String(r))
+                : [],
+            };
+          });
+        setCompatibleProperties(mapped);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setLoadingMatches(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, suggestion.contact_id, initialCompatibleProperties]);
+
+  const selectedProperty =
+    compatibleProperties.find((p) => p.propertyId === selectedPropertyId) ?? null;
+
+  const insertPropertyIntoDraft = useCallback(
+    (prop: CompatiblePropertySummary) => {
+      const location = [prop.neighborhood, prop.city].filter(Boolean).join(', ');
+      const refLine = prop.publicUrl
+        ? `\n\nSeparei também esta opção que combina com o que você busca: ${prop.title}${location ? ` (${location})` : ''}\n${prop.publicUrl}`
+        : `\n\nSeparei também esta opção compatível com sua busca: ${prop.title}${location ? ` (${location})` : ''}.`;
+      setFreeText((prev) => {
+        const trimmed = prev.trim();
+        if (trimmed.includes(prop.title)) return prev;
+        return `${trimmed}${refLine}`.trim();
+      });
+      toast.success(`Referência de "${prop.title}" adicionada ao rascunho.`);
+    },
+    [],
   );
 
   const generate = useCallback(
@@ -301,10 +401,12 @@ export function FollowupDialog({
         {step === 'review' && (
           <div className="space-y-3">
             <dl className="grid grid-cols-2 gap-2 text-sm">
-              {payload.stage_name && (
+              {(overrideStageName ?? payload.stage_name) && (
                 <div>
                   <dt className="text-xs text-muted-foreground">{t('stage')}</dt>
-                  <dd className="text-foreground">{payload.stage_name}</dd>
+                  <dd className="text-foreground font-medium">
+                    {overrideStageName ?? payload.stage_name}
+                  </dd>
                 </div>
               )}
               {payload.has_purchased !== undefined && (
@@ -316,26 +418,166 @@ export function FollowupDialog({
                   </dd>
                 </div>
               )}
-              {typeof payload.hours_since_contact === 'number' && (
+              {neverContacted ? (
+                <div className="col-span-2">
+                  <dt className="text-xs text-muted-foreground">{t('lastContact')}</dt>
+                  <dd className="flex items-center gap-1 text-amber-400 font-medium">
+                    <Clock className="h-3.5 w-3.5" />
+                    <span>Nunca contatado</span>
+                  </dd>
+                </div>
+              ) : typeof (hoursSinceLastCommunication ?? payload.hours_since_contact) === 'number' ? (
                 <div className="col-span-2">
                   <dt className="text-xs text-muted-foreground">{t('lastContact')}</dt>
                   <dd className="flex items-center gap-1 text-foreground">
                     <Clock className="h-3.5 w-3.5" />
-                    {t('hoursAgo', { hours: payload.hours_since_contact })}
+                    {t('hoursAgo', {
+                      hours: hoursSinceLastCommunication ?? payload.hours_since_contact ?? 0,
+                    })}
                   </dd>
                 </div>
-              )}
+              ) : null}
             </dl>
-            {payload.reason && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">{t('reason')}</p>
-                <p className="text-sm text-foreground">{payload.reason}</p>
+
+            {(interestProperty || primaryNeed) && (
+              <div className="rounded-lg border border-border/70 bg-muted/30 p-2.5 space-y-1 text-xs">
+                {interestProperty && (
+                  <p className="text-foreground flex items-center gap-1.5">
+                    <Building2 className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <span className="text-muted-foreground">Empreendimento:</span>
+                    <strong className="font-semibold">{interestProperty}</strong>
+                  </p>
+                )}
+                {primaryNeed && (
+                  <p className="text-foreground">
+                    <span className="text-muted-foreground">Necessidade principal:</span>{' '}
+                    <span className="font-medium">{primaryNeed}</span>
+                  </p>
+                )}
               </div>
             )}
-            {payload.approach_summary && (
+
+            {(payload.reason || suggestion.title) && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">{t('reason')}</p>
+                <p className="text-sm text-foreground">{payload.reason || suggestion.title}</p>
+              </div>
+            )}
+            {(payload.approach_summary || suggestion.description) && (
               <div>
                 <p className="text-xs font-medium text-muted-foreground">{t('approach')}</p>
-                <p className="text-sm text-foreground">{payload.approach_summary}</p>
+                <p className="text-sm text-foreground">
+                  {payload.approach_summary || suggestion.description}
+                </p>
+              </div>
+            )}
+
+            {lastMessagePreview && (
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-2.5">
+                <p className="text-[11px] font-medium text-muted-foreground mb-1">
+                  Última mensagem registrada na conversa
+                </p>
+                <p className="text-xs text-foreground/90 italic line-clamp-3">
+                  &ldquo;{lastMessagePreview}&rdquo;
+                </p>
+              </div>
+            )}
+
+            {/* Seção secundária e discreta de imóveis compatíveis do Match (Seção 9) */}
+            {(compatibleProperties.length > 0 || loadingMatches) && (
+              <div
+                data-testid="followup-dialog-compatible-properties"
+                className="rounded-xl border border-border/70 bg-card/60 p-3 space-y-2"
+              >
+                <button
+                  type="button"
+                  onClick={() => setMatchesExpanded((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-2 text-left"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <span className="text-xs font-semibold text-foreground truncate">
+                      Imóveis compatíveis para este atendimento
+                    </span>
+                    <span className="rounded-full bg-primary/15 border border-primary/25 px-1.5 py-0.2 text-[10px] font-bold text-primary shrink-0">
+                      {loadingMatches ? '...' : compatibleProperties.length}
+                    </span>
+                  </div>
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${
+                      matchesExpanded ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {matchesExpanded && (
+                  <div className="space-y-2 pt-2 border-t border-border/50 max-h-48 overflow-y-auto">
+                    <p className="text-[11px] text-muted-foreground">
+                      Selecione um imóvel compatível como apoio contextual para apresentar ao cliente, se oportuno:
+                    </p>
+                    {compatibleProperties.map((prop) => {
+                      const isSelected = selectedPropertyId === prop.propertyId;
+                      return (
+                        <div
+                          key={prop.propertyId}
+                          className={`flex items-center justify-between gap-2 rounded-lg border p-2 text-xs transition-colors ${
+                            isSelected
+                              ? 'border-primary bg-primary/10'
+                              : 'border-border/60 bg-background/50 hover:border-border'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400">
+                                {prop.matchScore}% match
+                              </span>
+                              <span className="font-semibold text-foreground truncate">
+                                {prop.title}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                              {[
+                                prop.neighborhood,
+                                prop.city,
+                                prop.bedroomsMin ? `${prop.bedroomsMin}q` : null,
+                                prop.operation === 'locacao' ? 'Locação' : 'Venda',
+                              ]
+                                .filter(Boolean)
+                                .join(' • ')}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {prop.publicUrl && (
+                              <a
+                                href={prop.publicUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
+                                title="Ver link público do imóvel"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={isSelected ? 'default' : 'outline'}
+                              onClick={() =>
+                                setSelectedPropertyId((curr) =>
+                                  curr === prop.propertyId ? null : prop.propertyId,
+                                )
+                              }
+                              className="h-7 px-2 text-[11px]"
+                            >
+                              {isSelected ? 'Selecionado' : 'Selecionar'}
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -382,7 +624,7 @@ export function FollowupDialog({
         )}
 
         {step === 'free_draft' && (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <Label className="text-xs">{t('messagePreview')}</Label>
             <Textarea
               value={freeText}
@@ -390,6 +632,32 @@ export function FollowupDialog({
               rows={6}
               className="text-sm"
             />
+            {compatibleProperties.length > 0 && (
+              <div className="rounded-lg border border-border/60 bg-muted/30 p-2.5 space-y-1.5">
+                <p className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+                  <Sparkles className="h-3 w-3 text-primary" />
+                  Adicionar imóvel compatível ao texto (opcional):
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {(selectedProperty ? [selectedProperty] : compatibleProperties.slice(0, 3)).map(
+                    (prop) => (
+                      <Button
+                        key={prop.propertyId}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => insertPropertyIntoDraft(prop)}
+                        className="h-7 px-2 text-[11px] gap-1"
+                      >
+                        <Plus className="h-3 w-3" />
+                        <span className="truncate max-w-[180px]">{prop.title}</span>
+                        <span className="text-emerald-400 font-semibold">({prop.matchScore}%)</span>
+                      </Button>
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
