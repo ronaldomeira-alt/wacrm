@@ -99,6 +99,14 @@ export default function MatchPage() {
   // Filtros
   const [leadSearch, setLeadSearch] = useState('');
   const [propertySearch, setPropertySearch] = useState('');
+  const [propertyIdFilter, setPropertyIdFilter] = useState<string | null>(null);
+  const [urlInitialized, setUrlInitialized] = useState(false);
+  const [selectedPropertyContext, setSelectedPropertyContext] = useState<{
+    propertyId: string;
+    title: string;
+    neighborhood: string;
+    coverUrl?: string | null;
+  } | null>(null);
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | '24h' | '7d' | '30d' | 'older'>('all');
   const [scoreFilter, setScoreFilter] = useState<'all' | 'elite' | 'strong'>('all');
   const [maturityFilter, setMaturityFilter] = useState<'all' | 'ready' | 'growing'>('all');
@@ -108,13 +116,31 @@ export default function MatchPage() {
 
   const activeSecondaryFiltersCount = useMemo(() => {
     let count = 0;
+    if (propertyIdFilter) count++;
     if (propertySearch.trim()) count++;
     if (dateFilter !== 'all') count++;
     if (scoreFilter !== 'all') count++;
     if (maturityFilter !== 'all') count++;
     if (minAiScore !== '0') count++;
     return count;
-  }, [propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore]);
+  }, [propertyIdFilter, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore]);
+
+  // Modais e Deep-link de Notificações
+  const [selectedGroupForModal, setSelectedGroupForModal] = useState<LeadMatchGroup | null>(null);
+  const [highlightPropertyId, setHighlightPropertyId] = useState<string | null>(null);
+  const [selectedMatchForSend, setSelectedMatchForSend] = useState<MatchCardItem | null>(null);
+  const deepLinkHandledRef = useRef<string | null>(null);
+
+  const clearPropertyIdFilter = useCallback(() => {
+    setPropertyIdFilter(null);
+    setSelectedPropertyContext(null);
+    setHighlightPropertyId(null);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('property_id');
+      window.history.replaceState(null, '', url.pathname + url.search);
+    }
+  }, []);
 
   const resetAllFilters = useCallback(() => {
     setLeadSearch('');
@@ -123,7 +149,8 @@ export default function MatchPage() {
     setScoreFilter('all');
     setMaturityFilter('all');
     setMinAiScore('0');
-  }, []);
+    clearPropertyIdFilter();
+  }, [clearPropertyIdFilter]);
   const [page, setPage] = useState<number>(1);
   const [pagination, setPagination] = useState<{
     page: number;
@@ -138,12 +165,6 @@ export default function MatchPage() {
     totalPages: 1,
     hasMore: false,
   });
-
-  // Modais e Deep-link de Notificações
-  const [selectedGroupForModal, setSelectedGroupForModal] = useState<LeadMatchGroup | null>(null);
-  const [highlightPropertyId, setHighlightPropertyId] = useState<string | null>(null);
-  const [selectedMatchForSend, setSelectedMatchForSend] = useState<MatchCardItem | null>(null);
-  const deepLinkHandledRef = useRef<string | null>(null);
 
   const fetchMatches = useCallback(
     async (silent = false, forceInventorySync = false) => {
@@ -163,6 +184,7 @@ export default function MatchPage() {
         if (forceInventorySync) params.set('sync', '1');
         if (leadSearch.trim()) params.set('lead_search', leadSearch.trim());
         if (propertySearch.trim()) params.set('property_search', propertySearch.trim());
+        if (propertyIdFilter) params.set('property_id', propertyIdFilter);
         if (dateFilter !== 'all') params.set('date_filter', dateFilter);
 
         if (scoreFilter === 'elite') {
@@ -196,6 +218,11 @@ export default function MatchPage() {
         }
         if (data.catalogStatus) {
           setCatalogStatus(data.catalogStatus);
+        }
+        if (propertyIdFilter) {
+          setSelectedPropertyContext(data.selectedProperty || null);
+        } else {
+          setSelectedPropertyContext(null);
         }
 
         // Atualiza modal caso esteja aberto
@@ -244,17 +271,30 @@ export default function MatchPage() {
         setRefreshing(false);
       }
     },
-    [activeTab, leadSearch, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy, page]
+    [activeTab, leadSearch, propertySearch, propertyIdFilter, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy, page]
   );
+
+  // Lê filtro inicial ?property_id=... da URL (navegação contextual vinda do Painel)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const initialPropId = new URLSearchParams(window.location.search).get('property_id');
+      if (initialPropId) {
+        setPropertyIdFilter(initialPropId);
+        setHighlightPropertyId(initialPropId);
+      }
+    }
+    setUrlInitialized(true);
+  }, []);
 
   // Volta para a página 1 quando mudar aba, filtros ou ordenação
   useEffect(() => {
     setPage(1);
-  }, [activeTab, leadSearch, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy]);
+  }, [activeTab, leadSearch, propertySearch, propertyIdFilter, dateFilter, scoreFilter, maturityFilter, minAiScore, sortBy]);
 
   useEffect(() => {
+    if (!urlInitialized) return;
     fetchMatches();
-  }, [fetchMatches]);
+  }, [urlInitialized, fetchMatches]);
 
   // Sincronização em tempo real via Supabase Realtime
   // Escuta alterações em lead_property_matches, property_match_projections E inventory_properties (Meus Imóveis)
@@ -320,7 +360,23 @@ export default function MatchPage() {
   // Ao abrir o modal de um lead na aba 'novo', registra visualização (mark_viewed) silenciosamente
   const handleOpenLeadModal = useCallback(
     (group: LeadMatchGroup) => {
+      if (propertyIdFilter) {
+        setHighlightPropertyId(propertyIdFilter);
+      }
       setSelectedGroupForModal(group);
+      if (propertyIdFilter) {
+        // Quando filtrado por imóvel, hidrata os demais imóveis compatíveis do cliente para a modal
+        fetch(`/api/match/lead/${group.leadId}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((leadData) => {
+            if (leadData?.matchGroup) {
+              setSelectedGroupForModal((curr) =>
+                curr?.leadId === group.leadId ? leadData.matchGroup : curr
+              );
+            }
+          })
+          .catch(() => {});
+      }
       if (group.isUnread) {
         fetch('/api/match', {
           method: 'POST',
@@ -342,7 +398,7 @@ export default function MatchPage() {
           .catch(() => {});
       }
     },
-    [activeTab]
+    [activeTab, propertyIdFilter]
   );
 
   // Ações rápidas de ciclo de vida diretamente no card do Lead (Em análise, Ignorar, Arquivar, Restaurar)
@@ -846,6 +902,43 @@ export default function MatchPage() {
 
       {/* Conteúdo Principal: Grid de Leads (1 Card Visual = 1 Lead) */}
       <div className="flex-1 p-3 sm:p-6 space-y-4 sm:space-y-6">
+        {propertyIdFilter && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/10 px-3.5 py-2.5 text-xs">
+            <div className="flex min-w-0 items-center gap-2">
+              <Building2 className="size-4 shrink-0 text-primary" />
+              <span className="truncate text-foreground">
+                Filtrado por imóvel:{' '}
+                <strong>
+                  {selectedPropertyContext
+                    ? selectedPropertyContext.neighborhood &&
+                      !selectedPropertyContext.title
+                        .toLowerCase()
+                        .includes(selectedPropertyContext.neighborhood.toLowerCase())
+                      ? `${selectedPropertyContext.title} – ${selectedPropertyContext.neighborhood}`
+                      : selectedPropertyContext.title
+                    : 'Imóvel selecionado'}
+                </strong>
+              </span>
+              {!loading && (
+                <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                  {pagination.totalGroups}{' '}
+                  {pagination.totalGroups === 1 ? 'cliente' : 'clientes'}
+                </span>
+              )}
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={clearPropertyIdFilter}
+              className="h-7 shrink-0 gap-1 px-2 text-xs text-foreground hover:bg-primary/15"
+            >
+              <X className="size-3.5" />
+              <span>Limpar filtro</span>
+            </Button>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex h-56 flex-col items-center justify-center gap-3 text-center px-4">
             <div className="relative">

@@ -37,6 +37,7 @@ import {
 import { isR2MediaKey } from "@/lib/storage/media-url-kind";
 import { prefetchMediaKeys } from "@/lib/inbox/use-resolved-media-src";
 import { reconcileOptimisticMessages } from "@/lib/inbox/optimistic-album";
+import { resolveDeepLinkConversation } from "@/lib/inbox/deep-link";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -123,6 +124,8 @@ function InboxPageInner() {
    */
   const activeConversationIdRef = useRef<string | null>(null);
   activeConversationIdRef.current = activeConversation?.id ?? null;
+
+  const conversationsRef = useRef<Conversation[]>([]);
 
   /**
    * Tracks whether a history entry was pushed by this session when opening a conversation
@@ -292,10 +295,12 @@ function InboxPageInner() {
   const autoSelectedForDeepLinkRef = useRef<string | null>(null);
 
   // Tracks conversations whose hydrate fetch is currently in flight. The
-  // conv-INSERT and the first-message-INSERT events both call into
-  // hydrateConversation; the dedupe here keeps it at one refetch per
-  // new conversation even when both events arrive within milliseconds.
-  const hydratingConvIdsRef = useRef<Set<string>>(new Set());
+  // conv-INSERT, first-message-INSERT, and deep-link fallback all share
+  // this map so concurrent callers await the same single fetch and receive
+  // the resolved Conversation | null.
+  const hydratingConvPromisesRef = useRef<
+    Map<string, Promise<Conversation | null>>
+  >(new Map());
 
   /**
    * Synchronous mirror of the conversation ids currently in `conversations`
@@ -310,6 +315,7 @@ function InboxPageInner() {
    */
   const knownConvIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    conversationsRef.current = conversations;
     const next = new Set<string>();
     for (const c of conversations) next.add(c.id);
     knownConvIdsRef.current = next;
@@ -323,36 +329,46 @@ function InboxPageInner() {
   // conversations stuck on "No messages yet" until the user reloaded.
   // Also self-heals if a realtime event was missed: callers can invoke
   // this whenever they reference a conversation id they don't recognise.
-  const hydrateConversation = useCallback(async (convId: string) => {
-    if (hydratingConvIdsRef.current.has(convId)) return;
-    hydratingConvIdsRef.current.add(convId);
-    try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .eq("id", convId)
-        .maybeSingle();
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields
-        // explicitly so the console message isn't just `{}`.
-        console.error("Failed to hydrate conversation:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        return;
-      }
-      if (!data) return;
-      const fetched = normalizeConversation(data);
-      setConversations((prev) =>
-        mergeHydratedConversation(prev, fetched, getPlatformProfile())
-      );
-    } finally {
-      hydratingConvIdsRef.current.delete(convId);
-    }
-  }, []);
+  const hydrateConversation = useCallback(
+    (convId: string): Promise<Conversation | null> => {
+      const existing = hydratingConvPromisesRef.current.get(convId);
+      if (existing) return existing;
+
+      const promise = (async (): Promise<Conversation | null> => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase
+            .from("conversations")
+            .select(CONVERSATION_SELECT)
+            .eq("id", convId)
+            .maybeSingle();
+          if (error) {
+            // Supabase errors have non-enumerable properties — log fields
+            // explicitly so the console message isn't just `{}`.
+            console.error("Failed to hydrate conversation:", {
+              message: error.message,
+              details: error.details,
+              hint: error.hint,
+              code: error.code,
+            });
+            return null;
+          }
+          if (!data) return null;
+          const fetched = normalizeConversation(data);
+          setConversations((prev) =>
+            mergeHydratedConversation(prev, fetched, getPlatformProfile())
+          );
+          return fetched;
+        } finally {
+          hydratingConvPromisesRef.current.delete(convId);
+        }
+      })();
+
+      hydratingConvPromisesRef.current.set(convId, promise);
+      return promise;
+    },
+    []
+  );
 
   // Check WhatsApp connection status on mount
   useEffect(() => {
@@ -618,6 +634,64 @@ function InboxPageInner() {
     [buildInboxUrl]
   );
 
+  const openDeepLinkedConversation = useCallback((match: Conversation) => {
+    autoSelectedForDeepLinkRef.current = match.id;
+    setActiveConversation(match);
+    setActiveContact(match.contact ?? null);
+    const cached = getCachedMessages(match.id);
+    setMessages(cached ?? []);
+    if (match.unread_count > 0) {
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === match.id ? { ...c, unread_count: 0 } : c,
+        ),
+      );
+    }
+  }, []);
+
+  // Resolve `/inbox?c=<id>` even on mobile/iPhone PWA when the target
+  // conversation falls outside the top-50 list or before the list finishes
+  // loading. Falls back to hydrating the single conversation via RLS.
+  useEffect(() => {
+    if (!deepLinkConvId) return;
+    if (typeof window !== "undefined") {
+      const liveC = new URLSearchParams(window.location.search).get("c");
+      if (liveC !== deepLinkConvId) return;
+    }
+
+    let cancelled = false;
+    void resolveDeepLinkConversation({
+      conversationId: deepLinkConvId,
+      loadedConversations: conversationsRef.current,
+      activeConversationId: activeConversationIdRef.current,
+      alreadyResolvedId: autoSelectedForDeepLinkRef.current,
+      fetchById: hydrateConversation,
+      isStillCurrent: () => {
+        if (cancelled) return false;
+        if (typeof window !== "undefined") {
+          const liveC = new URLSearchParams(window.location.search).get("c");
+          if (liveC !== deepLinkConvId) return false;
+        }
+        const currentActive = activeConversationIdRef.current;
+        return !currentActive || currentActive === deepLinkConvId;
+      },
+    }).then((result) => {
+      if (cancelled) return;
+      if (
+        result.status === "resolved_from_list" ||
+        result.status === "resolved_from_fetch"
+      ) {
+        openDeepLinkedConversation(result.conversation);
+      } else if (result.status === "not_found") {
+        autoSelectedForDeepLinkRef.current = deepLinkConvId;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deepLinkConvId, hydrateConversation, openDeepLinkedConversation]);
+
   // ── Master-Detail History & Popstate synchronization ──────────────────
   // Listens to browser back/forward and native iPhone edge-swipe gestures.
   // When the user navigates back to /inbox, we trigger the slide-out leave
@@ -671,7 +745,21 @@ function InboxPageInner() {
               setInboxTransition("enter");
             }
           } else {
-            hydrateConversation(convIdFromUrl);
+            void hydrateConversation(convIdFromUrl).then((hydrated) => {
+              if (!hydrated) return;
+              const liveC = new URLSearchParams(window.location.search).get("c");
+              if (liveC !== convIdFromUrl) return;
+              const currentActive = activeConversationIdRef.current;
+              if (currentActive && currentActive !== convIdFromUrl) return;
+              openDeepLinkedConversation(hydrated);
+              if (shouldAnimateTransition()) {
+                if (leaveTimerRef.current) {
+                  clearTimeout(leaveTimerRef.current);
+                  leaveTimerRef.current = null;
+                }
+                setInboxTransition("enter");
+              }
+            });
           }
         }
       }
@@ -681,36 +769,28 @@ function InboxPageInner() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [conversations, handleCloseConversation, hydrateConversation, shouldAnimateTransition]);
+  }, [conversations, handleCloseConversation, hydrateConversation, openDeepLinkedConversation, shouldAnimateTransition]);
 
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
       setConversations(loaded);
-      // Resolve a pending deep-link on mount or initial list load (/inbox?c=<id>)
+      // Fast-path: if the initial list already contains `?c=<id>`, select it immediately
       if (
         deepLinkConvId &&
         autoSelectedForDeepLinkRef.current !== deepLinkConvId &&
         loaded.length > 0
       ) {
-        autoSelectedForDeepLinkRef.current = deepLinkConvId;
-        if (activeConversation?.id === deepLinkConvId) return;
+        if (activeConversation?.id === deepLinkConvId) {
+          autoSelectedForDeepLinkRef.current = deepLinkConvId;
+          return;
+        }
         const match = loaded.find((c) => c.id === deepLinkConvId);
         if (match) {
-          setActiveConversation(match);
-          setActiveContact(match.contact ?? null);
-          const cached = getCachedMessages(match.id);
-          setMessages(cached ?? []);
-          if (match.unread_count > 0) {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === match.id ? { ...c, unread_count: 0 } : c,
-              ),
-            );
-          }
+          openDeepLinkedConversation(match);
         }
       }
     },
-    [deepLinkConvId, activeConversation?.id]
+    [deepLinkConvId, activeConversation?.id, openDeepLinkedConversation]
   );
 
   const handleSelectConversation = useCallback(

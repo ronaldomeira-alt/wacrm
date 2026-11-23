@@ -45,6 +45,7 @@ export async function GET(request: Request) {
     const minAiScore = parseInt(searchParams.get('min_ai_score') || '0', 10);
     const leadSearch = (searchParams.get('lead_search') || '').trim();
     const propertySearch = (searchParams.get('property_search') || '').trim();
+    const propertyIdFilter = (searchParams.get('property_id') || '').trim();
     const dateFilter = (searchParams.get('date_filter') || 'all').trim(); // all | today | 24h | 7d | 30d | older
     const viewFilter = (searchParams.get('view_filter') || 'all').trim(); // all | unread | viewed
     const sortBy = (
@@ -72,6 +73,346 @@ export async function GET(request: Request) {
       reconcileStats = await reconcileInventoryWithProjections(adminDb, ctx.accountId, {
         force: true,
         maxPropertiesToRecalculate: 40,
+      });
+    }
+
+    // 1 & 2 & 3. Quando `property_id` está presente (navegação contextual a partir
+    //    do cartão Match no Painel), filtra exclusivamente pelos leads vinculados
+    //    àquele imóvel, sem alterar as RPCs existentes.
+    if (propertyIdFilter) {
+      const [tabCountsRes, propRes, projectionsMetaRes] = await Promise.all([
+        adminDb.rpc('get_match_tab_counts', {
+          p_account_id: ctx.accountId,
+        }),
+        ctx.supabase
+          .from('property_match_projections')
+          .select(
+            'property_id, status, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, delivery_status, cover_url, public_url, features, updated_at'
+          )
+          .eq('account_id', ctx.accountId)
+          .eq('property_id', propertyIdFilter)
+          .maybeSingle(),
+        adminDb
+          .from('property_match_projections')
+          .select('property_id, status, updated_at')
+          .eq('account_id', ctx.accountId),
+      ]);
+
+      const { data: tabCounts, error: tabCountsErr } = tabCountsRes;
+      const { data: selectedProp } = propRes;
+      const { data: projectionsMeta } = projectionsMetaRes;
+
+      const validPropertyIds = new Set((projectionsMeta || []).map((p) => p.property_id));
+      const activePropertyIds = new Set(
+        (projectionsMeta || []).filter((p) => p.status === 'ativo').map((p) => p.property_id)
+      );
+      let latestCatalogUpdate: string | null = null;
+      for (const p of projectionsMeta || []) {
+        if (p.updated_at && (!latestCatalogUpdate || p.updated_at > latestCatalogUpdate)) {
+          latestCatalogUpdate = p.updated_at;
+        }
+      }
+
+      let countNovos = 0;
+      let countEmAnalise = 0;
+      let countEnviados = 0;
+      let countPausados = 0;
+      let countArquivados = 0;
+      let countIgnorados = 0;
+
+      if (!tabCountsErr && Array.isArray(tabCounts)) {
+        for (const row of tabCounts as { match_status: string; distinct_leads: number | string }[]) {
+          const val = Number(row.distinct_leads) || 0;
+          if (row.match_status === 'novo') countNovos = val;
+          else if (row.match_status === 'em_analise') countEmAnalise = val;
+          else if (row.match_status === 'enviado') countEnviados = val;
+          else if (row.match_status === 'pausado') countPausados = val;
+          else if (row.match_status === 'arquivado') countArquivados = val;
+          else if (row.match_status === 'ignorado') countIgnorados = val;
+        }
+      }
+
+      const selectedPropertySummary = selectedProp
+        ? {
+            propertyId: String(selectedProp.property_id),
+            title: String(selectedProp.title || ''),
+            neighborhood: String(selectedProp.neighborhood || ''),
+            coverUrl: selectedProp.cover_url ? String(selectedProp.cover_url) : null,
+          }
+        : null;
+
+      if (!selectedProp) {
+        return NextResponse.json({
+          counts: {
+            novos: countNovos,
+            em_analise: countEmAnalise,
+            enviados: countEnviados,
+            pausados: countPausados,
+            arquivados: countArquivados,
+            ignorados: countIgnorados,
+            recentes: 0,
+            nao_lidos: 0,
+          },
+          pagination: {
+            page,
+            pageSize,
+            totalGroups: 0,
+            totalPages: 1,
+            hasMore: false,
+            mode: 'property_filter',
+          },
+          catalogStatus: {
+            activePropertiesCount: activePropertyIds.size,
+            totalProjectionsCount: validPropertyIds.size,
+            latestCatalogUpdate,
+            reconcileStats,
+          },
+          selectedProperty: null,
+          groups: [],
+          matches: [],
+        });
+      }
+
+      const propMatchRows: Array<Record<string, unknown>> = [];
+      const PROP_CHUNK_SIZE = 1000;
+      for (let scanPage = 0; scanPage < 20; scanPage++) {
+        const from = scanPage * PROP_CHUNK_SIZE;
+        const to = from + PROP_CHUNK_SIZE - 1;
+        const { data: batch, error: batchErr } = await ctx.supabase
+          .from('lead_property_matches')
+          .select(
+            'id, account_id, lead_id, property_id, match_score, score_breakdown, profile_maturity, commercial_priority, match_status, suppressed, origin, sent_at, paused_at, archived_at, created_at, updated_at, viewed_at, ignored_at, reopened_at, reopen_reason, reopen_count'
+          )
+          .eq('account_id', ctx.accountId)
+          .eq('property_id', propertyIdFilter)
+          .order('id', { ascending: true })
+          .range(from, to);
+
+        if (batchErr) {
+          console.error('[GET /api/match] Erro ao filtrar por property_id:', batchErr);
+          return NextResponse.json({ error: 'Falha ao buscar matches do imóvel' }, { status: 500 });
+        }
+        if (!batch || batch.length === 0) break;
+        propMatchRows.push(...(batch as Array<Record<string, unknown>>));
+        if (batch.length < PROP_CHUNK_SIZE) break;
+      }
+
+      const distinctLeadIds = Array.from(
+        new Set(propMatchRows.map((r) => String(r.lead_id || '')).filter(Boolean))
+      );
+      const contactsMap = new Map<string, Record<string, unknown>>();
+      for (let i = 0; i < distinctLeadIds.length; i += 200) {
+        const chunk = distinctLeadIds.slice(i, i + 200);
+        const { data: contactsBatch } = await ctx.supabase
+          .from('contacts')
+          .select(
+            'id, name, phone, ai_score, ai_score_reason, paused_at, archived_at, has_purchased, is_personal_whatsapp'
+          )
+          .eq('account_id', ctx.accountId)
+          .in('id', chunk);
+
+        for (const c of contactsBatch || []) {
+          contactsMap.set(c.id, c as Record<string, unknown>);
+        }
+      }
+
+      const nowMs = Date.now();
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const todayMs = startOfToday.getTime();
+      const ms24h = 24 * 60 * 60 * 1000;
+      const ms7d = 7 * ms24h;
+      const ms30d = 30 * ms24h;
+      const normLeadSearch = leadSearch.toLowerCase();
+      const normPropSearch = propertySearch.toLowerCase();
+
+      const filteredGroups: Array<{
+        leadId: string;
+        lead: Record<string, unknown>;
+        profileMaturity: number;
+        aiScore: number;
+        bestMatch: Record<string, unknown>;
+        totalMatches: number;
+        statusMatchesCount: number;
+        unreadMatchesCount: number;
+        isUnread: boolean;
+        isRecent: boolean;
+        latestMatchAt: string;
+        firstMatchAt: string;
+        viewedAt: string | null;
+        reopenedAt: string | null;
+        reopenReason: string | null;
+        matches: Array<Record<string, unknown>>;
+      }> = [];
+
+      for (const rawRow of propMatchRows) {
+        const leadId = String(rawRow.lead_id || '');
+        const contact = contactsMap.get(leadId);
+        if (!contact) continue;
+
+        const lc = resolveMatchLifecycle(rawRow as unknown as RawMatchRowForLifecycle, nowMs);
+        const isContactArchived = Boolean(contact.archived_at);
+        const isContactPaused = Boolean(contact.paused_at);
+        const isActiveTabStatus = lc.effectiveStatus === 'novo' || lc.effectiveStatus === 'em_analise';
+
+        let effectiveStatusForFilter = lc.effectiveStatus;
+        if (isActiveTabStatus && isContactArchived) effectiveStatusForFilter = 'arquivado';
+        else if (isActiveTabStatus && isContactPaused) effectiveStatusForFilter = 'pausado';
+
+        if (effectiveStatusForFilter !== status) continue;
+        if ((status === 'novo' || status === 'em_analise') && selectedProp.status !== 'ativo') {
+          continue;
+        }
+
+        const matchScore = Number(rawRow.match_score || 0);
+        const profileMaturity = Number(rawRow.profile_maturity || 0);
+        const aiScore = Number(contact.ai_score ?? 0);
+
+        if (matchScore < minScore || matchScore > maxScore) continue;
+        if (profileMaturity < minMaturity || profileMaturity > maxMaturity) continue;
+        if (minAiScore > 0 && aiScore < minAiScore) continue;
+
+        if (normLeadSearch) {
+          const cName = String(contact.name || '').toLowerCase();
+          const cPhone = String(contact.phone || '').toLowerCase();
+          if (!cName.includes(normLeadSearch) && !cPhone.includes(normLeadSearch)) continue;
+        }
+
+        if (normPropSearch) {
+          const pTitle = String(selectedProp.title || '').toLowerCase();
+          const pNeigh = String(selectedProp.neighborhood || '').toLowerCase();
+          const pCode = String(selectedProp.code || '').toLowerCase();
+          if (
+            !pTitle.includes(normPropSearch) &&
+            !pNeigh.includes(normPropSearch) &&
+            !pCode.includes(normPropSearch)
+          ) {
+            continue;
+          }
+        }
+
+        if (viewFilter === 'unread' && !lc.isUnread) continue;
+        if (viewFilter === 'viewed' && lc.isUnread) continue;
+
+        const refStr = lc.reopenedAt || String(rawRow.created_at || rawRow.updated_at || '');
+        if (dateFilter !== 'all') {
+          const refMs = refStr ? new Date(refStr).getTime() : 0;
+          if (!refMs || Number.isNaN(refMs)) continue;
+          const ageMs = nowMs - refMs;
+          if (dateFilter === 'today' && refMs < todayMs) continue;
+          if (dateFilter === '24h' && ageMs > ms24h) continue;
+          if (dateFilter === '7d' && ageMs > ms7d) continue;
+          if (dateFilter === '30d' && ageMs > ms30d) continue;
+          if (dateFilter === 'older' && ageMs <= ms7d) continue;
+        }
+
+        const enrichedRow = {
+          ...rawRow,
+          match_score: matchScore,
+          commercial_priority: Number(rawRow.commercial_priority || 0),
+          profile_maturity: profileMaturity,
+          match_status: effectiveStatusForFilter,
+          viewed_at: lc.viewedAt,
+          ignored_at: lc.ignoredAt,
+          reopened_at: lc.reopenedAt,
+          reopen_reason: lc.reopenReason,
+          reopen_count: lc.reopenCount,
+          is_unread: lc.isUnread,
+          is_recent: lc.isRecent,
+          contacts: contact,
+          property: {
+            propertyId: selectedProp.property_id,
+            title: selectedProp.title,
+            code: selectedProp.code,
+            propertyType: selectedProp.property_type,
+            neighborhood: selectedProp.neighborhood,
+            city: selectedProp.city,
+            priceMin: Number(selectedProp.price_min),
+            priceMax: Number(selectedProp.price_max),
+            bedroomsMin: selectedProp.bedrooms_min,
+            bedroomsMax: selectedProp.bedrooms_max,
+            deliveryStatus: selectedProp.delivery_status,
+            coverUrl: selectedProp.cover_url,
+            publicUrl: selectedProp.public_url,
+            features: selectedProp.features || [],
+          },
+        };
+
+        filteredGroups.push({
+          leadId,
+          lead: contact,
+          profileMaturity,
+          aiScore,
+          bestMatch: enrichedRow,
+          totalMatches: 1,
+          statusMatchesCount: 1,
+          unreadMatchesCount: lc.isUnread ? 1 : 0,
+          isUnread: lc.isUnread,
+          isRecent: lc.isRecent,
+          latestMatchAt: refStr,
+          firstMatchAt: String(rawRow.created_at || ''),
+          viewedAt: lc.viewedAt,
+          reopenedAt: lc.reopenedAt,
+          reopenReason: lc.reopenReason,
+          matches: [enrichedRow],
+        });
+      }
+
+      filteredGroups.sort((a, b) => {
+        if (sortBy === 'recent_desc') {
+          const timeA = a.latestMatchAt ? new Date(a.latestMatchAt).getTime() : 0;
+          const timeB = b.latestMatchAt ? new Date(b.latestMatchAt).getTime() : 0;
+          if (timeB !== timeA) return timeB - timeA;
+          const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
+          if (scoreDiff !== 0) return scoreDiff;
+          return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
+        }
+        if (sortBy === 'priority_desc') {
+          const prioDiff = Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
+          if (prioDiff !== 0) return prioDiff;
+          return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
+        }
+        if (sortBy === 'ai_score_desc') {
+          if (b.aiScore !== a.aiScore) return b.aiScore - a.aiScore;
+          return Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
+        }
+        const scoreDiff = Number(b.bestMatch?.match_score || 0) - Number(a.bestMatch?.match_score || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+        return Number(b.bestMatch?.commercial_priority || 0) - Number(a.bestMatch?.commercial_priority || 0);
+      });
+
+      const totalGroups = filteredGroups.length;
+      const totalPages = Math.max(1, Math.ceil(totalGroups / pageSize));
+      const pagedGroups = filteredGroups.slice(offset, offset + pageSize);
+
+      return NextResponse.json({
+        counts: {
+          novos: countNovos,
+          em_analise: countEmAnalise,
+          enviados: countEnviados,
+          pausados: countPausados,
+          arquivados: countArquivados,
+          ignorados: countIgnorados,
+          recentes: filteredGroups.filter((g) => g.isRecent).length,
+          nao_lidos: filteredGroups.filter((g) => g.isUnread).length,
+        },
+        pagination: {
+          page,
+          pageSize,
+          totalGroups,
+          totalPages,
+          hasMore: page < totalPages,
+          mode: 'property_filter',
+        },
+        catalogStatus: {
+          activePropertiesCount: activePropertyIds.size,
+          totalProjectionsCount: validPropertyIds.size,
+          latestCatalogUpdate,
+          reconcileStats,
+        },
+        selectedProperty: selectedPropertySummary,
+        groups: pagedGroups,
+        matches: pagedGroups.flatMap((g) => g.matches),
       });
     }
 

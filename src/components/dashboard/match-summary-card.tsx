@@ -159,7 +159,7 @@ export function MatchSummaryCard() {
               return (
                 <Link
                   key={item.propertyId}
-                  href={`/match?lead=${encodeURIComponent(item.topLeadId)}&property=${encodeURIComponent(item.propertyId)}`}
+                  href={`/match?property_id=${encodeURIComponent(item.propertyId)}`}
                   className="group flex min-h-[60px] items-center gap-3 rounded-xl border border-border/70 bg-background/40 p-2.5 transition-colors hover:border-border hover:bg-muted/50 active:bg-muted/70"
                 >
                   <PropertyThumb src={item.coverUrl} alt={heading} />
