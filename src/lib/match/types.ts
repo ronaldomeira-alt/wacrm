@@ -210,7 +210,7 @@ export interface PropertyShareRecord {
   propertyId: string;
   matchId?: string | null;
   trackingToken: string;
-  channel: 'whatsapp_pessoal';
+  channel: 'whatsapp_pessoal' | 'whatsapp_inbox';
   messageText?: string | null;
   sentAt: string;
   firstOpenedAt?: string | null;

@@ -12,14 +12,26 @@
 // `?c=` deep-link parsing or introducing a store for a single value.
 // ============================================================
 
+export interface MatchShareDraftContext {
+  matchId?: string | null;
+  leadId: string;
+  propertyId: string;
+  propertyTitle: string;
+  publicUrl: string;
+  alreadySentBefore?: boolean;
+  templateAngle?: string;
+}
+
 export interface FollowupDraft {
-  suggestionId: string;
+  suggestionId?: string;
   mode: 'free' | 'template';
   /** mode: 'free' */
   text?: string;
   /** mode: 'template' */
   templateId?: string;
   values?: { body: string[]; headerText?: string; buttonParams?: Record<number, string> };
+  /** Origem no módulo Match ("Enviar" no card do lead) */
+  matchShare?: MatchShareDraftContext;
 }
 
 const KEY_PREFIX = 'wacrm:followup-draft:';

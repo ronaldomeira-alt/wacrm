@@ -11,6 +11,9 @@ import {
   SendMessageError,
 } from '@/lib/whatsapp/send-message'
 import { findOrCreateConversation } from '@/lib/whatsapp/find-or-create-conversation'
+import { generateTrackingToken } from '@/lib/match/tokens'
+import { ensurePropertyUuid } from '@/lib/tunnel/auth'
+import { updateMatchStatus } from '@/lib/match/service'
 
 // The dashboard's outbound-send endpoint. It owns auth, per-user rate
 // limiting, and the two ways the UI targets a thread — an existing
@@ -64,6 +67,9 @@ export async function POST(request: Request) {
       // suggestion — see the block below. Absent for every other send;
       // zero effect on the existing send paths.
       followup_suggestion_id,
+      // Match card "Enviar" contextual draft: only recorded after confirmed
+      // WhatsApp Cloud API delivery so preparing a draft never marks it sent.
+      match_share_context,
       // Central de Ações' Follow-up "Enviar mensagem" (action-item-detail-
       // sheet.tsx) threads the action_items.id through so this same send
       // request also claims the single-send guard — see the block below.
@@ -257,6 +263,71 @@ export async function POST(request: Request) {
           }
         } catch (err) {
           console.error('[whatsapp/send] follow-up auto-resolve threw:', err)
+        }
+      }
+
+      // Best-effort post-send registration for Match property shares initiated from Inbox
+      if (
+        match_share_context &&
+        typeof match_share_context === 'object' &&
+        typeof match_share_context.lead_id === 'string' &&
+        typeof match_share_context.property_id === 'string' &&
+        match_share_context.lead_id &&
+        match_share_context.property_id
+      ) {
+        try {
+          const { data: targetConv } = await supabase
+            .from('conversations')
+            .select('contact_id')
+            .eq('id', conversationId)
+            .eq('account_id', accountId)
+            .maybeSingle()
+
+          if (targetConv?.contact_id === match_share_context.lead_id) {
+            const canonicalPropertyId = ensurePropertyUuid(match_share_context.property_id)
+            const sentAtIso = new Date().toISOString()
+
+            const { error: shareInsertErr } = await supabase
+              .from('property_shares')
+              .insert({
+                account_id: accountId,
+                lead_id: match_share_context.lead_id,
+                property_id: canonicalPropertyId,
+                match_id:
+                  typeof match_share_context.match_id === 'string' &&
+                  match_share_context.match_id
+                    ? match_share_context.match_id
+                    : null,
+                tracking_token: generateTrackingToken(),
+                channel: 'whatsapp_inbox',
+                message_text: typeof content_text === 'string' ? content_text : null,
+                sent_at: sentAtIso,
+              })
+
+            if (shareInsertErr) {
+              console.error('[whatsapp/send] match property_share insert failed:', shareInsertErr)
+            }
+
+            if (
+              typeof match_share_context.match_id === 'string' &&
+              match_share_context.match_id
+            ) {
+              await updateMatchStatus(supabase, accountId, match_share_context.match_id, 'enviado')
+            } else {
+              await supabase
+                .from('lead_property_matches')
+                .update({
+                  match_status: 'enviado',
+                  sent_at: sentAtIso,
+                  updated_at: sentAtIso,
+                })
+                .eq('account_id', accountId)
+                .eq('lead_id', match_share_context.lead_id)
+                .in('property_id', [canonicalPropertyId, match_share_context.property_id])
+            }
+          }
+        } catch (err) {
+          console.error('[whatsapp/send] match share registration threw:', err)
         }
       }
 

@@ -308,6 +308,9 @@ export function MessageComposer({
   const t = useTranslations("Inbox.composer");
 
   const [text, setText] = useState("");
+  const textRef = useRef("");
+  const [pendingInitialText, setPendingInitialText] = useState<string | null>(null);
+  const lastTrackedConvIdRef = useRef(conversationId);
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Only used to mask the single-line/multi-line layout swap below (see
@@ -317,14 +320,26 @@ export function MessageComposer({
   // dip right as it happens reads as an intentional fade instead of a jump.
   const capsuleRef = useRef<HTMLDivElement>(null);
 
-  // Only re-runs when the draft string itself changes — this seeds the
-  // field once and never fights with the agent's own typing afterwards.
   useEffect(() => {
-    if (initialText) {
-      setText(initialText);
-      textareaRef.current?.focus();
+    textRef.current = text;
+  }, [text]);
+
+  // Se o corretor já estiver digitando algo quando um novo rascunho chegar,
+  // preserva o texto atual e oferece escolha explícita em vez de sobrescrever.
+  useEffect(() => {
+    if (lastTrackedConvIdRef.current !== conversationId) {
+      lastTrackedConvIdRef.current = conversationId;
+      setPendingInitialText(null);
     }
-  }, [initialText]);
+    if (!initialText) return;
+    if (textRef.current.trim().length === 0) {
+      setText(initialText);
+      setPendingInitialText(null);
+      textareaRef.current?.focus();
+    } else if (textRef.current !== initialText) {
+      setPendingInitialText(initialText);
+    }
+  }, [conversationId, initialText]);
 
   // ---- "/shortcut" quick-reply autocomplete ---------------------------
   //
@@ -1624,6 +1639,36 @@ export function MessageComposer({
             media={replyTo.media}
             onDismiss={onClearReply}
           />
+        </div>
+      )}
+      {pendingInitialText && (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs">
+          <span className="text-foreground">
+            Existe texto em edição. Deseja substituir pelo rascunho preparado?
+          </span>
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setPendingInitialText(null)}
+            >
+              Manter atual
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => {
+                setText(pendingInitialText);
+                setPendingInitialText(null);
+                textareaRef.current?.focus();
+              }}
+            >
+              Usar rascunho
+            </Button>
+          </div>
         </div>
       )}
       {sessionExpired && (

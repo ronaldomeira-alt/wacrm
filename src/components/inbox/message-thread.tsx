@@ -33,6 +33,9 @@ import {
   Images,
   Kanban,
   ListChecks,
+  Building2,
+  Copy,
+  X,
 } from 'lucide-react';
 import { format, isToday, isYesterday, differenceInHours } from 'date-fns';
 import { useTranslations } from 'next-intl';
@@ -1481,11 +1484,14 @@ export function MessageThread({
       setReplyTo(null);
 
       // One-shot: a message going out on a thread primed from a
-      // follow-up tags that specific send so the suggestion resolves
-      // automatically (see /api/whatsapp/send). Consumed here so a
-      // later, unrelated send in the same thread doesn't re-tag it.
-      const followupSuggestionId = followupPrimeRef.current?.suggestionId;
+      // follow-up or Match smart-send tags that specific send so the
+      // origin resolves/records automatically (see /api/whatsapp/send).
+      // Only discarded after `res.ok` so failed sends keep retry state intact.
+      const activePrime = followupPrimeRef.current;
+      const followupSuggestionId = activePrime?.suggestionId;
+      const matchShareContext = activePrime?.matchShare;
       setFollowupPrime(null);
+      followupPrimeRef.current = null;
 
       try {
         const res = await fetch('/api/whatsapp/send', {
@@ -1499,6 +1505,15 @@ export function MessageThread({
             ...(followupSuggestionId
               ? { followup_suggestion_id: followupSuggestionId }
               : {}),
+            ...(matchShareContext
+              ? {
+                  match_share_context: {
+                    match_id: matchShareContext.matchId ?? null,
+                    lead_id: matchShareContext.leadId,
+                    property_id: matchShareContext.propertyId,
+                  },
+                }
+              : {}),
           }),
         });
 
@@ -1508,6 +1523,10 @@ export function MessageThread({
           const reason = payload?.error || `HTTP ${res.status}`;
           console.error('Failed to send message:', reason);
           toast.error(`Failed to send: ${reason}`);
+          if (activePrime) {
+            setFollowupPrime((curr) => curr ?? activePrime);
+            followupPrimeRef.current = activePrime;
+          }
           // Mark the optimistic bubble as failed so the user sees what happened
           onUpdateMessage(tempId, { status: 'failed' });
           return;
@@ -1521,6 +1540,10 @@ export function MessageThread({
         console.error('Failed to send message:', err);
         const reason = err instanceof Error ? err.message : 'network error';
         toast.error(`Failed to send: ${reason}`);
+        if (activePrime) {
+          setFollowupPrime((curr) => curr ?? activePrime);
+          followupPrimeRef.current = activePrime;
+        }
         onUpdateMessage(tempId, { status: 'failed' });
       }
     },
@@ -3767,6 +3790,55 @@ export function MessageThread({
         </div>
       </div>
 
+
+      {followupPrime?.matchShare && (
+        <div
+          data-match-draft-banner
+          className="border-t border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 flex flex-wrap items-center justify-between gap-2"
+        >
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            <Building2 className="size-3.5 text-emerald-400 shrink-0" />
+            <span className="truncate">
+              Mensagem preparada para{' '}
+              <strong className="font-semibold text-foreground">
+                {followupPrime.matchShare.propertyTitle}
+              </strong>{' '}
+              — revise antes de enviar.
+            </span>
+            {followupPrime.matchShare.alreadySentBefore && (
+              <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300 shrink-0">
+                Já apresentado antes
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {sessionInfo.expired && followupPrime.text && (
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(followupPrime.text || '');
+                  toast.success('Mensagem preparada copiada!');
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/25 transition-colors"
+              >
+                <Copy className="size-3" />
+                Copiar texto
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label="Fechar aviso de mensagem preparada"
+              onClick={() => {
+                setFollowupPrime(null);
+                followupPrimeRef.current = null;
+              }}
+              className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Composer */}
       <MessageComposer

@@ -1,9 +1,18 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Select,
   SelectContent,
@@ -17,7 +26,10 @@ import { SendWhatsAppModal } from '@/components/match/send-whatsapp-modal';
 import { AssignedNotificationsPopover } from '@/components/action-items/assigned-notifications-popover';
 import type { MatchCardItem } from '@/components/match/match-card';
 import type { MatchLifecycleAction } from '@/lib/match/service';
+import { writeFollowupDraft } from '@/lib/inbox/followup-draft';
 import { toast } from 'sonner';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import {
   Sparkles,
   Search,
@@ -33,6 +45,8 @@ import {
   ChevronRight,
   SlidersHorizontal,
   X,
+  AlertTriangle,
+  Send,
 } from 'lucide-react';
 import type { MatchStatus, LeadMatchGroup } from '@/lib/match/types';
 import { createClient } from '@/lib/supabase/client';
@@ -126,9 +140,18 @@ export default function MatchPage() {
   }, [propertyIdFilter, propertySearch, dateFilter, scoreFilter, maturityFilter, minAiScore]);
 
   // Modais e Deep-link de Notificações
+  const router = useRouter();
   const [selectedGroupForModal, setSelectedGroupForModal] = useState<LeadMatchGroup | null>(null);
   const [highlightPropertyId, setHighlightPropertyId] = useState<string | null>(null);
   const [selectedMatchForSend, setSelectedMatchForSend] = useState<MatchCardItem | null>(null);
+  const [preparingSendLeadId, setPreparingSendLeadId] = useState<string | null>(null);
+  const preparingSendRef = useRef(false);
+  const [duplicateConfirmState, setDuplicateConfirmState] = useState<{
+    group: LeadMatchGroup;
+    propertyTitle: string;
+    lastSentAt: string | null;
+    sendCount: number;
+  } | null>(null);
   const deepLinkHandledRef = useRef<string | null>(null);
 
   const clearPropertyIdFilter = useCallback(() => {
@@ -443,6 +466,84 @@ export default function MatchPage() {
       }
     },
     [activeTab, fetchMatches]
+  );
+
+  // Preparação inteligente de envio no Inbox: gera mensagem contextual + link público e abre conversa com rascunho (sem disparar)
+  const handleSmartSend = useCallback(
+    async (group: LeadMatchGroup, forceResend = false) => {
+      if (preparingSendRef.current) return;
+
+      const bestMatch = group.bestMatch as unknown as {
+        id?: string;
+        property_id?: string;
+        property?: { title?: string };
+      } | undefined;
+      const propertyId = bestMatch?.property_id;
+
+      if (!propertyId) {
+        toast.error('Imóvel desta oportunidade não foi identificado.');
+        return;
+      }
+
+      preparingSendRef.current = true;
+      setPreparingSendLeadId(group.leadId);
+      try {
+        const res = await fetch('/api/match/prepare-send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lead_id: group.leadId,
+            property_id: propertyId,
+            match_id: bestMatch?.id || null,
+            force_resend: forceResend,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.error || 'Não foi possível preparar a mensagem para envio.');
+        }
+
+        if (data.requiresConfirmation) {
+          setDuplicateConfirmState({
+            group,
+            propertyTitle: data.propertyTitle || bestMatch?.property?.title || 'Imóvel selecionado',
+            lastSentAt: data.duplicateInfo?.lastSentAt || null,
+            sendCount: Number(data.duplicateInfo?.sendCount || 1),
+          });
+          return;
+        }
+
+        setDuplicateConfirmState(null);
+        writeFollowupDraft(data.conversationId, {
+          mode: 'free',
+          text: data.draftText,
+          matchShare: {
+            matchId: data.matchId || bestMatch?.id || null,
+            leadId: group.leadId,
+            propertyId: data.propertyId || propertyId,
+            propertyTitle: data.propertyTitle || bestMatch?.property?.title || 'Imóvel selecionado',
+            publicUrl: data.publicUrl,
+            alreadySentBefore: Boolean(data.duplicateInfo?.alreadySent),
+            templateAngle: data.templateAngle,
+          },
+        });
+
+        if (data.generatedBy === 'fallback') {
+          toast.info(
+            'Mensagem segura preparada com os dados do imóvel (IA indisponível no momento).'
+          );
+        }
+
+        router.push(`/inbox?c=${encodeURIComponent(data.conversationId)}`);
+      } catch (err) {
+        toast.error((err as Error).message || 'Erro ao preparar mensagem contextual.');
+      } finally {
+        preparingSendRef.current = false;
+        setPreparingSendLeadId(null);
+      }
+    },
+    [router]
   );
 
   // Triagem em lote de oportunidades antigas acumuladas (> 14 dias)
@@ -1002,8 +1103,10 @@ export default function MatchPage() {
                       group={group}
                       activeTab={activeTab}
                       loadingAction={loadingActionKey}
+                      preparingSendLeadId={preparingSendLeadId}
                       onOpenModal={handleOpenLeadModal}
                       onQuickAction={handleQuickAction}
+                      onSmartSend={(g) => void handleSmartSend(g)}
                     />
                   ))}
                 </div>
@@ -1051,8 +1154,10 @@ export default function MatchPage() {
                       group={group}
                       activeTab={activeTab}
                       loadingAction={loadingActionKey}
+                      preparingSendLeadId={preparingSendLeadId}
                       onOpenModal={handleOpenLeadModal}
                       onQuickAction={handleQuickAction}
+                      onSmartSend={(g) => void handleSmartSend(g)}
                     />
                   ))}
                 </div>
@@ -1067,8 +1172,10 @@ export default function MatchPage() {
                 group={group}
                 activeTab={activeTab}
                 loadingAction={loadingActionKey}
+                preparingSendLeadId={preparingSendLeadId}
                 onOpenModal={handleOpenLeadModal}
                 onQuickAction={handleQuickAction}
+                onSmartSend={(g) => void handleSmartSend(g)}
               />
             ))}
           </div>
@@ -1133,6 +1240,71 @@ export default function MatchPage() {
         onOpenSendModal={(match) => setSelectedMatchForSend(match)}
         onMatchUpdated={() => fetchMatches(true)}
       />
+
+      {/* Confirmação de reenvio quando o imóvel já foi apresentado anteriormente ao lead */}
+      <Dialog
+        open={!!duplicateConfirmState}
+        onOpenChange={(open) => {
+          if (!open && !preparingSendLeadId) {
+            setDuplicateConfirmState(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="size-5 text-amber-400" />
+              Imóvel já apresentado anteriormente
+            </DialogTitle>
+            <DialogDescription className="text-xs leading-relaxed">
+              O imóvel <strong className="text-foreground">{duplicateConfirmState?.propertyTitle}</strong> já possui{' '}
+              {duplicateConfirmState && duplicateConfirmState.sendCount > 1
+                ? `${duplicateConfirmState.sendCount} registros de envio`
+                : 'um registro de envio'}{' '}
+              para <strong className="text-foreground">{duplicateConfirmState?.group.lead.name || 'este cliente'}</strong>
+              {duplicateConfirmState?.lastSentAt &&
+              !Number.isNaN(new Date(duplicateConfirmState.lastSentAt).getTime())
+                ? ` (último envio em ${format(new Date(duplicateConfirmState.lastSentAt), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })})`
+                : ''}
+              . Deseja preparar uma nova mensagem mesmo assim?
+            </DialogDescription>
+          </DialogHeader>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!!preparingSendLeadId}
+              onClick={() => setDuplicateConfirmState(null)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!!preparingSendLeadId}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white gap-1.5"
+              onClick={() => {
+                if (!duplicateConfirmState) return;
+                void handleSmartSend(duplicateConfirmState.group, true);
+              }}
+            >
+              {preparingSendLeadId ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Preparando...
+                </>
+              ) : (
+                <>
+                  <Send className="size-3.5" />
+                  Preparar nova mensagem
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal de Envio via WhatsApp Pessoal Individual */}
       {selectedMatchForSend && (

@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Records of what the route wrote, so we can assert the right rows landed.
 const conversationInserts: Array<Record<string, unknown>> = []
 const messageInserts: Array<Record<string, unknown>> = []
+const propertyShareInserts: Array<Record<string, unknown>> = []
+const matchStatusUpdates: Array<Record<string, unknown>> = []
 
 // Toggles for the per-test scenario.
 let existingConversation: Record<string, unknown> | null = null
@@ -62,6 +64,8 @@ function makeSupabaseMock() {
           }
         case 'message_templates':
           return { data: null, error: null }
+        case 'lead_property_matches':
+          return { data: { id: 'match-1', match_score: 94, score_breakdown: {} }, error: null }
         default:
           return { data: null, error: null }
       }
@@ -91,9 +95,15 @@ function makeSupabaseMock() {
 
     const b: Record<string, unknown> = {}
     const chain = () => b
-    for (const m of ['select', 'eq', 'in', 'order', 'limit', 'update', 'delete']) {
+    for (const m of ['select', 'eq', 'in', 'order', 'limit', 'delete']) {
       b[m] = vi.fn(chain)
     }
+    b.update = vi.fn((payload: Record<string, unknown>) => {
+      if (table === 'lead_property_matches') {
+        matchStatusUpdates.push(payload)
+      }
+      return b
+    })
     b.insert = vi.fn((payload: Record<string, unknown>) => {
       didInsert = true
       if (table === 'conversations') {
@@ -106,6 +116,7 @@ function makeSupabaseMock() {
         }
       }
       if (table === 'messages') messageInserts.push(payload)
+      if (table === 'property_shares') propertyShareInserts.push(payload)
       return b
     })
     b.single = vi.fn(terminal)
@@ -151,14 +162,19 @@ vi.mock('@/lib/whatsapp/encryption', () => ({
   isLegacyFormat: vi.fn(() => false),
 }))
 
-const { sendTemplateMessage } = vi.hoisted(() => ({
+const { sendTemplateMessage, sendTextMessage } = vi.hoisted(() => ({
   sendTemplateMessage: vi.fn(async () => ({ messageId: 'wamid-1' })),
+  sendTextMessage: vi.fn(async () => ({ messageId: 'wamid-text-1' })),
 }))
-vi.mock('@/lib/whatsapp/meta-api', () => ({
-  sendTemplateMessage,
-  sendTextMessage: vi.fn(),
-  sendMediaMessage: vi.fn(),
-}))
+vi.mock('@/lib/whatsapp/meta-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/whatsapp/meta-api')>()
+  return {
+    ...actual,
+    sendTemplateMessage,
+    sendTextMessage,
+    sendMediaMessage: vi.fn(),
+  }
+})
 
 import { POST } from './route'
 
@@ -312,5 +328,85 @@ describe('POST /api/whatsapp/send — role enforcement', () => {
 
     expect(res.status).toBe(200)
     expect(sendTemplateMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('POST /api/whatsapp/send — match_share_context confirmation', () => {
+  beforeEach(() => {
+    conversationInserts.length = 0
+    messageInserts.length = 0
+    propertyShareInserts.length = 0
+    matchStatusUpdates.length = 0
+    existingConversation = {
+      id: 'conv-existing',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      contact: CONTACT,
+    }
+    createdConversation = null
+    contactRow = CONTACT
+    callerRole = 'agent'
+    supabaseMock = makeSupabaseMock()
+    sendTextMessage.mockReset()
+    sendTextMessage.mockResolvedValue({ messageId: 'wamid-text-1' })
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('records property_shares and marks match enviado ONLY after successful Meta send', async () => {
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'text',
+          content_text: 'Oi! Veja este imóvel: https://ronaldomeira.com.br/imovel/bessa-1',
+          match_share_context: {
+            match_id: 'match-1',
+            lead_id: 'contact-1',
+            property_id: '00000000-0000-0000-0000-000000000101',
+          },
+        }),
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(sendTextMessage).toHaveBeenCalledTimes(1)
+    expect(propertyShareInserts).toHaveLength(1)
+    expect(propertyShareInserts[0]).toMatchObject({
+      account_id: 'acct-1',
+      lead_id: 'contact-1',
+      match_id: 'match-1',
+      channel: 'whatsapp_inbox',
+    })
+    expect(matchStatusUpdates.some((u) => u.match_status === 'enviado')).toBe(true)
+  })
+
+  it('does not record share or mark enviado when Meta delivery fails', async () => {
+    sendTextMessage.mockRejectedValueOnce(new Error('Meta API timeout'))
+
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'text',
+          content_text: 'Tentativa com falha',
+          match_share_context: {
+            match_id: 'match-1',
+            lead_id: 'contact-1',
+            property_id: '00000000-0000-0000-0000-000000000101',
+          },
+        }),
+      }),
+    )
+
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    expect(propertyShareInserts).toHaveLength(0)
+    expect(matchStatusUpdates).toHaveLength(0)
   })
 })

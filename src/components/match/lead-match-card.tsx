@@ -18,6 +18,7 @@ import {
   RotateCcw,
   RefreshCw,
   Loader2,
+  Send,
 } from 'lucide-react';
 import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -29,12 +30,14 @@ interface LeadMatchCardProps {
   group: LeadMatchGroup;
   activeTab?: MatchStatus;
   loadingAction?: string | null;
+  preparingSendLeadId?: string | null;
   onOpenModal: (group: LeadMatchGroup) => void;
   onQuickAction?: (
     group: LeadMatchGroup,
     action: MatchLifecycleAction,
     scope?: 'lead' | 'best_match'
   ) => void;
+  onSmartSend?: (group: LeadMatchGroup) => void;
 }
 
 function formatMatchTimestamp(isoDate?: string | null): {
@@ -88,8 +91,10 @@ export function LeadMatchCard({
   group,
   activeTab = 'novo',
   loadingAction,
+  preparingSendLeadId,
   onOpenModal,
   onQuickAction,
+  onSmartSend,
 }: LeadMatchCardProps) {
   const leadName = group.lead.name || 'Lead sem nome';
   const initials =
@@ -128,7 +133,12 @@ export function LeadMatchCard({
     group.latestMatchAt || (bestMatch as unknown as { created_at?: string })?.created_at
   );
   const isUnread = Boolean(group.isUnread);
+  const isInAnalysis =
+    activeTab === 'em_analise' ||
+    (bestMatch as unknown as { match_status?: string })?.match_status === 'em_analise';
   const isBusy = Boolean(loadingAction && loadingAction.startsWith(group.leadId));
+  const isPreparingSend = preparingSendLeadId === group.leadId;
+  const isActionDisabled = isBusy || isPreparingSend;
 
   return (
     <Card
@@ -153,13 +163,23 @@ export function LeadMatchCard({
             )}
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
               <h3 className="text-sm font-semibold text-foreground truncate" title={leadName}>
                 {leadName}
               </h3>
               {isUnread && activeTab === 'novo' && (
                 <span className="rounded-full bg-primary/15 border border-primary/30 px-1.5 py-0.2 text-[9px] font-bold uppercase tracking-wide text-primary shrink-0">
                   Novo
+                </span>
+              )}
+              {isInAnalysis && (
+                <span
+                  data-testid="match-in-analysis-badge"
+                  className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 border border-blue-500/25 px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wide text-blue-400 shrink-0"
+                  title="Oportunidade em análise"
+                >
+                  <Eye className="size-2.5" />
+                  Em análise
                 </span>
               )}
             </div>
@@ -308,75 +328,84 @@ export function LeadMatchCard({
           </Link>
         </div>
 
-        {/* Barra de Ações Rápidas do Ciclo de Vida */}
-        {onQuickAction && (
-          <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-border/30">
-            {isBusy ? (
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground py-0.5">
-                <Loader2 className="size-3 animate-spin text-primary" />
-                Atualizando...
-              </span>
-            ) : (
-              <>
-                {activeTab === 'novo' && (
+        {/* Barra de Ações do Rodapé: IGNORAR | ARQUIVAR | ENVIAR */}
+        {(onQuickAction || onSmartSend) && (
+          <div className="pt-1.5 border-t border-border/30">
+            {(activeTab === 'novo' || activeTab === 'em_analise' || activeTab === 'enviado') && (
+              <div
+                data-testid="match-card-footer-actions"
+                className="grid grid-cols-3 gap-2"
+              >
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={isActionDisabled || !onQuickAction}
+                  onClick={() => onQuickAction?.(group, 'ignore', 'lead')}
+                  className="h-8 w-full rounded-lg border border-rose-500/25 bg-rose-500/10 px-2 text-xs font-medium text-rose-400 hover:bg-rose-500/20 hover:text-rose-300 gap-1.5"
+                  title="Ignorar oportunidade (não volta à fila ativa sem mudança material)"
+                >
+                  <EyeOff className="size-3.5 shrink-0" />
+                  <span>Ignorar</span>
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={isActionDisabled || !onQuickAction}
+                  onClick={() => onQuickAction?.(group, 'archive', 'lead')}
+                  className="h-8 w-full rounded-lg border border-border/70 bg-muted/50 px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground gap-1.5"
+                  title="Arquivar oportunidade mantendo no histórico"
+                >
+                  <Archive className="size-3.5 shrink-0" />
+                  <span>Arquivar</span>
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={isActionDisabled || !bestProp}
+                  onClick={() =>
+                    onSmartSend ? onSmartSend(group) : onOpenModal(group)
+                  }
+                  className="h-8 w-full rounded-lg border border-emerald-500/40 bg-emerald-600 px-2 text-xs font-semibold text-white hover:bg-emerald-500 hover:text-white gap-1.5"
+                  title="Preparar mensagem personalizada por IA e abrir conversa no Inbox"
+                >
+                  {isPreparingSend ? (
+                    <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <Send className="size-3.5 shrink-0" />
+                  )}
+                  <span>{isPreparingSend ? 'Preparando' : 'Enviar'}</span>
+                </Button>
+              </div>
+            )}
+
+            {(activeTab === 'ignorado' ||
+              activeTab === 'arquivado' ||
+              activeTab === 'pausado') &&
+              onQuickAction && (
+                <div className="flex justify-end">
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => onQuickAction(group, 'view', 'lead')}
-                    className="h-6 px-2 text-[11px] gap-1 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
-                    title="Mover oportunidade para Em Análise"
-                  >
-                    <Eye className="size-3" />
-                    <span>Em análise</span>
-                  </Button>
-                )}
-
-                {(activeTab === 'novo' || activeTab === 'em_analise') && (
-                  <>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onQuickAction(group, 'archive', 'lead')}
-                      className="h-6 px-2 text-[11px] gap-1 text-muted-foreground hover:text-foreground hover:bg-muted/70"
-                      title="Arquivar oportunidade no histórico"
-                    >
-                      <Archive className="size-3" />
-                      <span>Arquivar</span>
-                    </Button>
-
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onQuickAction(group, 'ignore', 'lead')}
-                      className="h-6 px-2 text-[11px] gap-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
-                      title="Ignorar oportunidade (só reaparece se houver mudança material)"
-                    >
-                      <EyeOff className="size-3" />
-                      <span>Ignorar</span>
-                    </Button>
-                  </>
-                )}
-
-                {(activeTab === 'ignorado' ||
-                  activeTab === 'arquivado' ||
-                  activeTab === 'pausado') && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
+                    disabled={isActionDisabled}
                     onClick={() => onQuickAction(group, 'restore', 'lead')}
-                    className="h-6 px-2 text-[11px] gap-1 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                    className="h-7 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 text-xs gap-1.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/20"
                     title="Restaurar oportunidade para Novos"
                   >
-                    <RotateCcw className="size-3" />
+                    {isBusy ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="size-3.5" />
+                    )}
                     <span>Restaurar</span>
                   </Button>
-                )}
-              </>
-            )}
+                </div>
+              )}
           </div>
         )}
       </div>
