@@ -1,10 +1,13 @@
 import { saoPauloDayKey, saoPauloDayStartIso } from '@/lib/dashboard/date-utils';
 import type { LeadSummary } from '@/lib/ai/lead-analysis-types';
+import type { LeadCommercialOperation, LeadSearchProfile } from '@/lib/match/types';
 import { WHATSAPP_SESSION_WINDOW_MS } from '@/lib/whatsapp/session-window';
 import type { AiSuggestion, AiSuggestionStatus } from '@/types';
 
 export const FOLLOWUP_TIMEZONE = 'America/Sao_Paulo';
 export const FOLLOWUP_WINDOW_CLOSING_SOON_MS = 6 * 60 * 60 * 1000; // 6h ou menos restantes na janela de 24h
+export const FOLLOWUP_REQUIRED_TEMPLATE_NAME = 'match_imovel_personalizado';
+export const FOLLOWUP_MAX_RECOMMENDED_PROPERTIES = 3;
 
 export type FollowupDateFilter =
   | 'today'
@@ -77,6 +80,8 @@ export interface CompatiblePropertySummary {
   commercialPriority: number;
   matchStatus: string;
   reasons: string[];
+  /** True quando este imóvel já foi enviado anteriormente para o cliente */
+  alreadyShared?: boolean;
 }
 
 export interface EnrichedFollowupItem {
@@ -146,6 +151,14 @@ export interface EnrichedFollowupItem {
   /** Recomendações complementares do motor de Match */
   compatiblePropertiesCount: number;
   compatibleProperties: CompatiblePropertySummary[];
+  /** Operação comercial validada (exclusivamente 'venda' na fila ativa) */
+  commercialOperation?: LeadCommercialOperation;
+  /** True quando há promessa/compromisso pendente da equipe identificado na conversa */
+  hasPendingCommitment?: boolean;
+  /** Tipologias explicitamente rejeitadas pelo cliente (ex.: ['flat', 'studio']) */
+  excludedPropertyTypes?: string[];
+  /** Faixa de recência estrutural (0 = <=24h, 1 = <=72h, 2 = <=7d, 3 = <=14d, 4 = <=30d, 5 = >30d) */
+  recencyTier?: number;
 }
 
 export interface RawConversationMessageRow {
@@ -799,10 +812,445 @@ export function classifyFollowupTimingAndType(args: {
 const CONTRADICTORY_NEVER_CONTACTED_RE =
   /\b(nunca\s+contatad[oa]|sem\s+(?:nenhuma\s+)?tentativa\s+de\s+contato|sem\s+primeiro\s+contato|nunca\s+recebeu\s+(?:uma\s+)?primeira\s+abordagem)\b/i;
 
+const GENERIC_BUREAUCRATIC_REASON_RE =
+  /\b(em\s+op[çc][õo]es\s+do\s+portf[óo]lio|oportunidade\s+comercial\s+identificada\s+para\s+acompanhamento|o\s+cliente\s+demonstrou\s+interesse|o\s+cliente\s+entrou\s+em\s+contato|retomar\s+contato\s+oferecendo|ap[óo]s\s+receber\s+as\s+informa[çc][õo]es\s+enviadas\s+no\s+atendimento)\b/i;
+
+const DISCARDED_STAGE_NAMES_RE =
+  /\b(perdid[oa]|descartad[oa]|ganh[oa]|fechad[oa]|vendid[oa]|loca[çc][aã]o|aluguel|sem\s+interesse|inativ[oa]|arquivad[oa]|cancelad[oa])\b/i;
+
+const DISINTEREST_CUSTOMER_RE =
+  /\b(j[aá]\s+comprei|j[aá]\s+fechei|n[aã]o\s+tenho\s+mais\s+interesse|pode\s+encerrar|desisti\s+da\s+compra|n[aã]o\s+quero\s+mais|pare\s+de\s+mandar|n[aã]o\s+precisa\s+mais|obrigad[oa],?\s+mas\s+n[aã]o\s+tenho\s+interesse|somente\s+aluguel|s[oó]\s+aluguel|apenas\s+aluguel|s[oó]\s+loca[çc][aã]o)\b/i;
+
+const TEAM_PROMISE_RE =
+  /\b(vou\s+(?:te\s+)?(?:enviar|mandar|separar|passar|encaminhar|buscar|levantar|ver|verificar)|j[aá]\s+(?:te\s+)?(?:envio|mando|passo)|te\s+(?:envio|mando|passo|retorno)\s+(?:algumas|umas|op[çc][õo]es|as\s+op[çc][õo]es|ainda\s+hoje|j[aá]|em\s+seguida|logo)|fiquei\s+de\s+(?:te\s+)?(?:enviar|mandar)|combinado,?\s+(?:te\s+)?(?:envio|mando))\b/i;
+
+const PROMOTIONAL_HEADLINE_RE =
+  /(r\$\s*\d|\b\d+\s*(mil|k|reais)\b|\bentrada\b|\bparcela|\ba\s+partir\s+de\b|\bcondi[çc][aã]o\b|\boportunidade\b|\brooftop\b|\brua\s+do\s+mar\b|\brentabilizar\b|\baluguel\b|\bloca[çc][aã]o\b|\bmensal\b|\b[úu]ltimas\s+unidades\b|\bdesconto\b|\bchama\s+no\s+whatsapp\b|\bsaiba\s+mais\b|\bconfira\b|\binvestir\b|\blucrar\b|\bflats?\s+em\s+constru|\bapartamentos?\s+em\s+constru|\bapenas\s+uma\s+rua\b|%)/i;
+
+function normalizeForMatch(raw: string): string {
+  return raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function getClientFirstName(fullName?: string | null): string {
+  const cleaned = String(fullName || '').trim();
+  if (!cleaned) return '';
+  const first = cleaned.split(/\s+/)[0] || '';
+  if (!first || first.toLowerCase() === 'lead' || /^\+?\d+$/.test(first)) return '';
+  return first;
+}
+
 /**
- * Constrói uma recomendação comercial objetiva e contextual (Seções 4 e 8) a partir dos fatos
- * reais da conversa (imóvel/empreendimento, necessidade, última pergunta do cliente, resposta
- * da equipe/Clara e estado da oportunidade).
+ * Identifica se um texto parece uma chamada publicitária / título promocional
+ * (ex.: "Entrada apenas R$ 30 mil", "O maior rooftop de João Pessoa") e portanto
+ * NUNCA pode ser exibido como nome de empreendimento.
+ */
+export function isPromotionalAdHeadline(text?: string | null): boolean {
+  const clean = typeof text === 'string' ? text.trim() : '';
+  if (!clean) return true;
+  if (clean.length > 55) return true;
+  if (PROMOTIONAL_HEADLINE_RE.test(clean)) return true;
+  if (/[!?·|]/.test(clean) && clean.split(/\s+/).length >= 4) return true;
+  return false;
+}
+
+/**
+ * Extrai restrições explícitas de tipologia declaradas pelo cliente
+ * (ex.: "não quer flat nem estúdio", "sem studio", "não quero casa").
+ */
+export function extractExplicitPropertyRestrictions(args: {
+  summary?: Partial<LeadSummary> | Record<string, unknown> | null;
+  messagesText?: string | null;
+  lastCustomerText?: string | null;
+}): { excludedTypes: string[]; labels: string[] } {
+  const summaryNotes =
+    args.summary && typeof (args.summary as Record<string, unknown>).notes === 'string'
+      ? String((args.summary as Record<string, unknown>).notes)
+      : '';
+  const summaryReqs =
+    args.summary &&
+    typeof (args.summary as Record<string, unknown>).requirements === 'object' &&
+    (args.summary as Record<string, unknown>).requirements !== null
+      ? JSON.stringify((args.summary as Record<string, unknown>).requirements)
+      : '';
+
+  const combined = normalizeForMatch(
+    [summaryNotes, summaryReqs, args.messagesText || '', args.lastCustomerText || '']
+      .filter(Boolean)
+      .join(' ')
+  );
+
+  if (!combined) return { excludedTypes: [], labels: [] };
+
+  const negationWindowRe =
+    /(?:nao\s+(?:quer\w*|gost\w*|aceit\w*|tem\s+interesse\s+em|desej\w*|pode\s+ser)|sem|dispensa|rejeita|exceto|evita|menos|nem)\s+[^.;!\n]{0,60}/g;
+
+  const excludedSet = new Set<string>();
+  const labelMap: Record<string, string> = {
+    flat: 'flat',
+    studio: 'estúdio',
+    apartamento: 'apartamento',
+    casa: 'casa',
+    cobertura: 'cobertura',
+    terreno: 'terreno',
+    comercial: 'comercial',
+    garden: 'garden',
+  };
+
+  const typePatterns: Array<{ key: string; re: RegExp }> = [
+    { key: 'flat', re: /\bflats?\b/ },
+    { key: 'studio', re: /\b(?:studios?|estudios?)\b/ },
+    { key: 'apartamento', re: /\b(?:apartamentos?|aptos?)\b/ },
+    { key: 'casa', re: /\bcasas?\b/ },
+    { key: 'cobertura', re: /\bcoberturas?\b/ },
+    { key: 'terreno', re: /\b(?:terrenos?|lotes?)\b/ },
+    { key: 'comercial', re: /\b(?:salas?\s+comerciais?|comercial)\b/ },
+    { key: 'garden', re: /\bgardens?\b/ },
+  ];
+
+  let m: RegExpExecArray | null;
+  while ((m = negationWindowRe.exec(combined)) !== null) {
+    const clause = m[0];
+    for (const tp of typePatterns) {
+      if (tp.re.test(clause)) {
+        excludedSet.add(tp.key);
+      }
+    }
+  }
+
+  const excludedTypes = Array.from(excludedSet);
+  const labels = excludedTypes.map((k) => labelMap[k] || k);
+  return { excludedTypes, labels };
+}
+
+/**
+ * Verifica se um imóvel viola alguma restrição explícita de tipologia declarada pelo cliente.
+ */
+export function propertyViolatesExplicitRestrictions(
+  prop: { propertyType?: string | null; title?: string | null },
+  excludedTypes: string[]
+): boolean {
+  if (!excludedTypes || excludedTypes.length === 0) return false;
+  const normType = normalizeForMatch(String(prop.propertyType || ''));
+  const normTitle = normalizeForMatch(String(prop.title || ''));
+
+  for (const excluded of excludedTypes) {
+    if (excluded === 'studio') {
+      if (normType.includes('studio') || normType.includes('estudio') || /\b(studio|estudio)\b/.test(normTitle)) {
+        return true;
+      }
+    } else if (excluded === 'flat') {
+      if (normType.includes('flat') || /\bflat\b/.test(normTitle)) {
+        return true;
+      }
+    } else if (normType.includes(excluded)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Detecta se a equipe assumiu um compromisso de envio/retorno ainda não cumprido.
+ * Só retorna true quando há evidência textual concreta na conversa (nunca inventa).
+ */
+export function detectPendingTeamCommitment(args: {
+  lastBusinessText?: string | null;
+  lastCustomerMessageAt?: string | null;
+  lastBusinessMessageAt?: string | null;
+  hasSharedPropertiesAfterLastBusiness?: boolean;
+}): { hasPendingCommitment: boolean; commitmentText: string | null } {
+  const businessText = typeof args.lastBusinessText === 'string' ? args.lastBusinessText.trim() : '';
+  if (!businessText) return { hasPendingCommitment: false, commitmentText: null };
+
+  // Se a última mensagem comercial já contém link de imóvel enviado, o envio já foi realizado
+  if (/https?:\/\/\S+\/imovel\//i.test(businessText)) {
+    return { hasPendingCommitment: false, commitmentText: null };
+  }
+  if (args.hasSharedPropertiesAfterLastBusiness) {
+    return { hasPendingCommitment: false, commitmentText: null };
+  }
+
+  if (TEAM_PROMISE_RE.test(businessText)) {
+    return {
+      hasPendingCommitment: true,
+      commitmentText: businessText,
+    };
+  }
+
+  return { hasPendingCommitment: false, commitmentText: null };
+}
+
+export interface FollowupEligibilityResult {
+  eligible: boolean;
+  reasons: string[];
+  operation: LeadCommercialOperation;
+}
+
+/**
+ * Regra central de elegibilidade comercial do Follow-up (Seções 1, 2 e 8):
+ * - Exclusivamente VENDA (bloqueia locação, temporada e operação indefinida).
+ * - Bloqueia contatos comprados, arquivados, pausados, em etapas descartadas ou com desinteresse explícito.
+ * - Bloqueia atendimento humano recente concorrente (exceto se houver compromisso pendente não cumprido).
+ * - Bloqueia se houver plano de follow-up agendado ativo ou adiamento vigente.
+ * - Exige pelo menos 1 imóvel compatível de venda disponível com link válido para fila executável.
+ */
+export function evaluateFollowupCommercialEligibility(args: {
+  profile: Pick<LeadSearchProfile, 'operation' | 'isShortStayOnly' | 'isArchived' | 'isPaused'> | null;
+  hasPurchased?: boolean;
+  stageName?: string | null;
+  lastCustomerText?: string | null;
+  lastCustomerMessageAt?: string | null;
+  lastAgentMessageAt?: string | null;
+  hasPendingCommitment?: boolean;
+  hasActiveFollowupPlan?: boolean;
+  isSnoozedFuture?: boolean;
+  compatibleSalePropertiesCount: number;
+  profileMaturity?: number;
+  aiScore?: number;
+  interestProperty?: string | null;
+  awaitingBusinessReply?: boolean;
+  teamCooldownHours?: number;
+  liveChatQuietHours?: number;
+  nowMs?: number;
+  /** Quando true (ex.: abas históricas done/ignored/approved), não exige imóvel ativo nem bloqueia por cooldown */
+  isHistoricalView?: boolean;
+}): FollowupEligibilityResult {
+  const {
+    profile,
+    hasPurchased = false,
+    stageName,
+    lastCustomerText,
+    lastCustomerMessageAt,
+    lastAgentMessageAt,
+    hasPendingCommitment = false,
+    hasActiveFollowupPlan = false,
+    isSnoozedFuture = false,
+    compatibleSalePropertiesCount,
+    profileMaturity = 0,
+    aiScore = 0,
+    interestProperty = null,
+    awaitingBusinessReply = false,
+    teamCooldownHours = 48,
+    liveChatQuietHours = 2,
+    nowMs = Date.now(),
+    isHistoricalView = false,
+  } = args;
+
+  const reasons: string[] = [];
+  const operation: LeadCommercialOperation = profile?.operation ?? 'indefinido';
+
+  // 1. Regra de ouro: exclusivamente vendas (vale tanto para fila ativa quanto para bloqueio de locação)
+  if (profile?.isShortStayOnly || operation === 'locacao') {
+    reasons.push('rental_only');
+  } else if (operation !== 'venda') {
+    reasons.push('operation_unknown');
+  }
+
+  if (isHistoricalView) {
+    return {
+      eligible: reasons.length === 0,
+      reasons,
+      operation,
+    };
+  }
+
+  // 2. Estado do contato / pipeline / impedimentos
+  if (hasPurchased) reasons.push('already_purchased');
+  if (profile?.isArchived) reasons.push('contact_archived');
+  if (profile?.isPaused) reasons.push('contact_paused');
+  if (isSnoozedFuture) reasons.push('snoozed');
+  if (hasActiveFollowupPlan) reasons.push('scheduled_followup_plan');
+
+  if (stageName && DISCARDED_STAGE_NAMES_RE.test(stageName)) {
+    reasons.push('discarded_or_closed_stage');
+  }
+
+  if (lastCustomerText && DISINTEREST_CUSTOMER_RE.test(lastCustomerText)) {
+    reasons.push('customer_disinterest');
+  }
+
+  // 3. Atendimento ao vivo ou acompanhamento humano recente concorrente
+  const custMs = lastCustomerMessageAt ? new Date(lastCustomerMessageAt).getTime() : NaN;
+  const agentMs = lastAgentMessageAt ? new Date(lastAgentMessageAt).getTime() : NaN;
+
+  if (Number.isFinite(custMs) && nowMs - custMs < liveChatQuietHours * 60 * 60 * 1000 && !hasPendingCommitment) {
+    reasons.push('live_conversation_in_progress');
+  }
+
+  if (
+    Number.isFinite(agentMs) &&
+    (!Number.isFinite(custMs) || agentMs >= custMs) &&
+    nowMs - agentMs < teamCooldownHours * 60 * 60 * 1000 &&
+    !hasPendingCommitment
+  ) {
+    reasons.push('active_human_attendance');
+  }
+
+  // 4. Exigência de imóveis reais compatíveis de venda com link válido (Seção 8)
+  if (compatibleSalePropertiesCount <= 0) {
+    reasons.push('no_compatible_sale_properties');
+  }
+
+  // 5. Necessidade comercial concreta (não sugerir apenas por existir na base)
+  const hasConcreteSignal =
+    hasPendingCommitment ||
+    awaitingBusinessReply ||
+    profileMaturity >= 35 ||
+    aiScore >= 4 ||
+    Boolean(interestProperty);
+  if (!hasConcreteSignal) {
+    reasons.push('no_concrete_opportunity');
+  }
+
+  return {
+    eligible: reasons.length === 0,
+    reasons,
+    operation,
+  };
+}
+
+function formatBudgetShortPtBr(priceMin?: number | null, priceMax?: number | null): string | null {
+  const fmt = (v: number): string => {
+    if (v >= 1_000_000) {
+      const m = v / 1_000_000;
+      return `R$ ${Number.isInteger(m) ? m : m.toFixed(1).replace('.', ',')} mi`;
+    }
+    if (v >= 1_000) {
+      return `R$ ${Math.round(v / 1_000)} mil`;
+    }
+    return `R$ ${v}`;
+  };
+  if (priceMin && priceMax && priceMax > priceMin) {
+    return `entre ${fmt(priceMin)} e ${fmt(priceMax)}`;
+  }
+  if (priceMax && priceMax > 0) {
+    return `até ${fmt(priceMax)}`;
+  }
+  if (priceMin && priceMin > 0) {
+    return `a partir de ${fmt(priceMin)}`;
+  }
+  return null;
+}
+
+function formatCountWordsPtBr(n: number): string {
+  if (n === 1) return 'uma opção compatível';
+  if (n === 2) return 'duas opções compatíveis';
+  if (n === 3) return 'três opções compatíveis';
+  return `${n} opções compatíveis`;
+}
+
+/**
+ * Constrói o motivo comercial personalizado, natural e informal (Seção 7),
+ * como um assistente comercial explicando ao corretor por que vale a pena retomar
+ * aquela conversa — fiel estritamente aos fatos conhecidos, sem inventar dados.
+ */
+export function buildPersonalizedCommercialReason(args: {
+  contactName?: string | null;
+  stageName?: string | null;
+  interestProperty?: string | null;
+  profile?: Partial<LeadSearchProfile> | null;
+  excludedTypeLabels?: string[];
+  hasPendingCommitment?: boolean;
+  opportunityType?: FollowupOpportunityType;
+  contactState?: FollowupContactState;
+  lastCustomerText?: string | null;
+  compatiblePropertiesCount?: number;
+  isCtwaOrigin?: boolean;
+}): string {
+  const firstName = getClientFirstName(args.contactName) || 'O cliente';
+  const profile = args.profile ?? null;
+  const sentences: string[] = [];
+
+  // 1. O que o cliente procura / como chegou
+  const types = (profile?.propertyTypes ?? []).filter(Boolean);
+  const bedrooms = (profile?.bedrooms ?? []).filter((b) => Number.isFinite(b) && b > 0);
+  const locations = (profile?.locations ?? []).filter(Boolean);
+  const budgetText = formatBudgetShortPtBr(profile?.priceMin, profile?.priceMax);
+  const excludedLabels = (args.excludedTypeLabels ?? []).filter(Boolean);
+
+  const searchParts: string[] = [];
+  if (types.length > 0) {
+    const firstType = types[0].toLowerCase();
+    searchParts.push(firstType === 'apartamento' ? 'um apartamento' : firstType);
+  }
+  if (bedrooms.length > 0) {
+    const bedStr =
+      bedrooms.length === 1
+        ? `${bedrooms[0]} ${bedrooms[0] === 1 ? 'quarto' : 'quartos'}`
+        : `${bedrooms.slice(0, 2).join(' ou ')} quartos`;
+    searchParts.push(searchParts.length > 0 ? `de ${bedStr}` : `imóvel de ${bedStr}`);
+  }
+  if (locations.length > 0) {
+    const loc = locations.slice(0, 2).join(' ou ');
+    searchParts.push(`em ${loc}`);
+  }
+
+  const searchPhrase = searchParts.join(' ');
+  const restrictionClause =
+    excludedLabels.length > 0
+      ? ` e não quer ${excludedLabels.join(' nem ')}`
+      : '';
+
+  if (args.interestProperty && args.isCtwaOrigin) {
+    const custLower = (args.lastCustomerText || '').toLowerCase();
+    const detailClause = /\b(valor|pre[çc]o|tabela|entrada|parcela|quanto)\b/.test(custLower)
+      ? ' e perguntou sobre valores e condições'
+      : /\b(visita|conhecer|agendar)\b/.test(custLower)
+        ? ' e demonstrou interesse em conhecer o imóvel'
+        : ' e pediu mais detalhes sobre o empreendimento';
+    sentences.push(`${firstName} chegou pelo anúncio do ${args.interestProperty}${detailClause}.`);
+    if (searchPhrase) {
+      sentences.push(
+        `Busca ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
+      );
+    }
+  } else if (searchPhrase) {
+    const stageLower = (args.stageName || '').trim().toLowerCase();
+    const stagePrefix =
+      stageLower === 'qualificação' || stageLower === 'qualificacao'
+        ? `${firstName} está em qualificação e busca `
+        : `${firstName} procura `;
+    sentences.push(
+      `${stagePrefix}${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
+    );
+  } else if (args.interestProperty) {
+    sentences.push(
+      `${firstName} demonstrou interesse no ${args.interestProperty}${budgetText ? ` (${budgetText})` : ''}${restrictionClause}.`
+    );
+  } else {
+    sentences.push(`${firstName} demonstrou interesse em compra de imóvel${budgetText ? `, ${budgetText}` : ''}.`);
+  }
+
+  // 2. Orçamento desconhecido (informar naturalmente sem inventar)
+  if (!budgetText && !args.hasPendingCommitment) {
+    sentences.push('Ainda não informou o orçamento.');
+  }
+
+  // 3. Compromisso pendente real ou estado da conversa
+  if (args.hasPendingCommitment) {
+    sentences.push('Você ficou de enviar opções e ainda não encontramos registro desse envio.');
+  } else if (args.opportunityType === 'first_contact') {
+    sentences.push('Ainda aguarda o primeiro retorno comercial.');
+  } else if (args.contactState === 'awaiting_business_reply') {
+    sentences.push('Enviou a última mensagem e está aguardando resposta.');
+  }
+
+  // 4. Opções selecionadas (SOMENTE quando realmente disponíveis)
+  const propCount = Math.min(FOLLOWUP_MAX_RECOMMENDED_PROPERTIES, args.compatiblePropertiesCount ?? 0);
+  if (propCount > 0) {
+    sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} para enviar.`);
+  }
+
+  return sentences.join(' ');
+}
+
+/**
+ * Constrói uma recomendação comercial objetiva e contextual a partir dos fatos
+ * reais da conversa (mantida por compatibilidade e delegada ao estilo natural).
  */
 export function buildObjectiveFollowupRecommendation(args: {
   opportunityType: FollowupOpportunityType;
@@ -812,6 +1260,9 @@ export function buildObjectiveFollowupRecommendation(args: {
   lastCustomerText?: string | null;
   lastBusinessText?: string | null;
   stageName?: string | null;
+  contactName?: string | null;
+  compatiblePropertiesCount?: number;
+  hasPendingCommitment?: boolean;
 }): { reason: string; approachSummary: string } {
   const {
     opportunityType,
@@ -819,64 +1270,69 @@ export function buildObjectiveFollowupRecommendation(args: {
     interestProperty,
     primaryNeed,
     lastCustomerText,
-    lastBusinessText,
+    contactName,
+    compatiblePropertiesCount = 0,
+    hasPendingCommitment = false,
   } = args;
 
+  const firstName = getClientFirstName(contactName) || 'O cliente';
   const subjectParts: string[] = [];
   if (interestProperty) {
-    subjectParts.push(`no empreendimento ${interestProperty}`);
+    subjectParts.push(`no ${interestProperty}`);
   }
   if (primaryNeed) {
-    subjectParts.push(
-      interestProperty ? `(${primaryNeed})` : `em ${primaryNeed}`
-    );
+    subjectParts.push(interestProperty ? `(${primaryNeed})` : `em ${primaryNeed}`);
   }
-  const subjectText =
-    subjectParts.length > 0 ? subjectParts.join(' ') : 'em opções do portfólio';
+  const subjectText = subjectParts.length > 0 ? subjectParts.join(' ') : 'em imóveis para compra';
 
   const custLower = (lastCustomerText || '').toLowerCase();
   let customerIntentClause = '';
   if (/\b(valor|preço|preco|tabela|parcela|entrada|condiç|condic|quanto)\b/.test(custLower)) {
-    customerIntentClause = ', perguntou sobre valores e condições';
+    customerIntentClause = ' e perguntou sobre valores e condições';
   } else if (/\b(planta|fotos|vídeo|video|detalhes|informaç|informac|saber mais|gostaria de receber)\b/.test(custLower)) {
-    customerIntentClause = ', solicitou informações e detalhes do imóvel';
+    customerIntentClause = ' e pediu mais detalhes';
   } else if (/\b(visita|conhecer|agendar|ir ver|caminho)\b/.test(custLower)) {
-    customerIntentClause = ', tratou sobre visita ao imóvel';
+    customerIntentClause = ' e falou sobre agendar visita';
   } else if (/\b(dispon[ií]vel|unidade|andar|posi[çc][aã]o)\b/.test(custLower)) {
-    customerIntentClause = ', consultou disponibilidade de unidades';
-  } else if (/\b(loca[çc][aã]o|alugar|aluguel|anual|temporada)\b/.test(custLower)) {
-    customerIntentClause = ', consultou opções de locação';
-  } else if (custLower.includes('?')) {
-    customerIntentClause = ', deixou uma dúvida na conversa';
+    customerIntentClause = ' e consultou disponibilidade de unidades';
+  }
+
+  const optionsSuffix =
+    compatiblePropertiesCount > 0
+      ? ` Selecionei ${formatCountWordsPtBr(Math.min(3, compatiblePropertiesCount))} para apresentar.`
+      : '';
+
+  if (hasPendingCommitment) {
+    return {
+      reason: `${firstName} demonstrou interesse ${subjectText}${customerIntentClause}. Você ficou de enviar opções e ainda não encontramos registro desse envio.${optionsSuffix}`,
+      approachSummary: `Enviar as opções compatíveis para ${firstName}.`,
+    };
   }
 
   if (opportunityType === 'first_contact') {
     return {
-      reason: `O cliente entrou em contato demonstrando interesse ${subjectText}${customerIntentClause}, mas ainda aguarda o primeiro atendimento comercial.`,
-      approachSummary: `Realizar o primeiro atendimento respondendo diretamente à solicitação sobre ${interestProperty || primaryNeed || 'o imóvel'} e qualificando o perfil.`,
+      reason: `${firstName} entrou em contato com interesse ${subjectText}${customerIntentClause} e ainda aguarda o primeiro atendimento.${optionsSuffix}`,
+      approachSummary: `Fazer o primeiro atendimento respondendo sobre ${interestProperty || primaryNeed || 'a busca de compra'}.`,
     };
   }
 
   if (contactState === 'awaiting_business_reply') {
     return {
-      reason: `O cliente interagiu por último demonstrando interesse ${subjectText}${customerIntentClause} e está aguardando retorno do atendimento.`,
-      approachSummary: `Responder prontamente à última mensagem do cliente sobre ${interestProperty || primaryNeed || 'a busca'} e apresentar opções compatíveis.`,
+      reason: `${firstName} mandou a última mensagem com interesse ${subjectText}${customerIntentClause} e está aguardando retorno.${optionsSuffix}`,
+      approachSummary: `Responder à última mensagem de ${firstName} com opções compatíveis.`,
     };
   }
 
-  const receivedInfoClause = lastBusinessText
-    ? 'após receber as informações enviadas no atendimento'
-    : 'após a abordagem inicial';
-
   return {
-    reason: `O cliente demonstrou interesse ${subjectText}${customerIntentClause} e não respondeu ${receivedInfoClause}.`,
-    approachSummary: `Retomar a conversa verificando se continua interessado em ${interestProperty || primaryNeed || 'avançar na busca'} e apresentando opções compatíveis.`,
+    reason: `${firstName} demonstrou interesse ${subjectText}${customerIntentClause} e vale retomar a conversa para avançar na busca.${optionsSuffix}`,
+    approachSummary: `Retomar a conversa com ${firstName} apresentando opções alinhadas à busca.`,
   };
 }
 
 /**
- * Reconcilia o texto da recomendação com a classificação real do histórico de mensagens (Seção 8),
- * eliminando contradições como um card de "Retomada de contato" cujo texto afirma "nunca contatado".
+ * Reconcilia o texto da recomendação com a classificação real do histórico de mensagens,
+ * eliminando contradições e substituindo textos genéricos/burocráticos por comentários
+ * personalizados e naturais (Seção 7).
  */
 export function reconcileFollowupReasonAndApproach(args: {
   rawReason?: string | null;
@@ -889,6 +1345,12 @@ export function reconcileFollowupReasonAndApproach(args: {
   lastCustomerText?: string | null;
   lastBusinessText?: string | null;
   stageName?: string | null;
+  contactName?: string | null;
+  profile?: Partial<LeadSearchProfile> | null;
+  excludedTypeLabels?: string[];
+  hasPendingCommitment?: boolean;
+  compatiblePropertiesCount?: number;
+  isCtwaOrigin?: boolean;
 }): { reason: string; approachSummary: string | null } {
   const {
     rawReason,
@@ -901,6 +1363,12 @@ export function reconcileFollowupReasonAndApproach(args: {
     lastCustomerText,
     lastBusinessText,
     stageName,
+    contactName,
+    profile,
+    excludedTypeLabels,
+    hasPendingCommitment = false,
+    compatiblePropertiesCount = 0,
+    isCtwaOrigin = false,
   } = args;
 
   const cleanReason = typeof rawReason === 'string' ? rawReason.trim() : '';
@@ -919,7 +1387,36 @@ export function reconcileFollowupReasonAndApproach(args: {
     !neverContacted &&
     /\bretomar\s+relacionamento|\bretomada\b/i.test(cleanReason);
 
-  if (!cleanReason || hasContradictoryNeverContactedText || hasContradictoryResumptionOnFirstContact) {
+  const hasGenericReason = !cleanReason || GENERIC_BUREAUCRATIC_REASON_RE.test(cleanReason);
+
+  // Quando temos perfil estruturado ou texto genérico/contraditório, construímos o comentário
+  // personalizado natural da Seção 7 com os fatos verificados do lead.
+  if (
+    profile ||
+    hasGenericReason ||
+    hasContradictoryNeverContactedText ||
+    hasContradictoryResumptionOnFirstContact
+  ) {
+    if (profile) {
+      const personalized = buildPersonalizedCommercialReason({
+        contactName,
+        stageName,
+        interestProperty,
+        profile,
+        excludedTypeLabels,
+        hasPendingCommitment,
+        opportunityType,
+        contactState,
+        lastCustomerText,
+        compatiblePropertiesCount,
+        isCtwaOrigin,
+      });
+      return {
+        reason: personalized,
+        approachSummary: cleanApproach,
+      };
+    }
+
     const synthesized = buildObjectiveFollowupRecommendation({
       opportunityType,
       contactState,
@@ -928,6 +1425,9 @@ export function reconcileFollowupReasonAndApproach(args: {
       lastCustomerText,
       lastBusinessText,
       stageName,
+      contactName,
+      compatiblePropertiesCount,
+      hasPendingCommitment,
     });
     return {
       reason: synthesized.reason,
@@ -1003,60 +1503,104 @@ export function extractLeadPrimaryNeed(args: {
 }
 
 /**
- * Identifica o empreendimento de interesse do lead quando conhecido (via tag 'Empreendimento',
- * origem CTWA ou menção direta verificada no catálogo/conversa).
+ * Identifica o empreendimento de origem/interesse do lead (Seção 6):
+ * 1. Vínculo estruturado entre anúncio de origem (`ctwa_referral.source_id`) e cadastro de empreendimentos (`property_ad_mappings` -> `properties.name`).
+ * 2. Tag estruturada 'Empreendimento' (desde que não seja chamada publicitária).
+ * 3. Correspondência verificada com nomes reais de empreendimentos cadastrados.
+ *
+ * NUNCA utiliza chamadas publicitárias, valores de entrada, condições comerciais ou títulos promocionais
+ * (ex.: "Entrada apenas R$ 30 mil"). Quando não identificado com segurança, retorna `null`.
  */
 export function extractInterestProperty(args: {
+  mappedAdPropertyName?: string | null;
   tagByCategory?: Record<string, string[]>;
   ctwaHeadline?: string | null;
   reasonText?: string | null;
   knownPropertyNames?: string[];
 }): string | null {
-  const { tagByCategory = {}, ctwaHeadline, reasonText, knownPropertyNames = [] } = args;
+  const {
+    mappedAdPropertyName,
+    tagByCategory = {},
+    ctwaHeadline,
+    reasonText,
+    knownPropertyNames = [],
+  } = args;
 
-  const empTags = tagByCategory['Empreendimento'] || [];
-  if (empTags.length > 0 && empTags[0]?.trim()) {
-    return empTags[0].trim();
+  // 1. Vínculo estruturado oficial do anúncio -> empreendimento
+  if (typeof mappedAdPropertyName === 'string' && mappedAdPropertyName.trim()) {
+    const cleanMapped = mappedAdPropertyName.trim();
+    if (!isPromotionalAdHeadline(cleanMapped)) {
+      return cleanMapped;
+    }
   }
 
+  // 2. Tag 'Empreendimento' válida (não promocional)
+  const empTags = tagByCategory['Empreendimento'] || [];
+  for (const rawTag of empTags) {
+    const cleanTag = typeof rawTag === 'string' ? rawTag.trim() : '';
+    if (cleanTag && !isPromotionalAdHeadline(cleanTag)) {
+      return cleanTag;
+    }
+  }
+
+  // 3. Correspondência com empreendimento oficialmente cadastrado no estoque/catálogo
   if (knownPropertyNames.length > 0) {
-    const haystacks = [reasonText || '', ctwaHeadline || '']
+    const haystacks = [ctwaHeadline || '', reasonText || '']
       .map((s) => s.trim())
       .filter(Boolean);
+    const sortedKnown = [...knownPropertyNames]
+      .map((n) => n.trim())
+      .filter((n) => n.length >= 3 && !isPromotionalAdHeadline(n))
+      .sort((a, b) => b.length - a.length);
+
     for (const hay of haystacks) {
-      const hayLower = hay.toLowerCase();
-      for (const propName of knownPropertyNames) {
-        const cleanProp = propName.trim();
-        if (cleanProp.length >= 3 && hayLower.includes(cleanProp.toLowerCase())) {
-          return cleanProp;
+      const hayNorm = normalizeForMatch(hay);
+      for (const propName of sortedKnown) {
+        const propNorm = normalizeForMatch(propName);
+        if (propNorm.length >= 3 && hayNorm.includes(propNorm)) {
+          return propName;
         }
       }
     }
   }
 
-  if (ctwaHeadline && ctwaHeadline.trim().length > 0 && ctwaHeadline.trim().length <= 60) {
-    return ctwaHeadline.trim();
-  }
-
+  // Nunca usar ctwaHeadline bruto ou texto promocional como nome de empreendimento
   return null;
 }
 
 /**
- * Calcula a prioridade comercial determinística (0–100) calibrada pela realidade operacional (Seção 3):
- *
- * 1. Interesse comercial efetivamente demonstrado (0–30 pts / 30%):
- *    - Empreendimento específico identificado (+10)
- *    - Necessidade principal clara: tipologia/bairro/quartos/finalidade (+8)
- *    - Etapa do pipeline (+12 para Visita/Proposta/Negociação; +9 para Interesse; +5 para Qualificação)
- * 2. Maturidade comercial do perfil (`profileMaturity`, 0–100) — peso 25% (0–25 pts)
- * 3. Score de qualificação da IA (`contacts.ai_score`, 0–10) — peso 25% (0–25 pts)
- * 4. Urgência real de acompanhamento (0–12 pts / 12%):
- *    - Cliente aguardando resposta ou primeiro atendimento (+6)
- *    - Janela de 24h do WhatsApp prestes a encerrar (+6) ou aberta (+4)
- * 5. Confiança da sugestão (`payload.score`, 0–100) — peso complementar 8% (0–8 pts)
- *
- * Isso impede que um lead com baixa maturidade e baixo score supere um comprador qualificado
- * apenas porque a IA gerou uma confiança alta na recomendação.
+ * Calcula a faixa de recência estrutural (Seção 4) a partir da última mensagem recebida do cliente:
+ * 0: <= 24h (hoje / janela aberta)
+ * 1: 24h a 72h (ontem / anteontem)
+ * 2: 3 a 7 dias
+ * 3: 8 a 14 dias
+ * 4: 15 a 30 dias
+ * 5: > 30 dias ou desconhecido
+ */
+export function getFollowupRecencyTier(
+  lastCustomerMessageAt?: string | null,
+  nowMs: number = Date.now()
+): number {
+  if (!lastCustomerMessageAt) return 5;
+  const ts = new Date(lastCustomerMessageAt).getTime();
+  if (!Number.isFinite(ts) || ts <= 0) return 5;
+  const elapsedHours = Math.max(0, (nowMs - ts) / (1000 * 60 * 60));
+  if (elapsedHours <= 24) return 0;
+  if (elapsedHours <= 72) return 1;
+  if (elapsedHours <= 7 * 24) return 2;
+  if (elapsedHours <= 14 * 24) return 3;
+  if (elapsedHours <= 30 * 24) return 4;
+  return 5;
+}
+
+/**
+ * Calcula a prioridade comercial determinística (0–100) combinando os mecanismos existentes (Seção 4):
+ * - Maturidade do perfil (`profileMaturity`, 0–100): até 24 pts
+ * - Score IA (`contacts.ai_score`, 0–10): até 24 pts
+ * - Compatibilidade com imóveis disponíveis (`bestMatchScore`, 0–100): até 16 pts
+ * - Intensidade do interesse / etapa comercial + empreendimento: até 16 pts
+ * - Compromissos pendentes / cliente aguardando resposta: até 12 pts
+ * - Urgência da janela de 24h (`closing_soon` +8, `open` +4): até 8 pts
  */
 export function calculateFollowupCommercialPriority(args: {
   confidenceScore: number | null;
@@ -1067,6 +1611,8 @@ export function calculateFollowupCommercialPriority(args: {
   stageName?: string | null;
   awaitingBusinessReply?: boolean;
   windowStatus?: FollowupWindowStatus;
+  bestMatchScore?: number | null;
+  hasPendingCommitment?: boolean;
 }): { score: number; tier: FollowupPriorityTier } {
   const {
     confidenceScore,
@@ -1077,11 +1623,22 @@ export function calculateFollowupCommercialPriority(args: {
     stageName,
     awaitingBusinessReply = false,
     windowStatus,
+    bestMatchScore = null,
+    hasPendingCommitment = false,
   } = args;
 
+  const matComp = Math.min(100, Math.max(0, profileMaturity)) * 0.24; // 0 a 24
+  const aiComp = Math.min(10, Math.max(0, aiScore)) * 2.4; // 0 a 24
+
+  // Compatibilidade com imóveis reais de venda (quando disponível) ou confiança complementar
+  const matchComp =
+    typeof bestMatchScore === 'number' && Number.isFinite(bestMatchScore) && bestMatchScore > 0
+      ? Math.min(100, Math.max(0, bestMatchScore)) * 0.16 // 0 a 16
+      : Math.min(100, Math.max(0, confidenceScore ?? 55)) * 0.1;
+
   let interestComp = 0;
-  if (hasInterestProperty) interestComp += 10;
-  if (hasPrimaryNeed) interestComp += 8;
+  if (hasInterestProperty) interestComp += 4;
+  if (hasPrimaryNeed) interestComp += 4;
 
   const normStage = (stageName || '').trim().toLowerCase();
   if (
@@ -1097,32 +1654,31 @@ export function calculateFollowupCommercialPriority(args: {
     interestComp += 5;
   }
 
-  const matComp = Math.min(100, Math.max(0, profileMaturity)) * 0.25; // 0 a 25
-  const aiComp = Math.min(10, Math.max(0, aiScore)) * 2.5; // 0 a 25
+  let commitmentComp = 0;
+  if (hasPendingCommitment) commitmentComp += 8;
+  if (awaitingBusinessReply) commitmentComp += 6;
 
-  let urgencyComp = 0;
-  if (awaitingBusinessReply) urgencyComp += 6;
+  let windowComp = 0;
   if (windowStatus === 'closing_soon') {
-    urgencyComp += 6;
+    windowComp = 8;
   } else if (windowStatus === 'open') {
-    urgencyComp += 4;
+    windowComp = 4;
   }
 
-  const confComp = Math.min(100, Math.max(0, confidenceScore ?? 55)) * 0.08; // 0 a 8 (complementar)
-
   const raw =
-    Math.min(30, interestComp) +
     matComp +
     aiComp +
-    Math.min(12, urgencyComp) +
-    confComp;
+    matchComp +
+    Math.min(16, interestComp) +
+    Math.min(12, commitmentComp) +
+    windowComp;
   const score = Math.round(Math.min(100, Math.max(0, raw)) * 10) / 10;
 
   let tier: FollowupPriorityTier = 'normal';
   if (
     score >= 65 ||
-    (aiScore >= 7 && profileMaturity >= 60) ||
-    (aiScore >= 7 && (confidenceScore ?? 0) >= 75 && profileMaturity >= 45)
+    hasPendingCommitment ||
+    (aiScore >= 7 && profileMaturity >= 60)
   ) {
     tier = 'high';
   } else if (score >= 42 || aiScore >= 5 || profileMaturity >= 60) {
@@ -1208,9 +1764,20 @@ export function compareFollowupItems(
   sortBy: FollowupSortBy = 'recent_priority'
 ): number {
   if (sortBy === 'recent_priority') {
+    const tierA =
+      typeof a.recencyTier === 'number'
+        ? a.recencyTier
+        : null;
+    const tierB =
+      typeof b.recencyTier === 'number'
+        ? b.recencyTier
+        : null;
+    if (tierA !== null && tierB !== null && tierA !== tierB) {
+      return tierA - tierB;
+    }
     const dayA = resolveItemCustomerDayKeySp(a);
     const dayB = resolveItemCustomerDayKeySp(b);
-    if (dayB !== dayA) {
+    if (tierA === null && tierB === null && dayB !== dayA) {
       return dayB.localeCompare(dayA);
     }
     return compareByCommercialPriority(a, b);
@@ -1386,4 +1953,117 @@ export function filterFollowupItems(
 
     return true;
   });
+}
+
+/**
+ * Extrai o sufixo/slug do link público de um imóvel para preencher o botão URL dinâmico
+ * do template `match_imovel_personalizado` (`https://ronaldomeira.com.br/imovel/{{1}}`).
+ */
+export function extractPropertyUrlSlug(publicUrl?: string | null): string | null {
+  if (!publicUrl || !publicUrl.trim()) return null;
+  try {
+    const parsed = new URL(publicUrl.trim());
+    const match = parsed.pathname.match(/\/imovel\/([^/?#]+)/i);
+    if (match?.[1]) return decodeURIComponent(match[1]).trim();
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length > 0) return segments[segments.length - 1].trim();
+    return null;
+  } catch {
+    const cleaned = publicUrl.trim().replace(/^\/+/, '');
+    const m = cleaned.match(/imovel\/([^/?#]+)/i);
+    return m?.[1] || cleaned || null;
+  }
+}
+
+/**
+ * Monta os parâmetros exatos do template aprovado `match_imovel_personalizado`:
+ * Body: "Olá, {{1}}! Tudo bem?\n\nEncontrei uma opção de imóvel {{2}} que pode combinar com o que você está procurando.\n\nSeparei os detalhes para você conferir. Depois me conta o que achou!"
+ * Button[0] (URL): "https://ronaldomeira.com.br/imovel/{{1}}"
+ */
+export function buildMatchImovelPersonalizadoParams(args: {
+  contactName?: string | null;
+  property: Pick<
+    CompatiblePropertySummary,
+    'title' | 'neighborhood' | 'city' | 'propertyType' | 'bedroomsMin' | 'publicUrl'
+  >;
+}): {
+  body: [string, string];
+  buttonUrlSuffix: string | null;
+} {
+  const firstName = getClientFirstName(args.contactName) || 'tudo bem';
+  const prop = args.property;
+
+  const parts: string[] = [];
+  if (prop.bedroomsMin && prop.bedroomsMin > 0) {
+    parts.push(`de ${prop.bedroomsMin} ${prop.bedroomsMin === 1 ? 'quarto' : 'quartos'}`);
+  }
+  const location = prop.neighborhood?.trim() || prop.city?.trim() || '';
+  if (location) {
+    parts.push(`no bairro ${location}`);
+  }
+  if (prop.title?.trim()) {
+    parts.push(`(${prop.title.trim()})`);
+  }
+
+  const contextVar =
+    parts.length > 0
+      ? parts.join(' ')
+      : prop.title?.trim() || 'alinhado ao seu perfil';
+
+  return {
+    body: [firstName, contextVar],
+    buttonUrlSuffix: extractPropertyUrlSlug(prop.publicUrl),
+  };
+}
+
+/**
+ * Constrói mensagem livre natural e personalizada com os imóveis selecionados (Seção 10).
+ * Inclui exclusivamente os imóveis selecionados com seus respectivos links públicos validados.
+ */
+export function buildMultiPropertyFreeFollowupMessage(args: {
+  contactName?: string | null;
+  properties: CompatiblePropertySummary[];
+  interestProperty?: string | null;
+  profileSummaryText?: string | null;
+}): string {
+  const firstName = getClientFirstName(args.contactName);
+  const greeting = firstName ? `Oi, ${firstName}!` : 'Oi, tudo bem?';
+  const selected = args.properties.filter((p) => Boolean(p.publicUrl));
+
+  if (selected.length === 0) {
+    if (args.interestProperty) {
+      return `${greeting} Passando para saber se você conseguiu ver as informações sobre o ${args.interestProperty} e se posso te ajudar com mais algum detalhe.`;
+    }
+    return `${greeting} Passando para saber como está sua busca pelo imóvel e se posso te ajudar com novas opções.`;
+  }
+
+  const neighborhoods = Array.from(
+    new Set(selected.map((p) => p.neighborhood?.trim()).filter(Boolean))
+  );
+  const locText =
+    neighborhoods.length === 1
+      ? ` em ${neighborhoods[0]}`
+      : neighborhoods.length > 1
+        ? ` em ${neighborhoods.slice(0, 2).join(' e ')}`
+        : '';
+
+  const intro =
+    selected.length === 1
+      ? `${greeting} Separei uma opção${locText} que combina com o que conversamos. Vale a pena dar uma olhada:`
+      : `${greeting} Separei ${selected.length === 2 ? 'duas opções' : 'algumas opções'}${locText} que combinam com o que conversamos. Acho que vale a pena conhecer:`;
+
+  const blocks = selected.map((prop, idx) => {
+    const label =
+      selected.length === 1
+        ? `${prop.title}`
+        : `Opção ${idx + 1} — ${prop.title}`;
+    return `${label}\n${prop.publicUrl}`;
+  });
+
+  const closing =
+    selected.length === 1
+      ? 'Me conta o que achou dessa opção!'
+      : 'Me conta o que achou dessas opções!';
+
+  return `${intro}\n\n${blocks.join('\n\n')}\n\n${closing}`;
 }

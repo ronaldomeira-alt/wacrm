@@ -145,7 +145,7 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     expect(html).toContain('9/10');
     expect(html).toContain('88% confiança');
     expect(html).toContain('Avant Home');
-    expect(html).toContain('Studio em Bessa (Locação por temporada)');
+    expect(html).not.toContain('Necessidade principal');
     expect(html).toContain('está há 15 dias sem responder');
     expect(html).toContain('2 imóveis compatíveis no Match');
   });
@@ -227,26 +227,27 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     expect(cardSource).toContain('setFollowupOpen(true)');
     expect(cardSource).not.toContain('/api/whatsapp/send');
 
-    // 2. Preservação integral dos fluxos do FollowupDialog (review, choose_mode, free_draft, template_draft, plan_review) e seção secundária do Match
+    // 2. Preservação integral dos fluxos redesenhados do FollowupDialog (review, prepare_free, prepare_template, template_blocked)
     expect(dialogSource).toContain("step === 'review'");
-    expect(dialogSource).toContain("step === 'choose_mode'");
-    expect(dialogSource).toContain("step === 'free_draft'");
-    expect(dialogSource).toContain("step === 'template_draft'");
-    expect(dialogSource).toContain("step === 'plan_review'");
+    expect(dialogSource).toContain("step === 'prepare_free'");
+    expect(dialogSource).toContain("step === 'prepare_template'");
+    expect(dialogSource).toContain("step === 'template_blocked'");
+    expect(dialogSource).toContain('FOLLOWUP_REQUIRED_TEMPLATE_NAME');
     expect(dialogSource).toContain('data-testid="followup-dialog-compatible-properties"');
 
     // 3. Responsividade: grid de 3 colunas no desktop, 2 intermediárias, 1 no mobile + limitação visual de textos
     expect(pageSource).toContain('grid-cols-1 md:grid-cols-2 lg:grid-cols-3');
-    expect(cardSource).toContain('line-clamp-3');
+    expect(cardSource).toContain('line-clamp-4');
     expect(cardSource).toContain('grid-cols-3 gap-2');
 
-    // 4. Novo filtro padrão "Ontem" ('yesterday') + Anteontem + Últimos 3 dias + filtro de janela aberta + miniaturas reais no modal
-    expect(pageSource).toContain("DEFAULT_DATE_FILTER: FollowupDateFilter = 'yesterday'");
-    expect(pageSource).toContain('day_before_yesterday');
-    expect(pageSource).toContain('Últimos 3 dias');
-    expect(pageSource).toContain('Janela de atendimento aberta');
+    // 4. Fila padrão sincronizada com o Dashboard ('all'), sem banner burocrático antigo, e miniaturas reais no modal
+    expect(pageSource).toContain("DEFAULT_DATE_FILTER: FollowupDateFilter = 'all'");
+    expect(pageSource).not.toContain('followup-older-pending-banner');
+    expect(pageSource).not.toContain('cujo cliente falou em');
+    expect(pageSource).toContain('Ontem não tivemos nenhuma sugestão de follow-up.');
+    expect(pageSource).toContain('Hoje ainda não temos sugestões de follow-up.');
     expect(dialogSource).toContain('data-testid="followup-property-thumbnail-img"');
-    expect(dialogSource).toContain('data-testid="followup-selected-property-summary"');
+    expect(dialogSource).toContain('Imóveis selecionados para recomendar');
   });
 
   it('exibe discretamente o estado real da janela de atendimento de 24h (Janela aberta, Janela prestes a encerrar, Template necessário)', () => {

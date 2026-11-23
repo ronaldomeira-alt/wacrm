@@ -19,13 +19,13 @@ import {
   RotateCcw,
   Send,
   Sparkles,
-  Target,
   UserCheck,
   UserPlus,
 } from 'lucide-react';
 import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { FollowupDialog } from '@/components/ai-hub/followup-dialog';
+import { FOLLOWUP_UPDATED_EVENT } from '@/components/dashboard/followup-recommendations-card';
 import { scoreConfidenceBand } from '@/lib/ai/lead-analysis-config';
 import {
   evaluateFollowupSessionWindow,
@@ -413,43 +413,24 @@ export function FollowupCard({
             )}
           </div>
 
-          {/* Empreendimento de interesse e necessidade identificada */}
-          {(item.interestProperty || item.primaryNeed) && (
+          {/* Empreendimento de origem (somente quando identificado com segurança) */}
+          {item.interestProperty && (
             <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-              {item.interestProperty && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-card border border-border/70 px-2 py-0.5 text-[11px] font-semibold text-foreground truncate max-w-full">
-                  <Building2 className="size-3 text-primary shrink-0" />
-                  <span className="truncate">{item.interestProperty}</span>
-                </span>
-              )}
-              {item.primaryNeed && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-card/60 border border-border/50 px-2 py-0.5 text-[10px] text-muted-foreground truncate max-w-full">
-                  <Target className="size-2.5 text-muted-foreground shrink-0" />
-                  <span className="truncate">{item.primaryNeed}</span>
-                </span>
-              )}
+              <span className="inline-flex items-center gap-1 rounded-md bg-card border border-border/70 px-2 py-0.5 text-[11px] font-semibold text-foreground truncate max-w-full">
+                <Building2 className="size-3 text-primary shrink-0" />
+                <span className="truncate">{item.interestProperty}</span>
+              </span>
             </div>
           )}
 
-          {/* Explicação objetiva estruturada (limitada visualmente a 3 linhas) */}
+          {/* Comentário comercial personalizado */}
           <p
             data-testid="followup-reason-text"
-            className="text-xs text-foreground/95 leading-relaxed line-clamp-3"
+            className="text-xs text-foreground/95 leading-relaxed line-clamp-4"
             title={item.reason}
           >
             {item.reason}
           </p>
-
-          {item.approachSummary &&
-            item.approachSummary.toLowerCase() !== item.reason.toLowerCase() && (
-              <p
-                className="text-[11px] text-muted-foreground leading-snug line-clamp-2 pt-0.5 border-t border-border/40"
-                title={item.approachSummary}
-              >
-                <strong className="font-medium text-foreground/80">Abordagem:</strong>{' '}
-                {item.approachSummary}
-              </p>
-            )}
         </div>
 
         {/* Indicador complementar de imóveis compatíveis no Match (Seção 9) */}
@@ -581,14 +562,17 @@ export function FollowupCard({
           suggestion={suggestion}
           open={followupOpen}
           onOpenChange={setFollowupOpen}
-          onResolved={() => onRefresh?.()}
+          onResolved={() => {
+            window.dispatchEvent(new CustomEvent(FOLLOWUP_UPDATED_EVENT));
+            onRefresh?.();
+          }}
           compatibleProperties={item.compatibleProperties}
           stageName={item.stageName}
           hoursSinceLastCommunication={effectiveHours}
           neverContacted={item.neverContacted}
           lastMessagePreview={item.lastMessagePreview}
-          primaryNeed={item.primaryNeed}
           interestProperty={item.interestProperty}
+          reason={item.reason}
           lastCustomerMessageAt={primaryCustomerIso}
           sessionWindow={liveWindow}
         />

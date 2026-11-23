@@ -20,10 +20,16 @@ import {
   FOLLOWUP_RECENT_TEAM_CONTACT_COOLDOWN_HOURS,
 } from './followup-config'
 import {
+  evaluateFollowupCommercialEligibility,
   summarizeConversationMessages,
   type ConversationMessageStats,
   type RawConversationMessageRow,
 } from '@/lib/followup/engine'
+import {
+  buildProfileFromData,
+  type ContactRow,
+  type TagWithJoin,
+} from '@/lib/match/profile-builder'
 import { engineSendTemplate } from '@/lib/automations/meta-send'
 
 interface CandidateDeal {
@@ -32,8 +38,18 @@ interface CandidateDeal {
   conversation_id: string | null
   stage_id: string
   pipeline_id: string
-  contact: { name: string; has_purchased: boolean } | null
-  conversation: { last_message_at: string | null } | null
+  contact: {
+    name: string
+    phone?: string | null
+    ai_score?: number | null
+    has_purchased: boolean
+    archived_at?: string | null
+    paused_at?: string | null
+  } | null
+  conversation: {
+    last_message_at: string | null
+    ctwa_referral?: Record<string, unknown> | null
+  } | null
 }
 
 /**
@@ -60,7 +76,7 @@ export async function generateFollowupSuggestions(
   const { data: dealRows, error: dealsError } = await db
     .from('deals')
     .select(
-      'id, contact_id, conversation_id, stage_id, pipeline_id, contact:contacts(name, has_purchased), conversation:conversations(last_message_at)',
+      'id, contact_id, conversation_id, stage_id, pipeline_id, contact:contacts(name, phone, ai_score, has_purchased, archived_at, paused_at), conversation:conversations(last_message_at, ctwa_referral)',
     )
     .eq('account_id', accountId)
     .eq('status', 'open')
@@ -76,6 +92,8 @@ export async function generateFollowupSuggestions(
         d.conversation_id &&
         d.contact &&
         !d.contact.has_purchased &&
+        !d.contact.archived_at &&
+        !d.contact.paused_at &&
         (!d.conversation?.last_message_at || d.conversation.last_message_at < cutoff),
     )
     .sort((a, b) => {
@@ -245,6 +263,34 @@ export async function generateFollowupSuggestions(
     // Segue sem bloqueio caso o mock não suporte a leitura adicional
   }
 
+  // Carrega tags dos candidatos para validar a regra de ouro (exclusivamente vendas)
+  const tagsByContact = new Map<string, TagWithJoin[]>()
+  try {
+    const cIds = toScore.map((d) => d.contact_id as string).filter(Boolean)
+    if (cIds.length > 0) {
+      const { data: tagRows } = await db
+        .from('contact_tags')
+        .select('contact_id, source, originally_from_ctwa, tags(id, name, category)')
+        .in('contact_id', cIds)
+      if (Array.isArray(tagRows)) {
+        for (const row of tagRows as Array<Record<string, unknown>>) {
+          const cid = String(row.contact_id || '')
+          const t = row.tags as { id?: string; name?: string; category?: string | null } | null
+          if (!cid || !t?.name) continue
+          const arr = tagsByContact.get(cid) ?? []
+          arr.push({
+            source: String(row.source || 'conversation'),
+            originally_from_ctwa: Boolean(row.originally_from_ctwa),
+            tags: { id: String(t.id || ''), name: String(t.name), category: t.category ?? null },
+          })
+          tagsByContact.set(cid, arr)
+        }
+      }
+    }
+  } catch {
+    // Segue em ambientes de mock que não implementam contact_tags
+  }
+
   const systemPrompt = buildFollowupScoreSystemPrompt()
   let created = 0
   let scored = 0
@@ -254,6 +300,40 @@ export async function generateFollowupSuggestions(
     const contactId = deal.contact_id as string
     const conversationId = deal.conversation_id as string
     const msgStats = msgStatsByConv.get(conversationId)
+
+    // 0. Regra de ouro (Seção 1): bloquear locação e etapas descartadas antes mesmo de chamar a IA
+    const leadSummary = summaryByContact.get(contactId) ?? null
+    const leadTags = tagsByContact.get(contactId) ?? []
+    if (leadSummary || leadTags.length > 0 || deal.conversation?.ctwa_referral) {
+      const contactForProfile: ContactRow = {
+        id: contactId,
+        account_id: accountId,
+        name: deal.contact?.name || 'Lead',
+        phone: deal.contact?.phone || '',
+        ai_score: deal.contact?.ai_score ?? 0,
+        paused_at: deal.contact?.paused_at ?? null,
+        archived_at: deal.contact?.archived_at ?? null,
+      }
+      const profile = buildProfileFromData(
+        contactForProfile,
+        leadSummary ? { summary: leadSummary as unknown as Record<string, unknown> } : null,
+        leadTags,
+        deal.conversation?.ctwa_referral
+          ? { ctwa_referral: deal.conversation.ctwa_referral }
+          : null,
+      )
+      const eligibility = evaluateFollowupCommercialEligibility({
+        profile,
+        hasPurchased: deal.contact?.has_purchased ?? false,
+        stageName: stageNameById.get(deal.stage_id) ?? null,
+        lastCustomerText: msgStats?.lastCustomerText ?? null,
+        compatibleSalePropertiesCount: 1, // verificado posteriormente no motor unificado
+        isHistoricalView: true, // bloqueia estritamente locacao e indefinido
+      })
+      if (!eligibility.eligible) {
+        continue
+      }
+    }
 
     const effectiveLastCustomerAt =
       msgStats?.lastCustomerMessageAt ?? deal.conversation?.last_message_at ?? null

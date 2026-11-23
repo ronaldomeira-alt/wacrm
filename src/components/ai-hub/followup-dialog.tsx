@@ -1,26 +1,25 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   AlertCircle,
   Ban,
   Building2,
   Check,
-  ChevronDown,
+  CheckSquare,
+  Circle,
+  CircleDot,
   Clock,
   Copy,
   ExternalLink,
-  Link2,
+  GitBranch,
   Loader2,
   MessageSquare,
-  Plus,
-  RotateCcw,
+  Send,
   ShieldAlert,
-  ShoppingBag,
   Sparkles,
+  Square,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,44 +33,42 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { writeFollowupDraft } from '@/lib/inbox/followup-draft';
 import { resolveValidatedPublicPropertyUrl } from '@/lib/match/smart-send';
 import { renderTemplatePreview } from '@/lib/whatsapp/template-validators';
 import {
+  FOLLOWUP_MAX_RECOMMENDED_PROPERTIES,
+  FOLLOWUP_REQUIRED_TEMPLATE_NAME,
+  buildMatchImovelPersonalizadoParams,
+  buildMultiPropertyFreeFollowupMessage,
   evaluateFollowupSessionWindow,
+  extractPropertyUrlSlug,
   type CompatiblePropertySummary,
   type FollowupSessionWindowInfo,
 } from '@/lib/followup/engine';
-import type { FollowupPlan, FollowupPlanContact } from '@/lib/ai/followup-types';
 import type { AiSuggestion } from '@/types';
 
-/** Default "Adiar" window — a single click, no duration picker, kept
- *  here so it's a one-line change later if it needs to become
- *  user-configurable. */
 const SNOOZE_DAYS = 3;
 
 interface FollowupPayload {
   stage_name?: string | null;
-  has_purchased?: boolean;
   hours_since_contact?: number;
   last_customer_message_at?: string | null;
   reason?: string | null;
-  approach_summary?: string | null;
-  score?: number | null;
-  draft?:
-    | { mode: 'free'; text: string }
-    | {
-        mode: 'template';
-        template_id: string;
-        template_name: string;
-        body_text: string;
-        values: { body: string[]; headerText?: string };
-        supports_public_url?: boolean;
-      }
-    | { mode: 'plan'; plan: FollowupPlan };
+  [key: string]: unknown;
 }
 
-type Step = 'review' | 'choose_mode' | 'free_draft' | 'template_draft' | 'plan_review' | 'no_template';
+interface TemplateDraftState {
+  template_id: string;
+  template_name: string;
+  template_language: string;
+  body_text: string;
+  body_values: string[];
+  button_text: string;
+  button_url: string;
+  button_url_suffix: string;
+}
+
+type ModalStep = 'review' | 'prepare_free' | 'prepare_template' | 'template_blocked';
 
 function resolveClientPublicPropertyUrl(prop: {
   publicUrl?: string | null;
@@ -106,7 +103,10 @@ function formatPropertyTypePtBr(raw?: string | null): string | null {
   return labels[norm] || raw.trim().charAt(0).toUpperCase() + raw.trim().slice(1);
 }
 
-function formatCommercialPricePtBr(priceMin?: number | null, priceMax?: number | null): string | null {
+function formatCommercialPricePtBr(
+  priceMin?: number | null,
+  priceMax?: number | null
+): string | null {
   const min = Number(priceMin || 0);
   const max = Number(priceMax || 0);
   const val = min > 0 ? min : max;
@@ -122,11 +122,9 @@ function formatCommercialPricePtBr(priceMin?: number | null, priceMax?: number |
 function PropertyThumbnail({
   coverUrl,
   title,
-  sizeClass = 'size-12',
 }: {
   coverUrl?: string | null;
   title: string;
-  sizeClass?: string;
 }) {
   const [failed, setFailed] = useState(false);
 
@@ -134,7 +132,7 @@ function PropertyThumbnail({
     return (
       <div
         data-testid="followup-property-thumbnail-fallback"
-        className={`flex ${sizeClass} shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/50 text-muted-foreground`}
+        className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/50 text-muted-foreground"
       >
         <Building2 className="size-5" />
       </div>
@@ -150,54 +148,8 @@ function PropertyThumbnail({
       loading="lazy"
       decoding="async"
       onError={() => setFailed(true)}
-      className={`${sizeClass} shrink-0 rounded-lg border border-border/70 object-cover bg-muted/30`}
+      className="size-12 shrink-0 rounded-lg border border-border/70 object-cover bg-muted/30"
     />
-  );
-}
-
-function PlanContactReview({
-  contact,
-  title,
-  scheduleLabel,
-  onValuesChange,
-  onScheduleChange,
-}: {
-  contact: FollowupPlanContact;
-  title: string;
-  scheduleLabel: string;
-  onValuesChange: (values: string[]) => void;
-  onScheduleChange: (days: number) => void;
-}) {
-  return (
-    <div className="space-y-3 rounded-lg border border-border p-4">
-      <h4 className="font-medium text-foreground">{title}</h4>
-      <p className="text-xs text-muted-foreground">{contact.template_name}</p>
-      <div className="rounded-md border border-border bg-muted/40 p-3 text-sm whitespace-pre-wrap">
-        {renderTemplatePreview(contact.body_text, contact.values.body)}
-      </div>
-      {contact.values.body.map((v, i) => (
-        <div key={i} className="space-y-1">
-          <Label className="text-xs">{`{{${i + 1}}}`}</Label>
-          <Input
-            value={v}
-            onChange={(e) => {
-              const next = [...contact.values.body];
-              next[i] = e.target.value;
-              onValuesChange(next);
-            }}
-          />
-        </div>
-      ))}
-      <div className="space-y-1">
-        <Label className="text-xs">{scheduleLabel}</Label>
-        <Input
-          type="number"
-          min={1}
-          value={contact.scheduleDays}
-          onChange={(e) => onScheduleChange(parseInt(e.target.value, 10) || 0)}
-        />
-      </div>
-    </div>
   );
 }
 
@@ -208,11 +160,8 @@ export function FollowupDialog({
   onResolved,
   compatibleProperties: initialCompatibleProperties,
   stageName: overrideStageName,
-  hoursSinceLastCommunication,
-  neverContacted,
-  lastMessagePreview,
-  primaryNeed,
   interestProperty,
+  reason: overrideReason,
   lastCustomerMessageAt,
   sessionWindow: initialSessionWindow,
 }: {
@@ -227,48 +176,39 @@ export function FollowupDialog({
   lastMessagePreview?: string | null;
   primaryNeed?: string | null;
   interestProperty?: string | null;
+  reason?: string | null;
   lastCustomerMessageAt?: string | null;
   sessionWindow?: FollowupSessionWindowInfo;
 }) {
-  const t = useTranslations('AiHub.followup');
-  const router = useRouter();
   const payload = (suggestion.payload ?? {}) as FollowupPayload;
+  const contactName = suggestion.contact?.name?.trim() || 'Cliente';
+  const stageName = overrideStageName ?? payload.stage_name ?? null;
+  const displayReason =
+    (overrideReason && overrideReason.trim()) ||
+    (payload.reason && payload.reason.trim()) ||
+    suggestion.title ||
+    '';
 
-  // Resume straight into the draft screen if one was already generated
-  // (page reload, or reopening the dialog) instead of asking the user
-  // to pick a mode again.
-  const [step, setStep] = useState<Step>(
-    payload.draft?.mode === 'free'
-      ? 'free_draft'
-      : payload.draft?.mode === 'template'
-        ? 'template_draft'
-        : payload.draft?.mode === 'plan'
-          ? 'plan_review'
-          : 'review',
-  );
+  const [step, setStep] = useState<ModalStep>('review');
   const [busy, setBusy] = useState(false);
-  const [freeText, setFreeText] = useState(
-    payload.draft?.mode === 'free' ? payload.draft.text : '',
-  );
-  const [templateValues, setTemplateValues] = useState<string[]>(
-    payload.draft?.mode === 'template' ? payload.draft.values.body : [],
-  );
-  const [templateDraft, setTemplateDraft] = useState(
-    payload.draft?.mode === 'template' ? payload.draft : null,
-  );
-  const [plan, setPlan] = useState<FollowupPlan | null>(
-    payload.draft?.mode === 'plan' ? payload.draft.plan : null,
-  );
-  const [noTemplateReason, setNoTemplateReason] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  const [windowClosedMidFlow, setWindowClosedMidFlow] = useState(false);
+
+  const [freeText, setFreeText] = useState('');
+  const [templateDraft, setTemplateDraft] = useState<TemplateDraftState | null>(null);
+  const [templateBlockedReason, setTemplateBlockedReason] = useState<string | null>(null);
+
   const [fetchedProperties, setFetchedProperties] = useState<CompatiblePropertySummary[] | null>(
-    null,
+    null
   );
   const [loadingMatches, setLoadingMatches] = useState(false);
-  const [matchesExpanded, setMatchesExpanded] = useState(true);
-  const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
-  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
-  // Atualiza o estado da janela de atendimento de 24h em tempo real enquanto o modal está aberto (Seção 5)
+  // Chave de idempotência para evitar envios duplicados em cliques repetidos
+  const sendAttemptRef = useRef<string | null>(null);
+  const sendingGuardRef = useRef(false);
+
+  // Atualiza contagem da janela de 24h em tempo real enquanto o modal está aberto
   useEffect(() => {
     if (!open) return;
     const timer = setInterval(() => setNowTick(Date.now()), 30_000);
@@ -276,10 +216,25 @@ export function FollowupDialog({
   }, [open]);
 
   const liveSessionWindow = useMemo<FollowupSessionWindowInfo>(() => {
+    if (windowClosedMidFlow) {
+      return {
+        status: 'expired',
+        windowOpen: false,
+        closingSoon: false,
+        templateRequired: true,
+        remainingMs: 0,
+        remainingLabel: null,
+        isCtwaLead: initialSessionWindow?.isCtwaLead ?? false,
+        ctwaFreeBenefitActive: initialSessionWindow?.ctwaFreeBenefitActive ?? false,
+        ctwaFreeBenefitExpiresAt: initialSessionWindow?.ctwaFreeBenefitExpiresAt ?? null,
+        ctwaFreeBenefitRemainingLabel: initialSessionWindow?.ctwaFreeBenefitRemainingLabel ?? null,
+      };
+    }
+
     const effectiveCustAt =
       lastCustomerMessageAt !== undefined
         ? lastCustomerMessageAt
-        : (payload.last_customer_message_at ?? initialSessionWindow?.ctwaFreeBenefitExpiresAt ?? null);
+        : (payload.last_customer_message_at ?? null);
     if (lastCustomerMessageAt !== undefined || payload.last_customer_message_at) {
       return evaluateFollowupSessionWindow({
         lastCustomerMessageAt: effectiveCustAt,
@@ -290,26 +245,66 @@ export function FollowupDialog({
     }
     if (initialSessionWindow) return initialSessionWindow;
     return evaluateFollowupSessionWindow({ lastCustomerMessageAt: null, nowMs: nowTick });
-  }, [lastCustomerMessageAt, payload.last_customer_message_at, initialSessionWindow, nowTick]);
+  }, [
+    windowClosedMidFlow,
+    lastCustomerMessageAt,
+    payload.last_customer_message_at,
+    initialSessionWindow,
+    nowTick,
+  ]);
 
+  const isWindowOpen = liveSessionWindow.windowOpen;
+
+  // Imóveis compatíveis (exclusivamente venda, link válido, até 3 opções)
   const compatibleProperties = useMemo<CompatiblePropertySummary[]>(() => {
     const base =
       initialCompatibleProperties && initialCompatibleProperties.length > 0
         ? initialCompatibleProperties
         : (fetchedProperties ?? []);
-    return base.map((p) => ({
-      ...p,
-      publicUrl: resolveClientPublicPropertyUrl(p),
-    }));
+    return base
+      .filter((p) => String(p.operation || 'venda').toLowerCase() === 'venda')
+      .map((p) => ({
+        ...p,
+        operation: 'venda',
+        publicUrl: resolveClientPublicPropertyUrl(p),
+      }))
+      .filter((p) => Boolean(p.publicUrl))
+      .slice(0, FOLLOWUP_MAX_RECOMMENDED_PROPERTIES);
   }, [initialCompatibleProperties, fetchedProperties]);
 
+  const [selectedPropertyIds, setSelectedPropertyIds] = useState<string[]>(() => {
+    const initial = (initialCompatibleProperties || [])
+      .filter((p) => String(p.operation || 'venda').toLowerCase() === 'venda')
+      .slice(0, FOLLOWUP_MAX_RECOMMENDED_PROPERTIES);
+    if (initial.length === 0) return [];
+    return initialSessionWindow?.windowOpen
+      ? initial.map((p) => p.propertyId)
+      : [initial[0].propertyId];
+  });
+
+  // Inicializa seleção quando os imóveis são carregados sob demanda
   useEffect(() => {
-    if (initialCompatibleProperties && initialCompatibleProperties.length > 0) {
-      return;
-    }
+    if (compatibleProperties.length === 0) return;
+    setSelectedPropertyIds((prev) => {
+      const validPrev = prev.filter((id) =>
+        compatibleProperties.some((p) => p.propertyId === id)
+      );
+      if (validPrev.length > 0) {
+        return isWindowOpen ? validPrev : [validPrev[0]];
+      }
+      return isWindowOpen
+        ? compatibleProperties.map((p) => p.propertyId)
+        : [compatibleProperties[0].propertyId];
+    });
+  }, [compatibleProperties, isWindowOpen]);
+
+  // Carrega matches sob demanda se o modal foi aberto sem a lista pré-hidratada
+  useEffect(() => {
+    if (initialCompatibleProperties && initialCompatibleProperties.length > 0) return;
     if (!open || !suggestion.contact_id) return;
     let active = true;
     const controller = new AbortController();
+    setLoadingMatches(true);
     fetch(`/api/match/lead/${encodeURIComponent(suggestion.contact_id)}`, {
       signal: controller.signal,
     })
@@ -320,7 +315,6 @@ export function FollowupDialog({
           data.matches as Array<Record<string, unknown>>
         )
           .filter((m) => Number(m.match_score ?? 0) >= 70 && m.match_status !== 'ignorado')
-          .slice(0, 5)
           .map((m) => {
             const prop = (m.property ?? {}) as Record<string, unknown>;
             const breakdown = (m.score_breakdown ?? {}) as Record<string, unknown>;
@@ -328,6 +322,7 @@ export function FollowupDialog({
             const rawPublicUrl = prop.publicUrl ? String(prop.publicUrl) : null;
             const propertyId = String(prop.propertyId || m.property_id || '');
             const code = prop.code ? String(prop.code) : null;
+            const operation = String(prop.operation || data.searchProfile?.operation || 'venda').toLowerCase();
             return {
               matchId: String(m.id || ''),
               propertyId,
@@ -335,7 +330,7 @@ export function FollowupDialog({
               code,
               neighborhood: String(prop.neighborhood || ''),
               city: String(prop.city || 'João Pessoa'),
-              operation: String(data.searchProfile?.operation || 'venda'),
+              operation,
               propertyType: prop.propertyType ? String(prop.propertyType) : null,
               priceMin: Number(prop.priceMin || 0),
               priceMax: Number(prop.priceMax || 0),
@@ -357,7 +352,9 @@ export function FollowupDialog({
                 ? (breakdown.reasons as unknown[]).map((r) => String(r))
                 : [],
             };
-          });
+          })
+          .filter((p) => p.operation === 'venda' && Boolean(p.publicUrl))
+          .slice(0, FOLLOWUP_MAX_RECOMMENDED_PROPERTIES);
         setFetchedProperties(mapped);
       })
       .catch(() => {})
@@ -370,233 +367,344 @@ export function FollowupDialog({
     };
   }, [open, suggestion.contact_id, initialCompatibleProperties]);
 
-  const selectedProperty = useMemo(
-    () => compatibleProperties.find((p) => p.propertyId === selectedPropertyId) ?? null,
-    [compatibleProperties, selectedPropertyId],
+  const selectedProperties = useMemo(
+    () => compatibleProperties.filter((p) => selectedPropertyIds.includes(p.propertyId)),
+    [compatibleProperties, selectedPropertyIds]
   );
 
-  const insertPropertyIntoFreeDraft = useCallback((prop: CompatiblePropertySummary) => {
-    const location = [prop.neighborhood, prop.city].filter(Boolean).join(', ');
-    const resolvedUrl = resolveClientPublicPropertyUrl(prop);
-    const refLine = resolvedUrl
-      ? `\n\nSeparei também esta opção que combina com o que você busca: ${prop.title}${location ? ` (${location})` : ''}\n${resolvedUrl}`
-      : `\n\nSeparei também esta opção compatível com sua busca: ${prop.title}${location ? ` (${location})` : ''}.`;
-    setFreeText((prev) => {
-      const trimmed = prev.trim();
-      if (trimmed.includes(prop.title)) {
-        if (resolvedUrl && !trimmed.includes(resolvedUrl)) {
-          return `${trimmed}\n${resolvedUrl}`.trim();
-        }
-        return prev;
+  // Alterna seleção respeitando estritamente a regra da janela:
+  // - Janela aberta: multi-seleção (1 ou vários imóveis)
+  // - Janela encerrada: seleção única (exatamente 1 imóvel)
+  const handleToggleProperty = useCallback(
+    (prop: CompatiblePropertySummary) => {
+      let nextIds: string[];
+      if (isWindowOpen) {
+        const exists = selectedPropertyIds.includes(prop.propertyId);
+        nextIds = exists
+          ? selectedPropertyIds.filter((id) => id !== prop.propertyId)
+          : [...selectedPropertyIds, prop.propertyId];
+      } else {
+        nextIds = [prop.propertyId];
       }
-      return `${trimmed}${refLine}`.trim();
-    });
-    toast.success(`Imóvel "${prop.title}" incluído na preparação da mensagem.`);
-  }, []);
 
-  const applyPropertyToTemplateDraft = useCallback(
-    (prop: CompatiblePropertySummary) => {
-      if (!templateDraft) return;
-      const typeLabel = formatPropertyTypePtBr(prop.propertyType)?.toLowerCase() || 'imóvel';
-      const loc = prop.neighborhood || prop.city || 'João Pessoa';
-      const contextPhrase = `${typeLabel} em ${loc} (${prop.title})`;
+      setSelectedPropertyIds(nextIds);
+      sendAttemptRef.current = null;
 
-      setTemplateValues((prev) => {
-        if (prev.length < 2) return prev;
-        const next = [...prev];
-        next[1] = contextPhrase;
-        if (next.length >= 3 && prop.publicUrl) {
-          next[2] = prop.publicUrl;
-        }
-        return next;
-      });
-      toast.success(`Contexto de "${prop.title}" aplicado às variáveis do template.`);
-    },
-    [templateDraft],
-  );
+      const nextSelected = compatibleProperties.filter((p) => nextIds.includes(p.propertyId));
 
-  const handleSelectProperty = useCallback(
-    (prop: CompatiblePropertySummary) => {
-      const isDeselect = selectedPropertyId === prop.propertyId;
-      const nextId = isDeselect ? null : prop.propertyId;
-      setSelectedPropertyId(nextId);
+      // Se já estiver preparando a mensagem livre, atualiza texto e links imediatamente
+      if (step === 'prepare_free') {
+        setFreeText(
+          buildMultiPropertyFreeFollowupMessage({
+            contactName,
+            properties: nextSelected,
+            interestProperty,
+          })
+        );
+      }
 
-      // Selecionar um imóvel NUNCA envia a mensagem automaticamente (Seção 9).
-      // Apenas prepara/associa ao rascunho em edição quando aplicável.
-      if (!isDeselect) {
-        if (step === 'free_draft') {
-          insertPropertyIntoFreeDraft(prop);
-        } else if (step === 'template_draft' && templateDraft && templateValues.length >= 2) {
-          applyPropertyToTemplateDraft(prop);
-        }
+      // Se já estiver preparando o template match_imovel_personalizado, atualiza variáveis e link do botão
+      if (step === 'prepare_template' && templateDraft && nextSelected[0]) {
+        const rebuilt = buildMatchImovelPersonalizadoParams({
+          contactName,
+          property: nextSelected[0],
+        });
+        setTemplateDraft({
+          ...templateDraft,
+          body_values: rebuilt.body,
+          button_url: nextSelected[0].publicUrl || templateDraft.button_url,
+          button_url_suffix:
+            rebuilt.buttonUrlSuffix ||
+            extractPropertyUrlSlug(nextSelected[0].publicUrl) ||
+            templateDraft.button_url_suffix,
+        });
       }
     },
     [
-      selectedPropertyId,
+      isWindowOpen,
+      selectedPropertyIds,
+      compatibleProperties,
       step,
+      contactName,
+      interestProperty,
       templateDraft,
-      templateValues.length,
-      insertPropertyIntoFreeDraft,
-      applyPropertyToTemplateDraft,
-    ],
+    ]
   );
 
-  const generate = useCallback(
-    async (mode: 'free' | 'template' | 'plan') => {
+  const prepareTemplateMessage = useCallback(
+    async (targetProp: CompatiblePropertySummary) => {
       setBusy(true);
-      setNoTemplateReason(null);
+      setTemplateBlockedReason(null);
       try {
         const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            mode,
+            mode: 'template',
             interestProperty,
-            primaryNeed,
-            selectedProperty: selectedProperty
-              ? {
-                  propertyId: selectedProperty.propertyId,
-                  title: selectedProperty.title,
-                  neighborhood: selectedProperty.neighborhood,
-                  city: selectedProperty.city,
-                  propertyType: selectedProperty.propertyType,
-                  operation: selectedProperty.operation,
-                  deliveryStatus: selectedProperty.deliveryStatus,
-                  priceMin: selectedProperty.priceMin,
-                  bedroomsMin: selectedProperty.bedroomsMin,
-                  areaMin: selectedProperty.areaMin,
-                  publicUrl: selectedProperty.publicUrl,
-                }
-              : null,
+            selectedProperties: [targetProp],
           }),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data?.error || 'Failed to generate');
-
-        if (mode === 'free') {
-          setFreeText(data.draft?.text ?? '');
-          setStep('free_draft');
-        } else if (mode === 'template') {
-          if (data.draft) {
-            setTemplateDraft(data.draft);
-            setTemplateValues(data.draft.values.body);
-            setStep('template_draft');
-          } else {
-            setNoTemplateReason(
-              typeof data.failureReason === 'string' && data.failureReason.trim()
-                ? data.failureReason.trim()
-                : null,
-            );
-            setStep('no_template');
-          }
-        } else if (data.draft?.plan) {
-          setPlan(data.draft.plan);
-          setStep('plan_review');
-        } else {
-          setNoTemplateReason(
-            typeof data.failureReason === 'string' && data.failureReason.trim()
-              ? data.failureReason.trim()
-              : null,
-          );
-          setStep('no_template');
+        if (!res.ok) {
+          throw new Error(data?.error || 'Falha ao preparar o template.');
         }
-      } catch {
-        toast.error(t('generateError'));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [suggestion.id, interestProperty, primaryNeed, selectedProperty, t],
-  );
-
-  const copyToClipboard = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(freeText);
-      toast.success(t('copied'));
-    } catch {
-      toast.error(t('copyError'));
-    }
-  }, [freeText, t]);
-
-  const goToConversationTemplate = useCallback(() => {
-    if (!suggestion.conversation_id || !templateDraft) return;
-    writeFollowupDraft(suggestion.conversation_id, {
-      suggestionId: suggestion.id,
-      mode: 'template',
-      templateId: templateDraft.template_id,
-      values: { body: templateValues, headerText: templateDraft.values.headerText },
-    });
-    onOpenChange(false);
-    router.push(`/inbox?c=${suggestion.conversation_id}`);
-  }, [suggestion.conversation_id, suggestion.id, templateDraft, templateValues, onOpenChange, router]);
-
-  const complete = useCallback(
-    async (mode: 'whatsapp' | 'crm') => {
-      setBusy(true);
-      try {
-        const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/complete`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode,
-            message: mode === 'whatsapp' ? freeText : undefined,
-            template_id: mode === 'crm' ? templateDraft?.template_id : undefined,
-          }),
+        if (!data.draft) {
+          setTemplateDraft(null);
+          setTemplateBlockedReason(
+            data.failureReason ||
+              `O template "${FOLLOWUP_REQUIRED_TEMPLATE_NAME}" não está aprovado para envio.`
+          );
+          setStep('template_blocked');
+          return;
+        }
+        const suffix =
+          data.draft.values?.buttonParams?.[0] ||
+          extractPropertyUrlSlug(targetProp.publicUrl) ||
+          '';
+        setTemplateDraft({
+          template_id: data.draft.template_id,
+          template_name: data.draft.template_name,
+          template_language: data.draft.template_language || 'pt_BR',
+          body_text: data.draft.body_text,
+          body_values: Array.isArray(data.draft.values?.body) ? data.draft.values.body : [],
+          button_text: data.draft.button_text || 'Ver imóvel',
+          button_url: data.draft.button_url || targetProp.publicUrl || '',
+          button_url_suffix: suffix,
         });
-        if (!res.ok) throw new Error();
-        toast.success(t('markedDone'));
-        onResolved();
-        onOpenChange(false);
-      } catch {
-        toast.error(t('markDoneError'));
+        setStep('prepare_template');
+      } catch (err) {
+        toast.error((err as Error).message || 'Não foi possível preparar o template.');
       } finally {
         setBusy(false);
       }
     },
-    [suggestion.id, freeText, templateDraft, t, onResolved, onOpenChange],
+    [suggestion.id, interestProperty]
   );
 
-  const approvePlan = useCallback(async () => {
+  // Preparar mensagem (NÃO envia e NÃO conclui o follow-up)
+  const handlePrepareMessage = useCallback(async () => {
+    if (selectedProperties.length === 0) {
+      toast.error('Selecione ao menos um imóvel compatível antes de preparar a mensagem.');
+      return;
+    }
+
+    sendAttemptRef.current = null;
+
+    if (!isWindowOpen) {
+      const single = selectedProperties[0];
+      setSelectedPropertyIds([single.propertyId]);
+      await prepareTemplateMessage(single);
+      return;
+    }
+
     setBusy(true);
     try {
-      const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/complete`, {
+      const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'plan', planData: plan }),
+        body: JSON.stringify({
+          mode: 'free',
+          interestProperty,
+          selectedProperties,
+        }),
       });
-      if (!res.ok) throw new Error();
-      toast.success(t('markedDone'));
-      onResolved();
-      onOpenChange(false);
-    } catch {
-      toast.error(t('markDoneError'));
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 409 && data?.code === 'window_expired') {
+        // Janela encerrou antes mesmo da preparação -> adapta com transparência
+        setWindowClosedMidFlow(true);
+        const single = selectedProperties[0];
+        setSelectedPropertyIds([single.propertyId]);
+        toast.warning(
+          'A janela de 24 horas foi encerrada. Adaptando para envio com 1 imóvel pelo template match_imovel_personalizado.'
+        );
+        await prepareTemplateMessage(single);
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'Não foi possível preparar a mensagem.');
+      }
+
+      setFreeText(
+        data.draft?.text ||
+          buildMultiPropertyFreeFollowupMessage({
+            contactName,
+            properties: selectedProperties,
+            interestProperty,
+          })
+      );
+      setStep('prepare_free');
+    } catch (err) {
+      toast.error((err as Error).message || 'Não foi possível preparar a mensagem.');
     } finally {
       setBusy(false);
     }
-  }, [suggestion.id, plan, t, onResolved, onOpenChange]);
+  }, [
+    selectedProperties,
+    isWindowOpen,
+    suggestion.id,
+    interestProperty,
+    contactName,
+    prepareTemplateMessage,
+  ]);
 
-  const act = useCallback(
-    async (status: 'ignored') => {
-      setBusy(true);
-      try {
-        const res = await fetch(`/api/ai/suggestions/${suggestion.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status }),
-        });
-        if (!res.ok) throw new Error();
-        onResolved();
-        onOpenChange(false);
-      } catch {
-        toast.error(t('actionError'));
-      } finally {
-        setBusy(false);
+  // Envio explícito confirmado pelo corretor (com revalidação da janela no backend e idempotência)
+  const handleSendFreeMessage = useCallback(async () => {
+    if (sendingGuardRef.current || sending) return;
+    if (selectedProperties.length === 0) {
+      toast.error('Selecione ao menos um imóvel para enviar.');
+      return;
+    }
+    if (!freeText.trim()) {
+      toast.error('Escreva ou revise a mensagem antes de enviar.');
+      return;
+    }
+
+    sendingGuardRef.current = true;
+    setSending(true);
+    if (!sendAttemptRef.current) {
+      sendAttemptRef.current = `followup-free-${suggestion.id}-${Date.now()}`;
+    }
+
+    try {
+      const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'free',
+          text: freeText.trim(),
+          selectedProperties,
+          client_ref: sendAttemptRef.current,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      // Seção 12: Janela encerrou entre a preparação e o envio!
+      if (res.status === 409 && data?.code === 'window_expired') {
+        setWindowClosedMidFlow(true);
+        sendAttemptRef.current = null;
+        const single = selectedProperties[0];
+        setSelectedPropertyIds([single.propertyId]);
+        toast.warning(
+          'A janela de conversação foi encerrada antes do envio. Selecione apenas um imóvel para enviar com o template match_imovel_personalizado.'
+        );
+        await prepareTemplateMessage(single);
+        return;
       }
-    },
-    [suggestion.id, t, onResolved, onOpenChange],
-  );
 
-  const snooze = useCallback(async () => {
+      if (!res.ok) {
+        throw new Error(data?.error || 'Falha ao enviar mensagem pelo WhatsApp.');
+      }
+
+      toast.success('Follow-up enviado e concluído com sucesso!');
+      onResolved();
+      onOpenChange(false);
+    } catch (err) {
+      toast.error((err as Error).message || 'Falha ao enviar mensagem. O follow-up não foi concluído.');
+    } finally {
+      sendingGuardRef.current = false;
+      setSending(false);
+    }
+  }, [
+    sending,
+    selectedProperties,
+    freeText,
+    suggestion.id,
+    prepareTemplateMessage,
+    onResolved,
+    onOpenChange,
+  ]);
+
+  const handleSendTemplateMessage = useCallback(async () => {
+    if (sendingGuardRef.current || sending || !templateDraft) return;
+    if (selectedProperties.length !== 1) {
+      toast.error('Selecione exatamente um imóvel para enviar pelo template.');
+      return;
+    }
+
+    sendingGuardRef.current = true;
+    setSending(true);
+    if (!sendAttemptRef.current) {
+      sendAttemptRef.current = `followup-tpl-${suggestion.id}-${Date.now()}`;
+    }
+
+    try {
+      const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'template',
+          template_name: FOLLOWUP_REQUIRED_TEMPLATE_NAME,
+          body_values: templateDraft.body_values,
+          button_url_suffix: templateDraft.button_url_suffix,
+          selectedProperties: [selectedProperties[0]],
+          client_ref: sendAttemptRef.current,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        if (data?.code === 'template_not_approved') {
+          setTemplateBlockedReason(data.error);
+          setStep('template_blocked');
+          return;
+        }
+        throw new Error(data?.error || 'Falha ao enviar template pelo WhatsApp.');
+      }
+
+      toast.success('Template enviado e follow-up concluído!');
+      onResolved();
+      onOpenChange(false);
+    } catch (err) {
+      toast.error((err as Error).message || 'Falha ao enviar template. O follow-up não foi concluído.');
+    } finally {
+      sendingGuardRef.current = false;
+      setSending(false);
+    }
+  }, [sending, templateDraft, selectedProperties, suggestion.id, onResolved, onOpenChange]);
+
+  // Aceitar: altera status para 'approved' (NÃO envia e NÃO conclui)
+  const handleAccept = useCallback(async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/ai/suggestions/${suggestion.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'approved' }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success('Oportunidade aceita! Você pode preparar e enviar a mensagem quando desejar.');
+      onResolved();
+      onOpenChange(false);
+    } catch {
+      toast.error('Não foi possível aceitar a oportunidade.');
+    } finally {
+      setBusy(false);
+    }
+  }, [suggestion.id, onResolved, onOpenChange]);
+
+  const handleIgnore = useCallback(async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/ai/suggestions/${suggestion.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success('Oportunidade ignorada.');
+      onResolved();
+      onOpenChange(false);
+    } catch {
+      toast.error('Não foi possível ignorar a oportunidade.');
+    } finally {
+      setBusy(false);
+    }
+  }, [suggestion.id, onResolved, onOpenChange]);
+
+  const handleSnooze = useCallback(async () => {
     setBusy(true);
     try {
       const until = new Date(Date.now() + SNOOZE_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -606,225 +714,196 @@ export function FollowupDialog({
         body: JSON.stringify({ status: 'pending', snoozed_until: until }),
       });
       if (!res.ok) throw new Error();
-      toast.success(t('snoozed', { days: SNOOZE_DAYS }));
+      toast.success(`Oportunidade adiada por ${SNOOZE_DAYS} dias.`);
       onResolved();
       onOpenChange(false);
     } catch {
-      toast.error(t('actionError'));
+      toast.error('Não foi possível adiar a oportunidade.');
     } finally {
       setBusy(false);
     }
-  }, [suggestion.id, t, onResolved, onOpenChange]);
+  }, [suggestion.id, onResolved, onOpenChange]);
 
-  const templateSupportsUrl = Boolean(
-    templateDraft?.supports_public_url || (templateValues && templateValues.length >= 3),
-  );
+  const handleManualComplete = useCallback(async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/ai/suggestions/${suggestion.id}/followup/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'whatsapp',
+          message: freeText || undefined,
+          selectedProperties: selectedProperties.map((p) => ({
+            propertyId: p.propertyId,
+            title: p.title,
+            publicUrl: p.publicUrl,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success('Follow-up marcado manualmente como realizado.');
+      onResolved();
+      onOpenChange(false);
+    } catch {
+      toast.error('Não foi possível concluir manualmente.');
+    } finally {
+      setBusy(false);
+    }
+  }, [suggestion.id, freeText, selectedProperties, onResolved, onOpenChange]);
 
-  const renderCompatiblePropertiesSelector = () => {
-    if (compatibleProperties.length === 0 && !loadingMatches) return null;
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(freeText);
+      toast.success('Mensagem copiada.');
+    } catch {
+      toast.error('Não foi possível copiar a mensagem.');
+    }
+  }, [freeText]);
 
-    return (
-      <div
-        data-testid="followup-dialog-compatible-properties"
-        className="rounded-xl border border-border/70 bg-card/60 p-3 space-y-2.5"
-      >
-        <button
-          type="button"
-          onClick={() => setMatchesExpanded((prev) => !prev)}
-          className="flex w-full items-center justify-between gap-2 text-left"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
-            <span className="text-xs font-semibold text-foreground truncate">
-              Imóveis compatíveis para este atendimento
-            </span>
-            <span className="rounded-full bg-primary/15 border border-primary/25 px-1.5 py-0.2 text-[10px] font-bold text-primary shrink-0">
-              {loadingMatches ? '...' : compatibleProperties.length}
-            </span>
-          </div>
-          <ChevronDown
-            className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${
-              matchesExpanded ? 'rotate-180' : ''
-            }`}
-          />
-        </button>
+  const renderPropertyCards = () => (
+    <div data-testid="followup-dialog-compatible-properties" className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+          <Sparkles className="size-3.5 text-primary shrink-0" />
+          Imóveis selecionados para recomendar
+        </span>
+        <span className="text-[11px] text-muted-foreground">
+          {isWindowOpen
+            ? 'Selecione um ou mais imóveis'
+            : 'Selecione apenas 1 imóvel (janela encerrada)'}
+        </span>
+      </div>
 
-        {matchesExpanded && (
-          <div className="space-y-2 pt-2 border-t border-border/50 max-h-60 overflow-y-auto pr-0.5">
-            <p className="text-[11px] text-muted-foreground">
-              Visualize as opções compatíveis e selecione um imóvel para preparar a abordagem (não envia a mensagem automaticamente):
-            </p>
-            {compatibleProperties.map((prop) => {
-              const isSelected = selectedPropertyId === prop.propertyId;
-              const typeLabel = formatPropertyTypePtBr(prop.propertyType);
-              const priceLabel = formatCommercialPricePtBr(prop.priceMin, prop.priceMax);
-              const bedroomsLabel =
-                prop.bedroomsMin && prop.bedroomsMax && prop.bedroomsMax > prop.bedroomsMin
-                  ? `${prop.bedroomsMin} a ${prop.bedroomsMax} quartos`
-                  : prop.bedroomsMin
-                    ? `${prop.bedroomsMin} ${prop.bedroomsMin === 1 ? 'quarto' : 'quartos'}`
-                    : null;
-              const areaLabel =
-                prop.areaMin && prop.areaMin > 0 ? `${Math.round(prop.areaMin)} m²` : null;
+      {loadingMatches ? (
+        <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin text-primary" />
+          <span>Buscando opções compatíveis no estoque...</span>
+        </div>
+      ) : compatibleProperties.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
+          Nenhum imóvel de venda compatível com link público válido disponível no momento.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {compatibleProperties.map((prop) => {
+            const isSelected = selectedPropertyIds.includes(prop.propertyId);
+            const typeLabel = formatPropertyTypePtBr(prop.propertyType);
+            const priceLabel = formatCommercialPricePtBr(prop.priceMin, prop.priceMax);
+            const bedroomsLabel =
+              prop.bedroomsMin && prop.bedroomsMax && prop.bedroomsMax > prop.bedroomsMin
+                ? `${prop.bedroomsMin} a ${prop.bedroomsMax} quartos`
+                : prop.bedroomsMin
+                  ? `${prop.bedroomsMin} ${prop.bedroomsMin === 1 ? 'quarto' : 'quartos'}`
+                  : null;
 
-              return (
-                <div
-                  key={prop.propertyId}
-                  data-testid="followup-compatible-property-option"
-                  className={`flex items-center justify-between gap-2.5 rounded-lg border p-2 text-xs transition-colors ${
-                    isSelected
-                      ? 'border-primary bg-primary/10 ring-1 ring-primary/25'
-                      : 'border-border/60 bg-background/50 hover:border-border'
-                  }`}
-                >
-                  <PropertyThumbnail coverUrl={prop.coverUrl} title={prop.title} sizeClass="size-12" />
+            return (
+              <div
+                key={prop.propertyId}
+                data-testid="followup-compatible-property-option"
+                onClick={() => handleToggleProperty(prop)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleToggleProperty(prop);
+                  }
+                }}
+                className={`flex items-center justify-between gap-2.5 rounded-xl border p-2.5 text-xs transition-colors cursor-pointer ${
+                  isSelected
+                    ? 'border-primary bg-primary/10 ring-1 ring-primary/25'
+                    : 'border-border/60 bg-background/50 hover:border-border'
+                }`}
+              >
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <span className="shrink-0 text-primary" aria-hidden>
+                    {isWindowOpen ? (
+                      isSelected ? (
+                        <CheckSquare className="size-4" />
+                      ) : (
+                        <Square className="size-4 text-muted-foreground" />
+                      )
+                    ) : isSelected ? (
+                      <CircleDot className="size-4" />
+                    ) : (
+                      <Circle className="size-4 text-muted-foreground" />
+                    )}
+                  </span>
+
+                  <PropertyThumbnail coverUrl={prop.coverUrl} title={prop.title} />
 
                   <div className="min-w-0 flex-1 space-y-0.5">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400 shrink-0">
-                        {prop.matchScore}% compatível
-                      </span>
                       <span className="font-semibold text-foreground truncate" title={prop.title}>
                         {prop.title}
                       </span>
-                      {prop.code && (
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          ({prop.code})
+                      {prop.matchScore > 0 && (
+                        <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400 shrink-0">
+                          {prop.matchScore}%
                         </span>
                       )}
                     </div>
 
                     <p className="text-[11px] text-muted-foreground truncate">
-                      {[
-                        prop.neighborhood,
-                        typeLabel,
-                        areaLabel,
-                        bedroomsLabel,
-                        prop.operation === 'locacao' ? 'Locação' : 'Venda',
-                      ]
-                        .filter(Boolean)
-                        .join(' • ')}
+                      {[prop.neighborhood, typeLabel, bedroomsLabel].filter(Boolean).join(' • ')}
                     </p>
 
                     {priceLabel && (
                       <p className="text-[11px] font-semibold text-foreground/90">{priceLabel}</p>
                     )}
                   </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    {prop.publicUrl && (
-                      <a
-                        href={prop.publicUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
-                        title={`Abrir link público: ${prop.publicUrl}`}
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={isSelected ? 'default' : 'outline'}
-                      onClick={() => handleSelectProperty(prop)}
-                      className="h-7 px-2.5 text-[11px]"
-                    >
-                      {isSelected ? 'Selecionado' : 'Selecionar'}
-                    </Button>
-                  </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
 
-        {/* Resumo verificável do imóvel selecionado (Seção 9) */}
-        {selectedProperty && (
-          <div
-            data-testid="followup-selected-property-summary"
-            className="rounded-lg border border-primary/35 bg-primary/5 p-2.5 space-y-1.5 text-[11px]"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-foreground flex items-center gap-1.5 truncate">
-                <Check className="h-3.5 w-3.5 text-primary shrink-0" />
-                <span>Imóvel selecionado: {selectedProperty.title}</span>
-              </span>
-              <span className="text-[10px] font-bold text-emerald-400 shrink-0">
-                {selectedProperty.matchScore}% Match
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              <Link2 className="h-3 w-3 text-primary shrink-0" />
-              <span className="shrink-0">Link público:</span>
-              {selectedProperty.publicUrl ? (
-                <a
-                  href={selectedProperty.publicUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline truncate font-mono"
-                  title={selectedProperty.publicUrl}
-                >
-                  {selectedProperty.publicUrl}
-                </a>
-              ) : (
-                <span className="text-amber-400">Link público não disponível para este imóvel</span>
-              )}
-            </div>
-
-            {step === 'template_draft' && templateDraft && (
-              <p className="text-[10px] text-muted-foreground leading-snug pt-0.5 border-t border-border/40">
-                {templateSupportsUrl ? (
-                  <span className="text-emerald-400">
-                    ✓ Este template aprovado permite incluir o link público nas variáveis.
-                  </span>
-                ) : (
-                  <span className="text-amber-400">
-                    Nota: O template aprovado &ldquo;{templateDraft.template_name}&rdquo; possui
-                    estrutura fixa da Meta sem campo de URL; o contexto do imóvel foi preparado nas
-                    variáveis permitidas e o link público poderá ser enviado assim que o cliente
-                    responder e reabrir a janela de 24h.
-                  </span>
+                {prop.publicUrl && (
+                  <a
+                    href={prop.publicUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
+                    title="Visualizar imóvel"
+                  >
+                    <ExternalLink className="size-3.5" />
+                  </a>
                 )}
-              </p>
-            )}
-
-            {step === 'free_draft' && (
-              <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-border/40">
-                <span className="text-[10px] text-emerald-400">
-                  ✓ Formato de texto livre permite inserir o link público diretamente.
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => insertPropertyIntoFreeDraft(selectedProperty)}
-                  className="h-6 px-2 text-[10px] gap-1"
-                >
-                  <Plus className="h-2.5 w-2.5" />
-                  Inserir no texto
-                </Button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{suggestion.contact?.name ?? t('title')}</DialogTitle>
-          <DialogDescription>{t('title')}</DialogDescription>
+      <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
+        {/* 1. Identificação */}
+        <DialogHeader className="space-y-1.5 text-left">
+          <DialogTitle className="text-base sm:text-lg font-bold text-foreground">
+            {contactName}
+          </DialogTitle>
+          <DialogDescription className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {stageName && (
+              <span className="inline-flex items-center gap-1">
+                <GitBranch className="size-3 text-primary" />
+                Etapa: <strong className="text-foreground font-medium">{stageName}</strong>
+              </span>
+            )}
+            {interestProperty && (
+              <span className="inline-flex items-center gap-1">
+                <Building2 className="size-3 text-primary" />
+                Empreendimento:{' '}
+                <strong className="text-foreground font-medium">{interestProperty}</strong>
+              </span>
+            )}
+            {!stageName && !interestProperty && <span>Oportunidade de Follow-up</span>}
+          </DialogDescription>
         </DialogHeader>
 
-        {/* Indicador em tempo real da Janela de Atendimento de 24h vs. Benefício CTWA (Seção 5) */}
+        {/* Status da janela de conversação */}
         <div
           data-testid="followup-dialog-window-banner"
-          className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
+          className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${
             liveSessionWindow.status === 'closing_soon'
               ? 'border-amber-500/35 bg-amber-500/10 text-amber-300'
               : liveSessionWindow.status === 'open'
@@ -833,432 +912,309 @@ export function FollowupDialog({
           }`}
         >
           <div className="flex items-center gap-1.5">
-            <Clock className="h-3.5 w-3.5 shrink-0" />
-            {liveSessionWindow.status === 'closing_soon' ? (
+            <Clock className="size-3.5 shrink-0" />
+            {liveSessionWindow.windowOpen ? (
               <span>
-                <strong>Janela prestes a encerrar</strong> ({liveSessionWindow.remainingLabel}) —
-                texto livre permitido agora
-              </span>
-            ) : liveSessionWindow.status === 'open' ? (
-              <span>
-                <strong>Janela de 24h aberta</strong> ({liveSessionWindow.remainingLabel}) — texto
-                livre permitido
-              </span>
-            ) : liveSessionWindow.status === 'expired' ? (
-              <span>
-                <strong>Janela de 24h encerrada</strong> — envio via Cloud API exige template
-                aprovado
+                <strong>Janela de conversação aberta</strong>
+                {liveSessionWindow.remainingLabel ? ` (${liveSessionWindow.remainingLabel})` : ''}
               </span>
             ) : (
               <span>
-                <strong>Situação da janela desconhecida</strong> — envio via Cloud API exige
-                template aprovado
+                <strong>Janela de conversação encerrada</strong> — envio via template{' '}
+                <code className="text-[11px] font-mono">{FOLLOWUP_REQUIRED_TEMPLATE_NAME}</code>
               </span>
             )}
           </div>
-          {liveSessionWindow.ctwaFreeBenefitActive &&
-            liveSessionWindow.ctwaFreeBenefitRemainingLabel && (
-              <span
-                className="rounded-full bg-primary/15 border border-primary/25 px-2 py-0.5 text-[10px] font-semibold text-primary"
-                title="A janela gratuita CTWA isenta a tarifa da Meta, mas não substitui a exigência de template quando a janela de 24h está encerrada."
-              >
-                {liveSessionWindow.ctwaFreeBenefitRemainingLabel}
-              </span>
-            )}
         </div>
 
-        {step === 'review' && (
-          <div className="space-y-3">
-            <dl className="grid grid-cols-2 gap-2 text-sm">
-              {(overrideStageName ?? payload.stage_name) && (
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('stage')}</dt>
-                  <dd className="text-foreground font-medium">
-                    {overrideStageName ?? payload.stage_name}
-                  </dd>
-                </div>
-              )}
-              {payload.has_purchased !== undefined && (
-                <div>
-                  <dt className="text-xs text-muted-foreground">{t('hasPurchased')}</dt>
-                  <dd className="flex items-center gap-1 text-foreground">
-                    <ShoppingBag className="h-3.5 w-3.5" />
-                    {payload.has_purchased ? t('yes') : t('no')}
-                  </dd>
-                </div>
-              )}
-              {neverContacted ? (
-                <div className="col-span-2">
-                  <dt className="text-xs text-muted-foreground">{t('lastContact')}</dt>
-                  <dd className="flex items-center gap-1 text-amber-400 font-medium">
-                    <Clock className="h-3.5 w-3.5" />
-                    <span>Nunca contatado</span>
-                  </dd>
-                </div>
-              ) : typeof (hoursSinceLastCommunication ?? payload.hours_since_contact) === 'number' ? (
-                <div className="col-span-2">
-                  <dt className="text-xs text-muted-foreground">{t('lastContact')}</dt>
-                  <dd className="flex items-center gap-1 text-foreground">
-                    <Clock className="h-3.5 w-3.5" />
-                    {t('hoursAgo', {
-                      hours: hoursSinceLastCommunication ?? payload.hours_since_contact ?? 0,
-                    })}
-                  </dd>
-                </div>
-              ) : null}
-            </dl>
-
-            {(interestProperty || primaryNeed) && (
-              <div className="rounded-lg border border-border/70 bg-muted/30 p-2.5 space-y-1 text-xs">
-                {interestProperty && (
-                  <p className="text-foreground flex items-center gap-1.5">
-                    <Building2 className="h-3.5 w-3.5 text-primary shrink-0" />
-                    <span className="text-muted-foreground">Empreendimento:</span>
-                    <strong className="font-semibold">{interestProperty}</strong>
-                  </p>
-                )}
-                {primaryNeed && (
-                  <p className="text-foreground">
-                    <span className="text-muted-foreground">Necessidade principal:</span>{' '}
-                    <span className="font-medium">{primaryNeed}</span>
-                  </p>
-                )}
-              </div>
-            )}
-
-            {(payload.reason || suggestion.title) && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">{t('reason')}</p>
-                <p className="text-sm text-foreground">{payload.reason || suggestion.title}</p>
-              </div>
-            )}
-            {(payload.approach_summary || suggestion.description) && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">{t('approach')}</p>
-                <p className="text-sm text-foreground">
-                  {payload.approach_summary || suggestion.description}
-                </p>
-              </div>
-            )}
-
-            {lastMessagePreview && (
-              <div className="rounded-lg border border-border/60 bg-muted/20 p-2.5">
-                <p className="text-[11px] font-medium text-muted-foreground mb-1">
-                  Última mensagem registrada na conversa
-                </p>
-                <p className="text-xs text-foreground/90 italic line-clamp-3">
-                  &ldquo;{lastMessagePreview}&rdquo;
-                </p>
-              </div>
-            )}
-
-            {/* Lista visual de imóveis compatíveis do Match com miniaturas reais (Seção 9) */}
-            {renderCompatiblePropertiesSelector()}
+        {/* Aviso quando a janela fechou durante a preparação */}
+        {windowClosedMidFlow && (
+          <div
+            data-testid="followup-window-closed-alert"
+            className="flex items-start gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 p-3 text-xs text-amber-300"
+          >
+            <ShieldAlert className="size-4 shrink-0 mt-0.5" />
+            <span>
+              A janela de 24 horas foi encerrada enquanto você preparava a mensagem. Seus imóveis
+              recomendados foram preservados — selecione apenas um imóvel para enviar usando o
+              template <strong>{FOLLOWUP_REQUIRED_TEMPLATE_NAME}</strong>.
+            </span>
           </div>
         )}
 
-        {step === 'choose_mode' && (
-          <div className="space-y-3">
-            {renderCompatiblePropertiesSelector()}
+        {/* 2. Por que retomar esse contato? */}
+        <div className="rounded-xl border border-border/60 bg-muted/30 p-3 space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Por que retomar esse contato?
+          </p>
+          <p className="text-xs sm:text-sm text-foreground leading-relaxed">{displayReason}</p>
+        </div>
 
-            <div className="grid gap-2 sm:grid-cols-3">
+        {/* 3. Imóveis selecionados para recomendar */}
+        {renderPropertyCards()}
+
+        {/* Etapa: Preparar mensagem livre (Janela Aberta) */}
+        {step === 'prepare_free' && (
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-semibold">Mensagem pronta para envio</Label>
               <button
                 type="button"
-                disabled={busy}
-                onClick={() => generate('free')}
-                className="flex flex-col items-center gap-2 rounded-xl border border-border p-4 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:opacity-50"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
               >
-                <Copy className="h-5 w-5 text-primary" />
-                <span className="text-sm font-medium text-foreground">{t('modeWhatsApp')}</span>
-                <span className="text-xs text-muted-foreground">{t('modeWhatsAppDesc')}</span>
+                <Copy className="size-3" />
+                Copiar texto
               </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => generate('template')}
-                className="flex flex-col items-center gap-2 rounded-xl border border-border p-4 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:opacity-50"
-              >
-                <MessageSquare className="h-5 w-5 text-primary" />
-                <span className="text-sm font-medium text-foreground">{t('modeCrm')}</span>
-                <span className="text-xs text-muted-foreground">{t('modeCrmDesc')}</span>
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => generate('plan')}
-                className="flex flex-col items-center gap-2 rounded-xl border border-border p-4 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:opacity-50"
-              >
-                <Sparkles className="h-5 w-5 text-primary" />
-                <span className="text-sm font-medium text-foreground">{t('modePlan')}</span>
-                <span className="text-xs text-muted-foreground">{t('modePlanDesc')}</span>
-              </button>
-              {busy && (
-                <div className="col-span-3 flex justify-center py-2">
-                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                </div>
-              )}
             </div>
+            <Textarea
+              data-testid="followup-free-textarea"
+              value={freeText}
+              onChange={(e) => setFreeText(e.target.value)}
+              rows={7}
+              className="text-xs sm:text-sm leading-relaxed"
+            />
           </div>
         )}
 
-        {step === 'free_draft' && (
-          <div className="space-y-3">
-            {renderCompatiblePropertiesSelector()}
-
-            <div className="space-y-1.5">
-              <Label className="text-xs">{t('messagePreview')}</Label>
-              <Textarea
-                value={freeText}
-                onChange={(e) => setFreeText(e.target.value)}
-                rows={6}
-                className="text-sm"
-              />
-            </div>
-
-            {!liveSessionWindow.windowOpen && (
-              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-300">
-                <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+        {/* Etapa: Preparar template match_imovel_personalizado (Janela Encerrada) */}
+        {step === 'prepare_template' && templateDraft && (
+          <div className="space-y-3 pt-1">
+            <div className="rounded-xl border border-border bg-muted/40 p-3 space-y-2 text-xs sm:text-sm">
+              <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
                 <span>
-                  A janela de 24 horas da WhatsApp Cloud API está encerrada. Este texto livre pode
-                  ser copiado para uso manual, mas o envio direto pela Cloud API exige um template
-                  aprovado.
+                  Template oficial:{' '}
+                  <strong className="text-foreground font-mono">{templateDraft.template_name}</strong>
+                </span>
+                <span className="uppercase">{templateDraft.template_language}</span>
+              </div>
+              <p
+                data-testid="followup-template-preview"
+                className="whitespace-pre-wrap text-foreground leading-relaxed"
+              >
+                {renderTemplatePreview(templateDraft.body_text, templateDraft.body_values)}
+              </p>
+              <div className="pt-2 border-t border-border/50 flex items-center justify-between gap-2">
+                <a
+                  href={templateDraft.button_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20"
+                >
+                  <ExternalLink className="size-3" />
+                  <span>{templateDraft.button_text}</span>
+                </a>
+                <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[200px]">
+                  {templateDraft.button_url}
                 </span>
               </div>
-            )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {templateDraft.body_values.map((val, idx) => (
+                <div key={idx} className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    {idx === 0 ? 'Variável {{1}} (Nome)' : `Variável {{${idx + 1}}} (Contexto)`}
+                  </Label>
+                  <Input
+                    value={val}
+                    onChange={(e) => {
+                      const next = [...templateDraft.body_values];
+                      next[idx] = e.target.value;
+                      setTemplateDraft({ ...templateDraft, body_values: next });
+                    }}
+                    className="h-8 text-xs"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
-        {step === 'template_draft' && templateDraft && (
-          <div className="space-y-3">
-            {/* Permite consultar e selecionar os imóveis compatíveis também na opção de envio pelo CRM (Seção 9.4) */}
-            {renderCompatiblePropertiesSelector()}
-
-            <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
-              <p className="mb-1 text-xs text-muted-foreground">
-                {t('templateUsed')}: <strong className="text-foreground">{templateDraft.template_name}</strong>
-              </p>
-              <p className="whitespace-pre-wrap text-foreground">
-                {renderTemplatePreview(templateDraft.body_text, templateValues)}
+        {/* Etapa: Template obrigatório bloqueado/não aprovado */}
+        {step === 'template_blocked' && (
+          <div
+            data-testid="followup-template-blocked"
+            className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 flex items-start gap-2"
+          >
+            <AlertCircle className="size-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">Envio fora da janela bloqueado</p>
+              <p className="text-rose-200/90 leading-relaxed">
+                {templateBlockedReason ||
+                  `O template obrigatório "${FOLLOWUP_REQUIRED_TEMPLATE_NAME}" não está aprovado pela Meta para envio.`}
               </p>
             </div>
-            {templateValues.map((v, i) => (
-              <div key={i} className="space-y-1">
-                <Label className="text-xs">{`{{${i + 1}}}`}</Label>
-                <Input
-                  value={v}
-                  onChange={(e) => {
-                    const next = [...templateValues];
-                    next[i] = e.target.value;
-                    setTemplateValues(next);
-                  }}
-                />
-              </div>
-            ))}
           </div>
         )}
 
-        {step === 'plan_review' && plan && (plan.contact1 || plan.contact2) && (
-          <div className="space-y-4">
-            <p className="text-xs text-muted-foreground">{t('modePlanDesc')}</p>
-            {plan.contact1 && (
-              <PlanContactReview
-                contact={plan.contact1}
-                title={t('planContact1')}
-                scheduleLabel={t('planScheduleDays')}
-                onValuesChange={(values) =>
-                  setPlan((prev) =>
-                    prev?.contact1
-                      ? {
-                          ...prev,
-                          contact1: {
-                            ...prev.contact1,
-                            values: { ...prev.contact1.values, body: values },
-                          },
-                        }
-                      : prev,
-                  )
-                }
-                onScheduleChange={(days) =>
-                  setPlan((prev) =>
-                    prev?.contact1
-                      ? { ...prev, contact1: { ...prev.contact1, scheduleDays: days } }
-                      : prev,
-                  )
-                }
-              />
-            )}
-            {plan.contact2 && (
-              <PlanContactReview
-                contact={plan.contact2}
-                title={t('planContact2')}
-                scheduleLabel={t('planScheduleDays')}
-                onValuesChange={(values) =>
-                  setPlan((prev) =>
-                    prev?.contact2
-                      ? {
-                          ...prev,
-                          contact2: {
-                            ...prev.contact2,
-                            values: { ...prev.contact2.values, body: values },
-                          },
-                        }
-                      : prev,
-                  )
-                }
-                onScheduleChange={(days) =>
-                  setPlan((prev) =>
-                    prev?.contact2
-                      ? { ...prev, contact2: { ...prev.contact2, scheduleDays: days } }
-                      : prev,
-                  )
-                }
-              />
-            )}
-          </div>
-        )}
-
-        {step === 'no_template' && (
-          <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs">
-            <div className="flex items-start gap-2 text-amber-300">
-              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className="font-semibold">Não foi possível associar um template aprovado</p>
-                <p className="text-muted-foreground leading-relaxed">
-                  {noTemplateReason || t('noTemplate')}
-                </p>
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Você pode preparar a mensagem livre para copiar, agendar ou abrir a conversa na Caixa
-              de Entrada.
-            </p>
-          </div>
-        )}
-
-        <DialogFooter className="flex-wrap gap-2 sm:justify-between">
+        {/* 4. Ações comerciais */}
+        <DialogFooter className="flex-col sm:flex-row gap-2 sm:justify-between pt-2 border-t border-border/50">
           {step === 'review' && (
             <>
-              <div className="flex gap-2">
-                <Button variant="ghost" size="sm" disabled={busy} onClick={() => act('ignored')}>
-                  <Ban className="h-3.5 w-3.5" /> {t('ignore')}
-                </Button>
-                <Button variant="ghost" size="sm" disabled={busy} onClick={snooze}>
-                  <Clock className="h-3.5 w-3.5" /> {t('snooze')}
-                </Button>
-                {suggestion.conversation_id && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    render={<a href={`/inbox?c=${suggestion.conversation_id}`} />}
-                  >
-                    <MessageSquare className="h-3.5 w-3.5" /> {t('viewConversation')}
-                  </Button>
-                )}
-              </div>
-              <Button size="sm" disabled={busy} onClick={() => setStep('choose_mode')}>
-                <Check className="h-3.5 w-3.5" /> {t('accept')}
-              </Button>
-            </>
-          )}
-
-          {step === 'choose_mode' && (
-            <Button variant="outline" size="sm" onClick={() => setStep('review')}>
-              {t('back')}
-            </Button>
-          )}
-
-          {step === 'free_draft' && (
-            <>
-              <div className="flex gap-1.5">
-                <Button variant="outline" size="sm" onClick={() => setStep('choose_mode')}>
-                  {t('back')}
-                </Button>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => generate('free')}>
-                  <RotateCcw className="h-3.5 w-3.5" /> {t('regenerate')}
-                </Button>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={copyToClipboard}>
-                  <Copy className="h-3.5 w-3.5" /> {t('copyButton')}
-                </Button>
-                <Button size="sm" disabled={busy} onClick={() => complete('whatsapp')}>
-                  {busy ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Check className="h-3.5 w-3.5" />
-                  )}
-                  {t('markDone')}
-                </Button>
-              </div>
-            </>
-          )}
-
-          {step === 'template_draft' && (
-            <>
-              <div className="flex gap-1.5">
-                <Button variant="outline" size="sm" onClick={() => setStep('choose_mode')}>
-                  {t('back')}
-                </Button>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <Button
-                  variant="outline"
+                  type="button"
+                  variant="ghost"
                   size="sm"
                   disabled={busy}
-                  onClick={() => generate('template')}
+                  onClick={() => void handleIgnore()}
+                  className="h-8 px-2.5 text-xs text-muted-foreground hover:text-rose-400 gap-1"
                 >
-                  <RotateCcw className="h-3.5 w-3.5" /> {t('regenerate')}
+                  <Ban className="size-3.5" />
+                  Ignorar
                 </Button>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="ghost" size="sm" disabled={busy} onClick={() => complete('crm')}>
-                  {t('markDone')}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void handleSnooze()}
+                  className="h-8 px-2.5 text-xs text-muted-foreground gap-1"
+                >
+                  <Clock className="size-3.5" />
+                  Adiar
                 </Button>
-                <Button size="sm" disabled={busy} onClick={goToConversationTemplate}>
-                  <MessageSquare className="h-3.5 w-3.5" /> {t('goToConversation')}
-                </Button>
-              </div>
-            </>
-          )}
-
-          {step === 'plan_review' && (
-            <>
-              <div className="flex gap-1.5">
-                <Button variant="outline" size="sm" onClick={() => setStep('choose_mode')}>
-                  {t('back')}
-                </Button>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => generate('plan')}>
-                  <RotateCcw className="h-3.5 w-3.5" /> {t('regenerate')}
-                </Button>
-              </div>
-              <Button size="sm" disabled={busy} onClick={approvePlan}>
-                {busy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Check className="h-3.5 w-3.5" />
-                )}
-                {t('approvePlan')}
-              </Button>
-            </>
-          )}
-
-          {step === 'no_template' && (
-            <div className="flex w-full items-center justify-between gap-2">
-              <Button variant="outline" size="sm" onClick={() => setStep('choose_mode')}>
-                {t('back')}
-              </Button>
-              <div className="flex gap-2">
                 {suggestion.conversation_id && (
                   <Button
-                    variant="outline"
+                    type="button"
+                    variant="ghost"
                     size="sm"
-                    render={<a href={`/inbox?c=${suggestion.conversation_id}`} />}
+                    className="h-8 px-2.5 text-xs text-muted-foreground gap-1"
+                    render={<a href={`/inbox?c=${encodeURIComponent(suggestion.conversation_id)}`} />}
                   >
-                    <MessageSquare className="h-3.5 w-3.5" /> {t('viewConversation')}
+                    <MessageSquare className="size-3.5" />
+                    Ver conversa
                   </Button>
                 )}
-                <Button size="sm" onClick={() => generate('free')}>
-                  <Copy className="h-3.5 w-3.5" /> {t('modeWhatsApp')}
+              </div>
+
+              <div className="flex items-center gap-2 justify-end">
+                {suggestion.status === 'pending' && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void handleAccept()}
+                    className="h-8 px-3 text-xs gap-1"
+                  >
+                    <Check className="size-3.5" />
+                    Aceitar
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={busy || selectedProperties.length === 0}
+                  onClick={() => void handlePrepareMessage()}
+                  className="h-8 px-3 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
+                >
+                  {busy ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Send className="size-3.5" />
+                  )}
+                  Preparar mensagem
                 </Button>
               </div>
+            </>
+          )}
+
+          {step === 'prepare_free' && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={sending || busy}
+                  onClick={() => setStep('review')}
+                  className="h-8 text-xs"
+                >
+                  Voltar
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={sending || busy}
+                  onClick={() => void handleManualComplete()}
+                  className="h-8 text-[11px] text-muted-foreground"
+                  title="Marcar manualmente como realizado sem disparar pela Cloud API"
+                >
+                  Concluir manual
+                </Button>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                disabled={sending || busy || selectedProperties.length === 0 || !freeText.trim()}
+                onClick={() => void handleSendFreeMessage()}
+                className="h-8 px-4 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                {sending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Send className="size-3.5" />
+                )}
+                Enviar mensagem
+              </Button>
+            </>
+          )}
+
+          {step === 'prepare_template' && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={sending || busy}
+                onClick={() => setStep('review')}
+                className="h-8 text-xs"
+              >
+                Voltar
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={sending || busy || selectedProperties.length !== 1 || !templateDraft}
+                onClick={() => void handleSendTemplateMessage()}
+                className="h-8 px-4 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                {sending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Send className="size-3.5" />
+                )}
+                Enviar template
+              </Button>
+            </>
+          )}
+
+          {step === 'template_blocked' && (
+            <div className="flex w-full items-center justify-between gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setStep('review')}
+                className="h-8 text-xs"
+              >
+                Voltar
+              </Button>
+              {suggestion.conversation_id && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs gap-1"
+                  render={<a href={`/inbox?c=${encodeURIComponent(suggestion.conversation_id)}`} />}
+                >
+                  <MessageSquare className="size-3.5" />
+                  Ver conversa
+                </Button>
+              )}
             </div>
           )}
         </DialogFooter>

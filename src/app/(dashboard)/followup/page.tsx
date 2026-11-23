@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { FollowupCard } from '@/components/followup/followup-card';
+import { FOLLOWUP_UPDATED_EVENT } from '@/components/dashboard/followup-recommendations-card';
 import { IGNORED_SUGGESTION_RETENTION_DAYS } from '@/lib/ai-suggestion-status';
 import { createClient } from '@/lib/supabase/client';
 import { PULL_TO_REFRESH_EVENT } from '@/hooks/use-pull-to-refresh';
@@ -52,7 +53,63 @@ import type {
 } from '@/lib/followup/engine';
 import type { AiSuggestionStatus } from '@/types';
 
-const DEFAULT_DATE_FILTER: FollowupDateFilter = 'yesterday';
+const DEFAULT_DATE_FILTER: FollowupDateFilter = 'all';
+
+function getNaturalEmptyMessage(
+  activeTab: AiSuggestionStatus,
+  dateFilter: FollowupDateFilter
+): string {
+  if (activeTab !== 'pending') {
+    const tabLabels: Record<AiSuggestionStatus, string> = {
+      pending: 'pendentes',
+      approved: 'aceitas',
+      done: 'realizadas',
+      ignored: 'ignoradas',
+      rejected: 'rejeitadas',
+    };
+    return `Nenhuma oportunidade encontrada em ${tabLabels[activeTab] || 'nesta aba'}.`;
+  }
+  if (dateFilter === 'yesterday') return 'Ontem não tivemos nenhuma sugestão de follow-up.';
+  if (dateFilter === 'today') return 'Hoje ainda não temos sugestões de follow-up.';
+  if (dateFilter === 'all') return 'Nenhuma oportunidade de follow-up pendente no momento.';
+  return 'Nenhuma oportunidade encontrada neste período.';
+}
+
+function getNaturalCountSubtitle(
+  total: number,
+  activeTab: AiSuggestionStatus,
+  dateFilter: FollowupDateFilter
+): string | null {
+  if (activeTab !== 'pending' || total <= 0) return null;
+  if (dateFilter === 'today') {
+    return total === 1
+      ? 'Hoje temos uma sugestão de follow-up.'
+      : `Hoje temos ${total} sugestões de follow-up.`;
+  }
+  if (dateFilter === 'yesterday') {
+    return total === 1
+      ? 'Ontem tivemos uma sugestão de follow-up.'
+      : `Ontem tivemos ${total} sugestões de follow-up.`;
+  }
+  if (dateFilter === '7d') {
+    return total === 1
+      ? 'Encontramos 1 oportunidade nos últimos 7 dias.'
+      : `Encontramos ${total} oportunidades nos últimos 7 dias.`;
+  }
+  if (dateFilter === '30d') {
+    return total === 1
+      ? 'Encontramos 1 oportunidade nos últimos 30 dias.'
+      : `Encontramos ${total} oportunidades nos últimos 30 dias.`;
+  }
+  if (dateFilter === 'all') {
+    return total === 1
+      ? 'Temos 1 oportunidade comercial pronta para retomada.'
+      : `Temos ${total} oportunidades comerciais prontas para retomada.`;
+  }
+  return total === 1
+    ? 'Encontramos 1 oportunidade neste período.'
+    : `Encontramos ${total} oportunidades neste período.`;
+}
 
 const DATE_FILTER_LABELS: Record<FollowupDateFilter, string> = {
   today: 'Hoje',
@@ -403,6 +460,7 @@ function FollowupPageInner() {
           done: 'Follow-up marcado como realizado!',
         };
         toast.success(statusMessages[nextStatus] || 'Sugestão atualizada!');
+        window.dispatchEvent(new CustomEvent(FOLLOWUP_UPDATED_EVENT));
         await fetchFollowups(true);
       } catch (err) {
         setItems(previousItems);
@@ -444,6 +502,7 @@ function FollowupPageInner() {
       toast.error(`${failed} de ${targets.length} sugestões não puderam ser processadas.`);
     }
 
+    window.dispatchEvent(new CustomEvent(FOLLOWUP_UPDATED_EVENT));
     await fetchFollowups(true);
   }, [bulkActionTarget, items, patchSuggestion, fetchFollowups]);
 
@@ -463,14 +522,14 @@ function FollowupPageInner() {
     setPage(1);
   }, []);
 
-  const olderPendingOutsidePeriodCount = useMemo(() => {
-    if (!countsLoaded || activeTab !== 'pending' || dateFilter === 'all') return 0;
-    return Math.max(0, counts.pending - pagination.totalItems);
-  }, [countsLoaded, activeTab, dateFilter, counts.pending, pagination.totalItems]);
+  const naturalSubtitle = useMemo(() => {
+    if (!countsLoaded) return null;
+    return getNaturalCountSubtitle(pagination.totalItems, activeTab, dateFilter);
+  }, [countsLoaded, pagination.totalItems, activeTab, dateFilter]);
 
   return (
     <div className="-m-4 sm:-m-6 flex min-h-[calc(100%+2rem)] sm:min-h-[calc(100%+3rem)] flex-col">
-      {/* Top Header (mesma linguagem visual e estrutura do Match) */}
+      {/* Top Header */}
       <div className="border-b border-border bg-card/60 backdrop-blur-md px-4 py-3 sm:px-6 sm:py-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
@@ -478,37 +537,6 @@ function FollowupPageInner() {
               <CalendarCheck2 className="size-4.5 sm:size-5 text-primary" />
               Follow-up
             </h1>
-
-            {!countsLoaded && loading ? (
-              <>
-                <span
-                  data-testid="followup-period-count-skeleton"
-                  className="h-5 w-32 rounded-full bg-muted animate-pulse shrink-0"
-                />
-                <span
-                  data-testid="followup-total-pending-skeleton"
-                  className="h-5 w-32 rounded-full bg-muted animate-pulse shrink-0"
-                />
-              </>
-            ) : (
-              <>
-                <span
-                  data-testid="followup-period-count-badge"
-                  className="rounded-full bg-primary/10 border border-primary/20 px-2.5 py-0.5 text-[10px] sm:text-xs font-semibold text-primary shrink-0"
-                >
-                  {pagination.totalItems}{' '}
-                  {pagination.totalItems === 1 ? 'sugestão no período' : 'sugestões no período'}
-                </span>
-
-                <span
-                  data-testid="followup-total-pending-badge"
-                  className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 text-[10px] sm:text-xs font-medium text-emerald-400 shrink-0"
-                  title="Total geral de sugestões pendentes em todas as datas"
-                >
-                  {counts.pending} {counts.pending === 1 ? 'pendente total' : 'pendentes no total'}
-                </span>
-              </>
-            )}
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
@@ -556,9 +584,9 @@ function FollowupPageInner() {
           </div>
         </div>
 
-        <p className="hidden sm:block text-xs text-muted-foreground mt-1">
-          Central comercial de acompanhamento priorizada pela última mensagem do cliente, maturidade, interesse e janela de atendimento.
-        </p>
+        {naturalSubtitle && (
+          <p className="text-xs text-muted-foreground mt-1">{naturalSubtitle}</p>
+        )}
 
         {/* Tabs de Status do Follow-up */}
         <div className="mt-3 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto no-scrollbar pb-1">
@@ -1169,55 +1197,6 @@ function FollowupPageInner() {
           </div>
         )}
 
-        {/* Aviso transparente quando o filtro de período oculta sugestões mais antigas */}
-        {!loading && olderPendingOutsidePeriodCount > 0 && (
-          <div
-            data-testid="followup-older-pending-banner"
-            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/80 bg-card/60 px-3.5 py-2.5 text-xs"
-          >
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <History className="size-4 text-primary shrink-0" />
-              <span>
-                Exibindo <strong className="text-foreground">{pagination.totalItems}</strong>{' '}
-                {pagination.totalItems === 1 ? 'oportunidade' : 'oportunidades'} cujo cliente falou em{' '}
-                <strong className="text-foreground">{DATE_FILTER_LABELS[dateFilter]}</strong>. Há
-                outras{' '}
-                <strong className="text-foreground">{olderPendingOutsidePeriodCount}</strong>{' '}
-                pendências de datas anteriores preservadas no histórico.
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {dateFilter === 'yesterday' && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setDateFilter('7d');
-                    setPage(1);
-                  }}
-                  className="h-7 px-2.5 text-xs gap-1 shrink-0"
-                >
-                  <span>Últimos 7 dias</span>
-                </Button>
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setDateFilter('all');
-                  setPage(1);
-                }}
-                className="h-7 px-2.5 text-xs gap-1.5 shrink-0"
-              >
-                <Clock className="size-3" />
-                <span>Ver todas as {counts.pending} pendências</span>
-              </Button>
-            </div>
-          </div>
-        )}
-
         {loading ? (
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
@@ -1264,42 +1243,13 @@ function FollowupPageInner() {
         ) : items.length === 0 ? (
           <div
             data-testid="followup-empty-state"
-            className="flex h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-6 sm:p-8 text-center w-full"
+            className="flex h-60 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/50 p-6 sm:p-8 text-center w-full"
           >
             <CalendarCheck2 className="size-10 text-muted-foreground/40 mb-3" />
             <h3 className="text-sm font-semibold text-foreground">
-              Nenhuma oportunidade de follow-up encontrada para este filtro
+              {getNaturalEmptyMessage(activeTab, dateFilter)}
             </h3>
-            <p className="text-xs text-muted-foreground max-w-md mt-1">
-              {activeTab === 'pending' && dateFilter !== 'all' && counts.pending > 0 ? (
-                <>
-                  Não há clientes cuja última mensagem tenha ocorrido em{' '}
-                  <strong>{DATE_FILTER_LABELS[dateFilter]}</strong> com estes critérios, mas existem{' '}
-                  <strong>{counts.pending} sugestões pendentes</strong> em outras datas.
-                </>
-              ) : (
-                <>
-                  Não há recomendações correspondentes aos filtros selecionados na aba{' '}
-                  <strong>{activeTab.toUpperCase()}</strong>.
-                </>
-              )}
-            </p>
             <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
-              {activeTab === 'pending' && dateFilter === 'yesterday' && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setDateFilter('7d');
-                    setPage(1);
-                  }}
-                  className="h-8 text-xs gap-1.5"
-                >
-                  <Calendar className="size-3.5" />
-                  <span>Ver últimos 7 dias</span>
-                </Button>
-              )}
               {activeTab === 'pending' && dateFilter !== 'all' && counts.pending > 0 && (
                 <Button
                   type="button"
@@ -1311,7 +1261,7 @@ function FollowupPageInner() {
                   className="h-8 text-xs gap-1.5"
                 >
                   <History className="size-3.5" />
-                  <span>Ver todas as datas ({counts.pending})</span>
+                  <span>Ver todas as oportunidades ({counts.pending})</span>
                 </Button>
               )}
               {(activeSecondaryFiltersCount > 0 || search.trim()) && (
@@ -1322,7 +1272,7 @@ function FollowupPageInner() {
                   onClick={resetAllFilters}
                   className="h-8 text-xs"
                 >
-                  Restaurar filtros padrão
+                  Limpar filtros
                 </Button>
               )}
             </div>

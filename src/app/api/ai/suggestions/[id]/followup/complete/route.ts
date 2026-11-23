@@ -127,19 +127,25 @@ export async function POST(
     }
 
     const payload = (existing.payload ?? {}) as Record<string, unknown>
+    const realizedProperties = Array.isArray(body?.selectedProperties)
+      ? body.selectedProperties
+      : null
+    const nowIso = new Date().toISOString()
     const { error } = await supabase
       .from('ai_suggestions')
       .update({
         status: 'done',
         resolved_by: userId,
-        resolved_at: new Date().toISOString(),
+        resolved_at: nowIso,
         snoozed_until: null,
         payload: {
           ...payload,
           realized_mode: mode,
           realized_message: message,
           realized_template_id: templateId,
-          realized_at: new Date().toISOString(),
+          realized_properties: realizedProperties,
+          realized_at: nowIso,
+          realized_manual: mode !== 'plan',
         },
       })
       .eq('id', id)
