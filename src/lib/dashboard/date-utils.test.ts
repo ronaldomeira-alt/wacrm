@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   daysAgoStart,
+  formatDayMonth,
+  formatShortWeekday,
   lastNDayKeys,
+  lastNSaoPauloDayKeys,
   localDayKey,
+  saoPauloDayKey,
+  saoPauloDayStartIso,
   startOfLocalDay,
 } from "./date-utils";
 
@@ -99,5 +104,33 @@ describe("lastNDayKeys", () => {
       "2026-05-01",
       "2026-05-02",
     ]);
+  });
+});
+
+describe("America/Sao_Paulo dashboard helpers", () => {
+  it("buckets late-evening Sao Paulo timestamps into the SP calendar day rather than next UTC day", () => {
+    // 2026-11-22 22:30 BRT (-03:00) == 2026-11-23 01:30:00Z
+    expect(saoPauloDayKey("2026-11-23T01:30:00.000Z")).toBe("2026-11-22");
+    // 2026-11-23 00:05 BRT (-03:00) == 2026-11-23 03:05:00Z
+    expect(saoPauloDayKey("2026-11-23T03:05:00.000Z")).toBe("2026-11-23");
+  });
+
+  it("computes consecutive Sao Paulo day keys across month boundaries", () => {
+    const now = new Date("2026-05-02T01:00:00.000Z"); // 2026-05-01 22:00 BRT
+    expect(lastNSaoPauloDayKeys(3, now)).toEqual([
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01",
+    ]);
+  });
+
+  it("computes exact UTC ISO start for a Sao Paulo calendar day", () => {
+    expect(saoPauloDayStartIso("2026-11-22")).toBe("2026-11-22T03:00:00.000Z");
+  });
+
+  it("formats weekday and dd/MM labels cleanly", () => {
+    expect(formatShortWeekday("2026-11-23", "pt-BR")).toBe("Seg");
+    expect(formatShortWeekday("2026-11-22", "pt-BR")).toBe("Dom");
+    expect(formatDayMonth("2026-11-22")).toBe("22/11");
   });
 });

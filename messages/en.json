@@ -226,7 +226,10 @@
       "target": "Target: {minutes}min",
       "unclassifiedLeads": "Leads Awaiting Classification",
       "needsCategorization": "Needs categorization",
-      "unclassifiedLeadsTooltip": "Contacts not yet classified as Moradia or Investimento."
+      "unclassifiedLeadsTooltip": "Contacts not yet classified as Moradia or Investimento.",
+      "unsupervisedLeads": "Unsupervised Leads",
+      "awaitingAnalysis": "Awaiting review",
+      "unsupervisedLeadsTooltip": "Open conversations where Clara replied or requested handoff after the last human review."
     },
     "quickActions": {
       "sentinela": "Sentinela",
@@ -234,6 +237,43 @@
       "aiCenter": "AI Center",
       "newBroadcast": "New Campaign",
       "calculadora": "Calculator"
+    },
+    "leadsMovement": {
+      "title": "Lead movement",
+      "description": "New leads by day of the week.",
+      "periodAria": "Select period",
+      "period7": "Last 7 days",
+      "period14": "Last 14 days",
+      "period30": "Last 30 days",
+      "currentSeries": "New leads",
+      "previousSeries7d": "Last week's leads",
+      "previousSeriesOther": "Previous period",
+      "leadsUnit": "leads",
+      "emptyTitle": "No new leads in this period",
+      "emptyDescription": "New contacts recorded in the CRM will appear here as they arrive.",
+      "error": "Could not load lead movement.",
+      "retry": "Try again"
+    },
+    "matchSummary": {
+      "title": "Match",
+      "description": "Leads with compatible properties.",
+      "viewAllAria": "View all matches",
+      "leadsMatched": "Matched with {count} {count, plural, =1 {lead} other {leads}}",
+      "emptyTitle": "No active pending matches",
+      "emptyDescription": "New compatible opportunities from the last 45 days will appear here.",
+      "error": "Could not load matches.",
+      "retry": "Try again"
+    },
+    "followupRecommendations": {
+      "title": "Follow-up recommendations",
+      "description": "Clara suggestions based on conversation history and interest.",
+      "viewAll": "View all",
+      "viewAllWithCount": "View all ({count})",
+      "unnamedLead": "Unnamed lead",
+      "emptyTitle": "No pending follow-up recommendations",
+      "emptyDescription": "When Clara identifies follow-up opportunities for stalled deals, they will appear here.",
+      "error": "Could not load Clara recommendations.",
+      "retry": "Try again"
     },
     "agenda": {
       "title": "Weekly Schedule",

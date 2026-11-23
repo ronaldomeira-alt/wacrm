@@ -226,7 +226,10 @@
       "target": "목표: {minutes}분",
       "unclassifiedLeads": "분류 대기 중인 리드",
       "needsCategorization": "분류가 필요합니다",
-      "unclassifiedLeadsTooltip": "아직 Moradia 또는 Investimento로 분류되지 않은 연락처입니다."
+      "unclassifiedLeadsTooltip": "아직 Moradia 또는 Investimento로 분류되지 않은 연락처입니다.",
+      "unsupervisedLeads": "검토 대기 리드",
+      "awaitingAnalysis": "검토 대기 중",
+      "unsupervisedLeadsTooltip": "마지막 사람 검토 이후 Clara가 응답했거나 전달을 요청한 미종결 대화입니다."
     },
     "quickActions": {
       "sentinela": "센티넬라",
@@ -234,6 +237,43 @@
       "aiCenter": "AI 센터",
       "newBroadcast": "새 캠페인",
       "calculadora": "계산기"
+    },
+    "leadsMovement": {
+      "title": "리드 유입 추이",
+      "description": "요일별 신규 리드 유입 현황입니다.",
+      "periodAria": "기간 선택",
+      "period7": "최근 7일",
+      "period14": "최근 14일",
+      "period30": "최근 30일",
+      "currentSeries": "신규 리드",
+      "previousSeries7d": "지난주 리드",
+      "previousSeriesOther": "이전 기간",
+      "leadsUnit": "건",
+      "emptyTitle": "해당 기간에 유입된 리드가 없습니다",
+      "emptyDescription": "CRM에 새 연락처가 등록되면 여기에 표시됩니다.",
+      "error": "리드 유입 추이를 불러오지 못했습니다.",
+      "retry": "다시 시도"
+    },
+    "matchSummary": {
+      "title": "Match",
+      "description": "적합한 매물이 있는 리드입니다.",
+      "viewAllAria": "모든 매치 보기",
+      "leadsMatched": "{count}명의 리드와 매치",
+      "emptyTitle": "활성 대기 중인 매치가 없습니다",
+      "emptyDescription": "최근 45일 이내의 적합한 매치 기회가 여기에 표시됩니다.",
+      "error": "매치 정보를 불러오지 못했습니다.",
+      "retry": "다시 시도"
+    },
+    "followupRecommendations": {
+      "title": "팔로우업 추천",
+      "description": "대화 이력과 관심사를 바탕으로 Clara가 제안합니다.",
+      "viewAll": "전체 보기",
+      "viewAllWithCount": "전체 보기 ({count})",
+      "unnamedLead": "이름 없는 리드",
+      "emptyTitle": "대기 중인 팔로우업 추천이 없습니다",
+      "emptyDescription": "Clara가 멈춘 상담에서 재연락 기회를 찾으면 여기에 표시됩니다.",
+      "error": "Clara 추천을 불러오지 못했습니다.",
+      "retry": "다시 시도"
     },
     "agenda": {
       "title": "주간 일정",

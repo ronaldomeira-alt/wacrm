@@ -1,7 +1,21 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { daysAgoStart, startOfLocalDay } from './date-utils'
+import {
+  daysAgoStart,
+  formatDayMonth,
+  formatShortWeekday,
+  lastNSaoPauloDayKeys,
+  saoPauloDayKey,
+  saoPauloDayStartIso,
+  startOfLocalDay,
+} from './date-utils'
 import { CLASSIFICATION_CATEGORY } from '@/lib/contacts/tag-categories'
-import type { FirstResponseMetric, LeadsTodayMetric } from './types'
+import type {
+  FirstResponseMetric,
+  LeadsMovementData,
+  LeadsMovementPeriod,
+  LeadsMovementPoint,
+  LeadsTodayMetric,
+} from './types'
 
 // ------------------------------------------------------------
 // Client-side aggregation, same tradeoff noted in the previous
@@ -102,4 +116,94 @@ export async function loadUnclassifiedLeadsCount(db: DB): Promise<number> {
   })
   if (error) throw error
   return (data as number) ?? 0
+}
+
+// --- Card 4 (Sem supervisão): Conversas onde a Clara atuou após revisão humana ---
+
+/**
+ * Counts open/pending conversations flagged by the DB-generated `needs_review`
+ * column (`idx_conversations_needs_review` partial index, migration
+ * 20260914141753_conversation_supervision_queue). RLS scopes by account_id.
+ */
+export async function loadUnsupervisedLeadsCount(db: DB): Promise<number> {
+  const { count, error } = await db
+    .from('conversations')
+    .select('id', { count: 'exact', head: true })
+    .eq('needs_review', true)
+    .neq('status', 'closed')
+  if (error) throw error
+  return count ?? 0
+}
+
+// --- Movimentação de leads (série atual vs período anterior em America/Sao_Paulo) ---
+
+export async function loadLeadsMovement(
+  db: DB,
+  period: LeadsMovementPeriod = 7,
+  locale: string = 'pt-BR',
+): Promise<LeadsMovementData> {
+  const allKeys = lastNSaoPauloDayKeys(period * 2)
+  const previousKeys = allKeys.slice(0, period)
+  const currentKeys = allKeys.slice(period)
+  const startIso = saoPauloDayStartIso(previousKeys[0])
+
+  // Paginated fetch (1000-row PostgREST ceiling guard) in a single query path
+  // rather than N per-day queries. Contacts are already deduplicated per account.
+  const countsByDay = new Map<string, number>()
+  const PAGE_SIZE = 1000
+  const MAX_PAGES = 15
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE
+    const to = from + PAGE_SIZE - 1
+    const { data, error } = await db
+      .from('contacts')
+      .select('created_at')
+      .gte('created_at', startIso)
+      .order('created_at', { ascending: true })
+      .range(from, to)
+
+    if (error) throw error
+    if (!data || data.length === 0) break
+
+    for (const row of data as { created_at: string }[]) {
+      if (!row.created_at) continue
+      const key = saoPauloDayKey(row.created_at)
+      countsByDay.set(key, (countsByDay.get(key) ?? 0) + 1)
+    }
+
+    if (data.length < PAGE_SIZE) break
+  }
+
+  let totalCurrent = 0
+  let totalPrevious = 0
+
+  const points: LeadsMovementPoint[] = currentKeys.map((currentKey, index) => {
+    const previousKey = previousKeys[index]
+    const current = countsByDay.get(currentKey) ?? 0
+    const previous = countsByDay.get(previousKey) ?? 0
+    totalCurrent += current
+    totalPrevious += previous
+
+    const dayLabel =
+      period === 7
+        ? formatShortWeekday(currentKey, locale)
+        : formatDayMonth(currentKey)
+
+    return {
+      index,
+      dayLabel,
+      currentKey,
+      previousKey,
+      current,
+      previous,
+    }
+  })
+
+  return {
+    period,
+    points,
+    totalCurrent,
+    totalPrevious,
+  }
 }

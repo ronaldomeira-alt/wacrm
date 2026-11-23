@@ -226,7 +226,10 @@
       "target": "Meta: {minutes}min",
       "unclassifiedLeads": "Leads Aguardando Classificação",
       "needsCategorization": "Necessitam categorização",
-      "unclassifiedLeadsTooltip": "Contatos que ainda não foram classificados como Moradia ou Investimento."
+      "unclassifiedLeadsTooltip": "Contatos que ainda não foram classificados como Moradia ou Investimento.",
+      "unsupervisedLeads": "Leads sem supervisão",
+      "awaitingAnalysis": "Aguardando análise",
+      "unsupervisedLeadsTooltip": "Conversas em aberto onde a Clara respondeu ou solicitou transferência após a última revisão humana."
     },
     "quickActions": {
       "sentinela": "Sentinela",
@@ -234,6 +237,43 @@
       "aiCenter": "Central de IA",
       "newBroadcast": "Nova campanha",
       "calculadora": "Calculadora"
+    },
+    "leadsMovement": {
+      "title": "Movimentação de leads",
+      "description": "Entrada de leads por dia da semana.",
+      "periodAria": "Selecionar período",
+      "period7": "Últimos 7 dias",
+      "period14": "Últimos 14 dias",
+      "period30": "Últimos 30 dias",
+      "currentSeries": "Novos leads",
+      "previousSeries7d": "Leads da semana passada",
+      "previousSeriesOther": "Período anterior",
+      "leadsUnit": "leads",
+      "emptyTitle": "Sem entradas de leads no período",
+      "emptyDescription": "Novos contatos registrados no CRM aparecerão aqui assim que entrarem.",
+      "error": "Não foi possível carregar a movimentação de leads.",
+      "retry": "Tentar novamente"
+    },
+    "matchSummary": {
+      "title": "Match",
+      "description": "Leads com imóveis compatíveis.",
+      "viewAllAria": "Ver todos os matches",
+      "leadsMatched": "Match com {count} {count, plural, =1 {lead} other {leads}}",
+      "emptyTitle": "Nenhuma pendência ativa no Match",
+      "emptyDescription": "Novas oportunidades compatíveis dos últimos 45 dias aparecerão aqui.",
+      "error": "Não foi possível carregar os matches.",
+      "retry": "Tentar novamente"
+    },
+    "followupRecommendations": {
+      "title": "Recomendações de follow-up",
+      "description": "Sugestões da Clara com base no histórico de conversas e interesse.",
+      "viewAll": "Ver todas",
+      "viewAllWithCount": "Ver todas ({count})",
+      "unnamedLead": "Lead sem nome",
+      "emptyTitle": "Nenhuma recomendação de follow-up pendente",
+      "emptyDescription": "Quando a Clara identificar oportunidades de retomada para negociações paradas, elas aparecerão aqui.",
+      "error": "Não foi possível carregar as recomendações da Clara.",
+      "retry": "Tentar novamente"
     },
     "agenda": {
       "title": "Agenda da Semana",
