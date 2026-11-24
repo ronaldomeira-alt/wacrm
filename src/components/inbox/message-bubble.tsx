@@ -10,7 +10,6 @@ import {
   XCircle,
   FileText,
   MapPin,
-  LayoutTemplate,
   ImageOff,
   CornerDownLeft,
   Sparkles,
@@ -925,20 +924,6 @@ function MessageContent({
 
       return (
         <div className="min-w-[210px] max-w-full">
-          <span
-            className={cn(
-              "mb-1.5 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
-              isAgent
-                ? "bg-primary-foreground/15 text-primary-foreground"
-                : "bg-primary/15 text-primary-on-soft",
-            )}
-          >
-            <LayoutTemplate className="h-3 w-3 shrink-0" />
-            <span className="truncate max-w-[200px]">
-              {displayName ? `${t("template")}: ${displayName}` : t("template")}
-            </span>
-          </span>
-
           {snapshot?.header_type === "image" && snapshot.header_media_url && (
             <div className="mb-2 overflow-hidden rounded-md">
               {/* eslint-disable-next-line @next/next/no-img-element */}
