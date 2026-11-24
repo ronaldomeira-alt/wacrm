@@ -755,6 +755,10 @@ export interface TemplateSnapshotProperty {
   title: string;
   public_url: string;
   match_id?: string | null;
+  cover_url?: string | null;
+  neighborhood?: string | null;
+  city?: string | null;
+  bedrooms_label?: string | null;
 }
 
 export interface TemplateSnapshot {

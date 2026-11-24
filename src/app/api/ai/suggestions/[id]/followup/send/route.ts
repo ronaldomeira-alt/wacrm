@@ -313,6 +313,37 @@ export async function POST(
         bodyValues
       );
 
+      // Enrich property snapshot (best-effort) with cover photo, neighborhood, city, and bedrooms
+      let snapshotCoverUrl: string | null = null;
+      let snapshotNeighborhood: string | null = null;
+      let snapshotCity: string | null = null;
+      let snapshotBedroomsLabel: string | null = null;
+      try {
+        const canonicalPropId = ensurePropertyUuid(targetProp.propertyId);
+        const { data: proj } = await supabase
+          .from('property_match_projections')
+          .select('cover_url, neighborhood, city, bedrooms_min, bedrooms_max')
+          .eq('account_id', accountId)
+          .eq('property_id', canonicalPropId)
+          .maybeSingle();
+        if (proj) {
+          snapshotCoverUrl = (proj.cover_url as string | null) ?? null;
+          snapshotNeighborhood = (proj.neighborhood as string | null) ?? null;
+          snapshotCity = (proj.city as string | null) ?? null;
+          const bMin = typeof proj.bedrooms_min === 'number' ? proj.bedrooms_min : null;
+          const bMax = typeof proj.bedrooms_max === 'number' ? proj.bedrooms_max : null;
+          if (bMin && bMax && bMin !== bMax) {
+            snapshotBedroomsLabel = `${bMin} a ${bMax} quartos`;
+          } else if (bMax && bMax > 0) {
+            snapshotBedroomsLabel = bMax === 1 ? '1 quarto' : `${bMax} quartos`;
+          } else if (bMin && bMin > 0) {
+            snapshotBedroomsLabel = bMin === 1 ? '1 quarto' : `${bMin} quartos`;
+          }
+        }
+      } catch {
+        // Non-blocking enrichment; never fail send if projection lookup fails
+      }
+
       try {
         const result = await sendMessageToConversation(supabase, accountId, {
           conversationId: suggestion.conversation_id,
@@ -330,6 +361,10 @@ export async function POST(
             title: targetProp.title,
             public_url: targetProp.publicUrl,
             match_id: targetProp.matchId ?? null,
+            cover_url: snapshotCoverUrl,
+            neighborhood: snapshotNeighborhood,
+            city: snapshotCity,
+            bedrooms_label: snapshotBedroomsLabel,
           },
           senderId: userId,
           clientRef,

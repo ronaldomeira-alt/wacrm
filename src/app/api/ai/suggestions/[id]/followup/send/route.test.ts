@@ -229,12 +229,12 @@ describe('POST /api/ai/suggestions/[id]/followup/send — Janela Aberta, Templat
           body: ['Luzinete', 'de 2 quartos no bairro Bessa (Mahal)'],
           buttonParams: { 0: 'dev-bd1ac8a946d4bfb0' },
         },
-        templateProperty: {
+        templateProperty: expect.objectContaining({
           id: 'p-1',
           title: 'Mahal',
           public_url: 'https://ronaldomeira.com.br/imovel/dev-bd1ac8a946d4bfb0',
           match_id: 'm-1',
-        },
+        }),
       })
     );
   });

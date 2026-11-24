@@ -24,6 +24,7 @@ import {
   Copy,
   Reply,
   Building2,
+  Link2,
 } from "lucide-react";
 import {
   Dialog,
@@ -984,6 +985,82 @@ function MessageContent({
             </p>
           )}
 
+          {snapshot?.property && (
+            <a
+              href={snapshot.property.public_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "mb-2 flex overflow-hidden rounded-lg border transition-colors",
+                isAgent
+                  ? "border-primary-foreground/20 bg-primary-foreground/10 hover:bg-primary-foreground/15"
+                  : "border-border bg-background/70 hover:bg-background",
+              )}
+            >
+              <div className="relative h-20 w-24 shrink-0 overflow-hidden bg-muted/40 sm:h-24 sm:w-28">
+                {snapshot.property.cover_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={snapshot.property.cover_url}
+                    alt={snapshot.property.title}
+                    className="h-full w-full object-cover"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                    <Building2 className="h-6 w-6 opacity-60" />
+                  </div>
+                )}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-2.5 py-2">
+                <p className="truncate text-xs font-semibold leading-snug sm:text-sm">
+                  {snapshot.property.title}
+                </p>
+                {(snapshot.property.bedrooms_label ||
+                  snapshot.property.neighborhood ||
+                  snapshot.property.city) && (
+                  <p
+                    className={cn(
+                      "line-clamp-2 text-[11px] leading-snug",
+                      isAgent
+                        ? "text-primary-foreground/85"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {[
+                      snapshot.property.bedrooms_label,
+                      snapshot.property.neighborhood,
+                      snapshot.property.city,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                )}
+                <div
+                  className={cn(
+                    "mt-0.5 flex items-center gap-1 text-[10px]",
+                    isAgent
+                      ? "text-primary-foreground/70"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  <Link2 className="h-3 w-3 shrink-0" />
+                  <span className="truncate">
+                    {(() => {
+                      try {
+                        return new URL(snapshot.property.public_url).hostname.replace(/^www\./, "");
+                      } catch {
+                        return snapshot.property.public_url;
+                      }
+                    })()}
+                  </span>
+                </div>
+              </div>
+            </a>
+          )}
+
           {displayBody ? (
             <p className="select-text whitespace-pre-wrap break-words pr-8 text-sm">
               {linkifyText(displayBody)}
@@ -1010,20 +1087,6 @@ function MessageContent({
             >
               {snapshot.footer_text}
             </p>
-          )}
-
-          {snapshot?.property?.title && (
-            <div
-              className={cn(
-                "mt-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium",
-                isAgent
-                  ? "bg-primary-foreground/10 text-primary-foreground/95"
-                  : "bg-muted/70 text-foreground",
-              )}
-            >
-              <Building2 className="h-3 w-3 shrink-0" />
-              <span className="truncate">{snapshot.property.title}</span>
-            </div>
           )}
 
           {buttons.length > 0 && (
