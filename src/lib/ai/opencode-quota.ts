@@ -1,6 +1,9 @@
 import { createHash } from 'crypto'
 
-const OPENCODE_GO_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage'
+const OPENCODE_GO_USAGE_URLS = [
+  'https://opencode.ai/zen/go/v1/usage',
+  'https://opencode.ai/inference/go/v1/usage',
+]
 const QUOTA_CACHE_TTL_MS = 60_000
 const QUOTA_FETCH_TIMEOUT_MS = 5_000
 
@@ -63,7 +66,7 @@ function parseWindow(raw: unknown): QuotaWindowSnapshot | null {
       ? Math.max(0, Math.floor(resetInSecRaw))
       : null
 
-  const resetAtRaw = r.resetAt ?? r.reset_at
+  const resetAtRaw = r.resetsAt ?? r.resetAt ?? r.reset_at
   const resetAt =
     typeof resetAtRaw === 'string' && resetAtRaw.trim()
       ? resetAtRaw
@@ -109,14 +112,28 @@ export async function fetchOpenCodeGoQuota(
 
   const fetchedAt = new Date().toISOString()
   try {
-    const res = await fetch(OPENCODE_GO_USAGE_URL, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${trimmed}`,
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
-    })
+    let res: Response | null = null
+    for (const url of OPENCODE_GO_USAGE_URLS) {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${trimmed}`,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
+      })
+      if (res.status !== 404) break
+    }
+    if (!res) {
+      return {
+        status: 'unavailable',
+        fiveHour: null,
+        weekly: null,
+        monthly: null,
+        fetchedAt,
+        error: 'No usage endpoint responded',
+      }
+    }
 
     if (res.status === 401 || res.status === 403) {
       const authStatus: OpenCodeQuotaStatus = {
@@ -154,11 +171,15 @@ export async function fetchOpenCodeGoQuota(
       }
     }
 
+    const root = (
+      body.usage && typeof body.usage === 'object' ? body.usage : body
+    ) as Record<string, unknown>
+
     const status: OpenCodeQuotaStatus = {
       status: 'ok',
-      fiveHour: parseWindow(body.rolling5h ?? body.five_hour ?? body.rolling),
-      weekly: parseWindow(body.weekly ?? body.week),
-      monthly: parseWindow(body.monthly ?? body.month),
+      fiveHour: parseWindow(root.rolling5h ?? root.five_hour ?? root.rolling),
+      weekly: parseWindow(root.weekly ?? root.week),
+      monthly: parseWindow(root.monthly ?? root.month),
       fetchedAt,
     }
     quotaCache.set(cacheKey, { expiresAt: Date.now() + QUOTA_CACHE_TTL_MS, status })

@@ -231,6 +231,48 @@ describe('AI Resilience, Fallback & Quota Guard', () => {
     expect(unknownCost.costUsd).toBeNull()
   })
 
+  it('parses real OpenCode Go nested usage.rolling/resetsAt schema and sends x-opencode-session header', async () => {
+    clearOpenCodeQuotaCache()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          usage: {
+            rolling: { status: 'ok', percent: 12, resetsAt: '2026-11-24T21:53:11.000Z' },
+            weekly: { status: 'ok', percent: 91, resetsAt: '2026-11-30T00:00:00.000Z' },
+            monthly: { status: 'ok', percent: 30, resetsAt: '2026-12-01T00:00:00.000Z' },
+          },
+        }),
+        { status: 200 },
+      ),
+    )
+    const gate = await checkOpenCodeGoQuotaGate({ apiKey: 'oc-key', bypassCache: true })
+    expect(gate.allowed).toBe(false)
+    expect(gate.quotaExhausted).toBe(true)
+    expect(gate.resetAt).toBe('2026-11-30T00:00:00.000Z')
+    expect(gate.snapshot.fiveHour?.usagePercent).toBe(12)
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'OK' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        }),
+        { status: 200 },
+      ),
+    )
+    const directRes = await opencodeProvider.generateOpenCodeGo({
+      apiKey: 'oc-key',
+      model: 'glm-5.3-flash',
+      systemPrompt: 'test',
+      messages: [{ role: 'user', content: 'ping' }],
+      timeoutMs: 10_000,
+      sessionId: 'wacrm-opaque-123',
+    })
+    expect(directRes.text).toBe('OK')
+    const lastCallHeaders = (fetchSpy.mock.calls[1]?.[1]?.headers ?? {}) as Record<string, string>
+    expect(lastCallHeaders['x-opencode-session']).toBe('wacrm-opaque-123')
+  })
+
   it('computes progressive recovery backoff intervals', () => {
     const t0 = new Date(computeNextAttemptAt(0)).getTime() - Date.now()
     const t3 = new Date(computeNextAttemptAt(3)).getTime() - Date.now()

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   canUseProvider,
@@ -80,6 +81,7 @@ async function invokeAdapter(args: {
   messages: ChatMessage[]
   timeoutMs: number
   signal?: AbortSignal
+  sessionId?: string
   structuredOutputRequired?: boolean
   maxOutputTokens?: number
 }): Promise<{ text: string; usage: AiUsage | null }> {
@@ -323,6 +325,11 @@ export async function executeAiInference(
         controller.abort(new DOMException('TimeoutError', 'TimeoutError'))
       }, candidate.timeoutMs)
 
+      const stableSessionId = `wacrm-${createHash('sha256')
+        .update(`${accountId ?? 'anon'}:${conversationId ?? mode}`)
+        .digest('hex')
+        .slice(0, 24)}`
+
       const startedAt = Date.now()
       try {
         const res = await invokeAdapter({
@@ -333,6 +340,7 @@ export async function executeAiInference(
           messages,
           timeoutMs: candidate.timeoutMs,
           signal: controller.signal,
+          sessionId: stableSessionId,
           structuredOutputRequired,
           maxOutputTokens,
         })

@@ -90,8 +90,13 @@ export async function POST(request: Request) {
 
     const rawProvider = typeof body.provider === 'string' ? body.provider : ''
     const provider = (rawProvider || existing?.provider) as AiProvider
-    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'deepseek') {
-      return bad('provider must be "openai", "anthropic", or "deepseek"')
+    if (
+      provider !== 'openai' &&
+      provider !== 'anthropic' &&
+      provider !== 'deepseek' &&
+      provider !== 'opencode_go'
+    ) {
+      return bad('provider must be "openai", "anthropic", "deepseek", or "opencode_go"')
     }
     const rawModel = typeof body.model === 'string' ? body.model.trim() : ''
     const model = rawModel || existing?.model || ''
@@ -150,11 +155,11 @@ export async function POST(request: Request) {
       try {
         apiKeyPlain = decrypt(existing.api_key)
       } catch {
-        if (provider !== 'deepseek') {
+        if (provider !== 'deepseek' && provider !== 'opencode_go') {
           return bad('Stored API key could not be decrypted — re-enter your key.')
         }
       }
-    } else if (provider !== 'deepseek') {
+    } else if (provider !== 'deepseek' && provider !== 'opencode_go') {
       return bad('api_key is required')
     }
 

@@ -48,6 +48,7 @@ export async function generateOpenCodeGo(
     messages,
     timeoutMs,
     signal,
+    sessionId,
     structuredOutputRequired,
     maxOutputTokens,
     reasoningEffort = 'low',
@@ -62,6 +63,7 @@ export async function generateOpenCodeGo(
 
   const mergedMessages = mergeConsecutive(messages)
   const requestSignal = buildRequestSignal(timeoutMs, signal)
+  const stableSessionId = sessionId?.trim() || 'wacrm-default-session'
 
   let res: Response
   try {
@@ -70,6 +72,7 @@ export async function generateOpenCodeGo(
       headers: {
         Authorization: `Bearer ${apiKey.trim()}`,
         'Content-Type': 'application/json',
+        'x-opencode-session': stableSessionId,
       },
       body: JSON.stringify({
         model: model || 'glm-5.3-flash',

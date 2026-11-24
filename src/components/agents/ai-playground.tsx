@@ -72,7 +72,14 @@ interface TurnDiagnostic {
   latencyMs?: number;
   model?: string;
   provider?: string;
+  fallbackUsed?: boolean;
 }
+
+const TEST_TARGET_OPTIONS = [
+  { value: 'production', label: 'Padrão de Produção', provider: null, model: null },
+  { value: 'deepseek:deepseek-flash', label: 'DeepSeek V4.1 Flash', provider: 'deepseek', model: 'deepseek-flash' },
+  { value: 'opencode_go:glm-5.3-flash', label: 'GLM 5.3 Flash (OpenCode Go)', provider: 'opencode_go', model: 'glm-5.3-flash' },
+] as const;
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -125,6 +132,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const [properties, setProperties] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>('');
   const [simulatedHours, setSimulatedHours] = useState<'real_time' | 'business_hours' | 'off_hours'>('business_hours');
+  const [testTarget, setTestTarget] = useState<string>('production');
   const [selectedTurnForInspect, setSelectedTurnForInspect] = useState<Turn | null>(null);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
 
@@ -252,6 +260,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         }
       }
 
+      const chosenTarget = TEST_TARGET_OPTIONS.find((o) => o.value === testTarget);
       const res = await fetch('/api/ai/playground', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -260,6 +269,12 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           simulated_hours: simulatedHours,
           simulated_lead: null,
           messages: apiMessages,
+          ...(chosenTarget?.provider
+            ? {
+                overrideProvider: chosenTarget.provider,
+                overrideModel: chosenTarget.model,
+              }
+            : {}),
         }),
       });
 
@@ -304,6 +319,7 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           latencyMs: data.latencyMs,
           model: data.model,
           provider: data.provider,
+          fallbackUsed: Boolean(data.fallbackUsed),
         },
       };
 
@@ -416,6 +432,35 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                       <span className={cn('size-2 shrink-0 rounded-full inline-block', opt.dotClassName)} />
                       <span>{opt.label}</span>
                     </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* 3. Independent Test Model Selector */}
+            <Select
+              value={testTarget}
+              onValueChange={(val) => val && setTestTarget(val)}
+            >
+              <SelectTrigger className="h-auto min-w-[200px] sm:min-w-[215px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto">
+                <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                  <Bot className="!size-4 !m-0 p-0 block shrink-0" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
+                    Modelo (Isolado)
+                  </p>
+                  <SelectValue className="mt-1 block truncate text-xs font-semibold leading-none text-foreground">
+                    <span>
+                      {TEST_TARGET_OPTIONS.find((o) => o.value === testTarget)?.label ?? 'Padrão de Produção'}
+                    </span>
+                  </SelectValue>
+                </div>
+              </SelectTrigger>
+              <SelectContent className="w-(--anchor-width) min-w-[230px]">
+                {TEST_TARGET_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -622,6 +667,30 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
                           </button>
                         )}
                       </div>
+                      {(t.diagnostic?.provider || t.diagnostic?.model || t.diagnostic?.latencyMs != null || t.diagnostic?.usage) && (
+                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-muted-foreground/80">
+                          {t.diagnostic.provider && (
+                            <span>
+                              Provedor: <strong className="font-medium text-foreground/80">{t.diagnostic.provider}</strong>
+                            </span>
+                          )}
+                          {t.diagnostic.model && <span>· {t.diagnostic.model}</span>}
+                          {typeof t.diagnostic.latencyMs === 'number' && (
+                            <span>· {t.diagnostic.latencyMs} ms</span>
+                          )}
+                          {t.diagnostic.usage && (
+                            <span>
+                              · {t.diagnostic.usage.promptTokens.toLocaleString('pt-BR')} in / {t.diagnostic.usage.completionTokens.toLocaleString('pt-BR')} out
+                            </span>
+                          )}
+                          {typeof t.diagnostic.usage?.cachedTokens === 'number' && t.diagnostic.usage.cachedTokens > 0 && (
+                            <span>· cache {t.diagnostic.usage.cachedTokens.toLocaleString('pt-BR')}</span>
+                          )}
+                          {t.diagnostic.fallbackUsed && (
+                            <span className="text-amber-500 font-medium">· Fallback acionado</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

@@ -31,6 +31,14 @@ interface WhatsAppStatus {
   connected: boolean;
 }
 
+interface AiSummaryStatus {
+  configured: boolean;
+  isActive: boolean;
+  autoReplyEnabled: boolean;
+  provider: string | null;
+  model: string | null;
+}
+
 export function SettingsOverview({
   onSelect,
 }: {
@@ -51,6 +59,8 @@ export function SettingsOverview({
   // from blanking the rest of the landing.
   const [whatsapp, setWhatsapp] = useState<WhatsAppStatus | null>(null);
   const [whatsappLoading, setWhatsappLoading] = useState(true);
+  const [aiStatus, setAiStatus] = useState<AiSummaryStatus | null>(null);
+  const [aiLoading, setAiLoading] = useState(true);
 
   useEffect(() => {
     if (!user || !accountId) return;
@@ -134,6 +144,28 @@ export function SettingsOverview({
         connected: health.status === 'fulfilled' && !!health.value?.connected,
       });
       setWhatsappLoading(false);
+    })();
+
+    // AI Agents operational status — independent, fast.
+    (async () => {
+      setAiLoading(true);
+      try {
+        const res = await fetch('/api/ai/config', { cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) {
+          setAiStatus({
+            configured: Boolean(data?.configured),
+            isActive: Boolean(data?.is_active),
+            autoReplyEnabled: Boolean(data?.auto_reply_enabled),
+            provider: data?.provider ?? null,
+            model: data?.model ?? null,
+          });
+        }
+      } catch {
+        if (!cancelled) setAiStatus(null);
+      } finally {
+        if (!cancelled) setAiLoading(false);
+      }
     })();
 
     return () => {
@@ -221,6 +253,21 @@ export function SettingsOverview({
       section: 'appearance',
       loading: false,
       subtitle: t('appearance', { mode: cap(mode), theme: themeName }),
+    },
+    {
+      section: 'ai-agents',
+      loading: aiLoading,
+      subtitle: !aiStatus?.configured ? (
+        'Configurar inteligência e provedores da Clara'
+      ) : aiStatus.isActive && aiStatus.autoReplyEnabled ? (
+        <>
+          <StatusDot tone="ok" /> Clara ativa · {aiStatus.model ?? aiStatus.provider ?? 'IA'}
+        </>
+      ) : (
+        <>
+          <StatusDot tone="muted" /> Configurada · Auto-resposta pausada
+        </>
+      ),
     },
     {
       section: 'notifications',

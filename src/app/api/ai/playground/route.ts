@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       )
     }
 
-    const config = await loadAiConfig(supabase, accountId, {
+    const loadedConfig = await loadAiConfig(supabase, accountId, {
       requireActive: false,
     }).catch((err) => {
       console.error('[ai/playground] loadAiConfig error:', err)
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
         status: 400,
       })
     })
-    if (!config) {
+    if (!loadedConfig) {
       return NextResponse.json(
         {
           error: 'No agent configured yet. Add your provider key in Setup.',
@@ -68,6 +68,33 @@ export async function POST(request: Request) {
         { status: 400 },
       )
     }
+
+    const VALID_OVERRIDE_PROVIDERS = new Set<AiProvider>([
+      'deepseek',
+      'opencode_go',
+      'openai',
+      'anthropic',
+    ])
+    const overrideProvider =
+      typeof body?.overrideProvider === 'string' &&
+      VALID_OVERRIDE_PROVIDERS.has(body.overrideProvider as AiProvider)
+        ? (body.overrideProvider as AiProvider)
+        : null
+    const overrideModel =
+      typeof body?.overrideModel === 'string' && body.overrideModel.trim()
+        ? body.overrideModel.trim()
+        : null
+
+    const { AI_PROVIDER_DEFAULT_MODEL } = await import('@/lib/ai/defaults')
+    const config = overrideProvider
+      ? {
+          ...loadedConfig,
+          provider: overrideProvider,
+          model: overrideModel ?? AI_PROVIDER_DEFAULT_MODEL[overrideProvider],
+        }
+      : overrideModel
+        ? { ...loadedConfig, model: overrideModel }
+        : loadedConfig
 
     const propertyId =
       typeof body?.property_id === 'string'

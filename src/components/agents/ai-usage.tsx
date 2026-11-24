@@ -47,6 +47,8 @@ interface UsageResponse {
     confirmed_calls: number;
     estimated_calls: number;
     unknown_calls: number;
+    cost_measured_calls?: number;
+    cache_measured_calls?: number;
     prompt_tokens: number;
     completion_tokens: number;
     cached_tokens: number;
@@ -110,6 +112,16 @@ interface UsageResponse {
   } | null;
 }
 
+const PRESET_LABELS: Record<string, string> = {
+  today: 'Hoje',
+  '3d': 'Últimos 3 dias',
+  '7d': 'Últimos 7 dias',
+  '15d': 'Últimos 15 dias',
+  '30d': 'Últimos 30 dias',
+  month: 'Mês atual',
+  custom: 'Período personalizado',
+};
+
 const MODE_LABELS: Record<string, string> = {
   auto_reply: 'Clara (WhatsApp)',
   draft: 'Rascunho',
@@ -157,16 +169,24 @@ function CustomTooltip({
 }) {
   if (!active || !payload || payload.length === 0) return null;
   return (
-    <div className="rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
-      <p className="mb-1 font-medium">{label}</p>
-      {payload.map((entry, idx) => (
-        <div key={idx} className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">{entry.name}:</span>
-          <span className="font-semibold tabular-nums">
-            {formatTokens(Number(entry.value ?? 0))}
-          </span>
-        </div>
-      ))}
+    <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-lg">
+      <p className="mb-1.5 font-semibold text-foreground">{label}</p>
+      <div className="space-y-1">
+        {payload.map((entry, idx) => (
+          <div key={idx} className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <span
+                className="inline-block size-2 rounded-full"
+                style={{ backgroundColor: entry.color || 'var(--primary)' }}
+              />
+              {entry.name}:
+            </span>
+            <span className="font-semibold text-foreground tabular-nums">
+              {formatTokens(Number(entry.value ?? 0))}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -225,6 +245,9 @@ export function AiUsageCard() {
   if (profileLoading || !canView) return null;
 
   const totals = data?.totals;
+  const costMeasured = totals?.cost_measured_calls ?? 0;
+  const cacheMeasured = totals?.cache_measured_calls ?? 0;
+
   const dailyData =
     data?.daily.map((d) => ({
       day: format(parseISO(d.date), 'dd/MM', { locale: ptBR }),
@@ -271,26 +294,32 @@ export function AiUsageCard() {
           </Button>
         </div>
 
-        {/* Filtros */}
+        {/* Filtros com rótulos em português */}
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Select value={preset} onValueChange={(v) => v && setPreset(v)}>
             <SelectTrigger>
-              <SelectValue placeholder="Período" />
+              <SelectValue>
+                <span>{PRESET_LABELS[preset] ?? 'Período'}</span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="today">Hoje</SelectItem>
-              <SelectItem value="3d">Últimos 3 dias</SelectItem>
-              <SelectItem value="7d">Últimos 7 dias</SelectItem>
-              <SelectItem value="15d">Últimos 15 dias</SelectItem>
-              <SelectItem value="30d">Últimos 30 dias</SelectItem>
-              <SelectItem value="month">Mês atual</SelectItem>
-              <SelectItem value="custom">Período personalizado</SelectItem>
+              {Object.entries(PRESET_LABELS).map(([k, label]) => (
+                <SelectItem key={k} value={k}>
+                  {label}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
           <Select value={providerFilter} onValueChange={(v) => v && setProviderFilter(v)}>
             <SelectTrigger>
-              <SelectValue placeholder="Provedor" />
+              <SelectValue>
+                <span>
+                  {providerFilter === 'all'
+                    ? 'Todos os provedores'
+                    : PROVIDER_LABELS[providerFilter] ?? providerFilter}
+                </span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os provedores</SelectItem>
@@ -303,7 +332,11 @@ export function AiUsageCard() {
 
           <Select value={modelFilter} onValueChange={(v) => v && setModelFilter(v)}>
             <SelectTrigger>
-              <SelectValue placeholder="Modelo" />
+              <SelectValue>
+                <span>
+                  {modelFilter === 'all' ? 'Todos os modelos' : modelFilter}
+                </span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os modelos</SelectItem>
@@ -317,7 +350,13 @@ export function AiUsageCard() {
 
           <Select value={modeFilter} onValueChange={(v) => v && setModeFilter(v)}>
             <SelectTrigger>
-              <SelectValue placeholder="Funcionalidade" />
+              <SelectValue>
+                <span>
+                  {modeFilter === 'all'
+                    ? 'Todas as funcionalidades'
+                    : MODE_LABELS[modeFilter] ?? modeFilter}
+                </span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todas as funcionalidades</SelectItem>
@@ -361,29 +400,39 @@ export function AiUsageCard() {
           <>
             {/* KPIs principais com Tokens em destaque e custo discreto abaixo */}
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="rounded-lg border border-border p-3.5">
+              <div className="rounded-lg border border-border bg-card-2/40 p-3.5">
                 <p className="text-xs text-muted-foreground">Tokens Totais (WACRM)</p>
-                <p className="mt-1 text-2xl font-bold tabular-nums">
+                <p className="mt-1 text-2xl font-bold tabular-nums text-foreground">
                   {formatTokens(totals.total_tokens)}
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground tabular-nums">
-                  Custo estimado: {formatBrl(Number(totals.cost_brl ?? 0))} ({formatUsd(Number(totals.cost_usd ?? 0))})
+                  {totals.attempts === 0 ? (
+                    'Sem chamadas no período'
+                  ) : costMeasured === 0 ? (
+                    'Custo histórico não registrado (disponível a partir de 24/11)'
+                  ) : costMeasured < totals.attempts ? (
+                    `Custo parcial (${costMeasured.toLocaleString('pt-BR')} de ${totals.attempts.toLocaleString('pt-BR')}): ${formatBrl(Number(totals.cost_brl ?? 0))} (${formatUsd(Number(totals.cost_usd ?? 0))})`
+                  ) : (
+                    `Custo estimado: ${formatBrl(Number(totals.cost_brl ?? 0))} (${formatUsd(Number(totals.cost_usd ?? 0))})`
+                  )}
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border p-3.5">
+              <div className="rounded-lg border border-border bg-card-2/40 p-3.5">
                 <p className="text-xs text-muted-foreground">Entrada / Saída / Cache</p>
-                <p className="mt-1 text-lg font-semibold tabular-nums">
+                <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">
                   {formatTokens(totals.prompt_tokens)} / {formatTokens(totals.completion_tokens)}
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground tabular-nums">
-                  Cache reaproveitado: {formatTokens(totals.cached_tokens)}
+                  {totals.attempts > 0 && cacheMeasured === 0
+                    ? 'Cache: não registrado no histórico anterior'
+                    : `Cache reaproveitado: ${formatTokens(totals.cached_tokens)}`}
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border p-3.5">
+              <div className="rounded-lg border border-border bg-card-2/40 p-3.5">
                 <p className="text-xs text-muted-foreground">Tentativas & Conclusões</p>
-                <p className="mt-1 text-2xl font-bold tabular-nums">
+                <p className="mt-1 text-2xl font-bold tabular-nums text-foreground">
                   {totals.completed_calls.toLocaleString('pt-BR')}
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground tabular-nums">
@@ -391,9 +440,9 @@ export function AiUsageCard() {
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border p-3.5">
+              <div className="rounded-lg border border-border bg-card-2/40 p-3.5">
                 <p className="text-xs text-muted-foreground">Qualidade da Contabilização</p>
-                <p className="mt-1 text-lg font-semibold tabular-nums">
+                <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">
                   {totals.confirmed_calls.toLocaleString('pt-BR')} confirmadas
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground tabular-nums">
@@ -403,7 +452,7 @@ export function AiUsageCard() {
             </div>
 
             {data?.opencode_subscription?.quota.monthly && (
-              <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs">
+              <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-foreground">
                 <span className="font-medium">Assinatura Global OpenCode Go (compartilhada com OpenBots):</span>{' '}
                 {data.opencode_subscription.quota.monthly.usagePercent.toFixed(1)}% da franquia mensal utilizada
                 {data.opencode_subscription.weeklyPreventiveEnabled
@@ -413,16 +462,33 @@ export function AiUsageCard() {
             )}
 
             {/* Gráfico 1: Consumo diário (Entrada, Cache, Saída) */}
-            <div className="space-y-2">
-              <h4 className="text-sm font-medium">Consumo Diário (Entrada, Cache e Saída)</h4>
+            <div className="space-y-2 rounded-lg border border-border p-4">
+              <h4 className="text-sm font-medium text-foreground">
+                Consumo Diário (Entrada, Cache e Saída)
+              </h4>
               <div className="h-64 w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={dailyData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
-                    <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={11} />
-                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickFormatter={formatTokens} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <BarChart data={dailyData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+                    <XAxis
+                      dataKey="day"
+                      tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                      axisLine={{ stroke: 'var(--border)' }}
+                      tickLine={{ stroke: 'var(--border)' }}
+                    />
+                    <YAxis
+                      tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                      axisLine={{ stroke: 'var(--border)' }}
+                      tickLine={{ stroke: 'var(--border)' }}
+                      tickFormatter={formatTokens}
+                    />
+                    <Tooltip
+                      content={<CustomTooltip />}
+                      cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
+                    />
+                    <Legend
+                      wrapperStyle={{ fontSize: 12, color: 'var(--foreground)', paddingTop: 8 }}
+                    />
                     <Bar dataKey="Entrada" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} />
                     <Bar dataKey="Cache" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
                     <Bar dataKey="Saída" stackId="a" fill="#f59e0b" radius={[4, 4, 0, 0]} />
@@ -431,48 +497,101 @@ export function AiUsageCard() {
               </div>
             </div>
 
-            {/* Gráficos 2, 3 e 4 em barra com contraste corrigido */}
+            {/* Gráficos 2, 3 e 4 em barra com contraste e rótulos legíveis */}
             <div className="grid gap-4 lg:grid-cols-3">
-              <div className="space-y-2 rounded-lg border border-border p-3">
+              <div className="space-y-2 rounded-lg border border-border p-3.5">
                 <h4 className="text-xs font-medium text-muted-foreground">Por Provedor</h4>
-                <div className="h-48 w-full">
+                <div className="h-52 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={providerChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
-                      <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={formatTokens} />
-                      <Tooltip content={<CustomTooltip />} />
+                    <BarChart data={providerChartData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.4} />
+                      <XAxis
+                        dataKey="name"
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={{ stroke: 'var(--border)' }}
+                      />
+                      <YAxis
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={{ stroke: 'var(--border)' }}
+                        tickFormatter={formatTokens}
+                      />
+                      <Tooltip
+                        content={<CustomTooltip />}
+                        cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
+                      />
                       <Bar dataKey="Tokens" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              <div className="space-y-2 rounded-lg border border-border p-3">
+              <div className="space-y-2 rounded-lg border border-border p-3.5">
                 <h4 className="text-xs font-medium text-muted-foreground">Por Modelo</h4>
-                <div className="h-48 w-full">
+                <div className="h-52 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={modelChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
-                      <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={10} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={formatTokens} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Bar dataKey="Tokens" fill="#10b981" radius={[4, 4, 0, 0]} />
+                    <BarChart
+                      data={modelChartData}
+                      layout="vertical"
+                      margin={{ top: 4, right: 12, left: 4, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.4} />
+                      <XAxis
+                        type="number"
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={{ stroke: 'var(--border)' }}
+                        tickFormatter={formatTokens}
+                      />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={110}
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={{ stroke: 'var(--border)' }}
+                      />
+                      <Tooltip
+                        content={<CustomTooltip />}
+                        cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
+                      />
+                      <Bar dataKey="Tokens" fill="#10b981" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              <div className="space-y-2 rounded-lg border border-border p-3">
+              <div className="space-y-2 rounded-lg border border-border p-3.5">
                 <h4 className="text-xs font-medium text-muted-foreground">Por Funcionalidade</h4>
-                <div className="h-48 w-full">
+                <div className="h-52 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={modeChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
-                      <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={10} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={formatTokens} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Bar dataKey="Tokens" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                    <BarChart
+                      data={modeChartData}
+                      layout="vertical"
+                      margin={{ top: 4, right: 12, left: 4, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.4} />
+                      <XAxis
+                        type="number"
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={{ stroke: 'var(--border)' }}
+                        tickFormatter={formatTokens}
+                      />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={115}
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={{ stroke: 'var(--border)' }}
+                      />
+                      <Tooltip
+                        content={<CustomTooltip />}
+                        cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
+                      />
+                      <Bar dataKey="Tokens" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

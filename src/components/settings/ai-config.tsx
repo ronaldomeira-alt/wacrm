@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Sparkles, CheckCircle2, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Sparkles, CheckCircle2, Trash2, Eye, EyeOff, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
 import { Button } from '@/components/ui/button';
@@ -75,7 +75,7 @@ const SUGGESTED_MODELS: Record<AiProvider, ModelOption[]> = {
   ],
 };
 
-export function AiConfig() {
+export function AiConfig({ onGoToProviders }: { onGoToProviders?: () => void } = {}) {
   const { accountId, accountRole, profileLoading } = useAuth();
   const canEdit = accountRole ? canEditSettings(accountRole) : false;
   const t = useTranslations('Settings.aiConfig');
@@ -180,10 +180,17 @@ export function AiConfig() {
     deepseekKeyEdited ? deepseekKey.trim() || null : undefined;
 
   const buildBody = () => ({
-    provider,
-    model: model.trim(),
-    api_key: provider === 'deepseek' ? undefined : keyPayload(),
-    deepseek_api_key: provider === 'deepseek' ? (keyPayload() ?? deepseekKeyPayload()) : deepseekKeyPayload(),
+    ...(configured
+      ? {}
+      : {
+          provider,
+          model: model.trim(),
+          api_key: provider === 'deepseek' ? undefined : keyPayload(),
+          deepseek_api_key:
+            provider === 'deepseek'
+              ? (keyPayload() ?? deepseekKeyPayload())
+              : deepseekKeyPayload(),
+        }),
     embeddings_api_key: embeddingsKeyPayload(),
     system_prompt: systemPrompt.trim() || null,
     is_active: isActive,
@@ -297,118 +304,115 @@ export function AiConfig() {
       <div className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Sparkles className="h-4 w-4 text-primary" /> {t('providerAndKey')}
-            </CardTitle>
-            <CardDescription>
-              {t('encryptionNotice')}
-            </CardDescription>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ShieldCheck className="h-4 w-4 text-primary" /> Provedor de Inferência e Embeddings
+                </CardTitle>
+                <CardDescription>
+                  O gerenciamento de provedores, modelos e fallback é centralizado na aba Provedores. A chave de embeddings é independente.
+                </CardDescription>
+              </div>
+              {onGoToProviders && (
+                <Button variant="outline" size="sm" onClick={onGoToProviders} className="shrink-0">
+                  Gerenciar em Provedores <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>{t('provider')}</Label>
-                <Select
-                  value={provider}
-                  onValueChange={(v) => handleProviderChange(v as AiProvider)}
-                  disabled={disabled}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="openai">{PROVIDER_LABEL.openai}</SelectItem>
-                    <SelectItem value="deepseek">{PROVIDER_LABEL.deepseek}</SelectItem>
-                    <SelectItem value="anthropic">
-                      {PROVIDER_LABEL.anthropic}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="ai-model">{t('model')}</Label>
-                <Input
-                  id="ai-model"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={AI_PROVIDER_DEFAULT_MODEL[provider]}
-                  disabled={disabled}
-                />
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {SUGGESTED_MODELS[provider]?.map((sm) => (
-                    <button
-                      key={sm.id}
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => setModel(sm.id)}
-                      className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
-                        model === sm.id
-                          ? 'bg-primary/10 border-primary text-primary font-medium'
-                          : 'bg-muted/30 border-border text-muted-foreground hover:bg-muted'
-                      }`}
-                    >
-                      {sm.label}
-                    </button>
-                  ))}
-                </div>
-                {provider === 'deepseek' && (
-                  <p className="text-xs text-muted-foreground pt-0.5">
-                    Modelo comercial: <strong className="text-foreground">DeepSeek V4.1 Flash-1017</strong> (Identificador API: <code className="bg-muted px-1 py-0.5 rounded text-[11px]">deepseek-flash</code>)
+            {configured ? (
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs text-muted-foreground">Provedor Principal Ativo</p>
+                  <p className="mt-0.5 text-sm font-semibold text-foreground">
+                    {PROVIDER_LABEL[provider] ?? provider} · <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{model}</code>
                   </p>
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="ai-key">{t('apiKey')}</Label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Input
-                    id="ai-key"
-                    type={showKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => {
-                      setApiKey(e.target.value);
-                      setKeyEdited(true);
-                    }}
-                    onFocus={() => {
-                      if (!keyEdited && hasStoredKey) {
-                        setApiKey('');
-                        setKeyEdited(true);
-                      }
-                    }}
-                    placeholder={KEY_PLACEHOLDER[provider]}
-                    disabled={disabled}
-                    autoComplete="off"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((s) => !s)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    tabIndex={-1}
-                  >
-                    {showKey ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </button>
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={handleTest}
-                  disabled={disabled || testing}
-                >
-                  {testing ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="mr-2 h-4 w-4" />
-                  )}
-                  {t('testKey')}
-                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Alterações de modelo, prioridade e credenciais são feitas em <strong>Provedores</strong>.
+                </span>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>{t('provider')}</Label>
+                    <Select
+                      value={provider}
+                      onValueChange={(v) => handleProviderChange(v as AiProvider)}
+                      disabled={disabled}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="openai">{PROVIDER_LABEL.openai}</SelectItem>
+                        <SelectItem value="deepseek">{PROVIDER_LABEL.deepseek}</SelectItem>
+                        <SelectItem value="anthropic">
+                          {PROVIDER_LABEL.anthropic}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="ai-model">{t('model')}</Label>
+                    <Input
+                      id="ai-model"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      placeholder={AI_PROVIDER_DEFAULT_MODEL[provider]}
+                      disabled={disabled}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="ai-key">{t('apiKey')}</Label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        id="ai-key"
+                        type={showKey ? 'text' : 'password'}
+                        value={apiKey}
+                        onChange={(e) => {
+                          setApiKey(e.target.value);
+                          setKeyEdited(true);
+                        }}
+                        placeholder={KEY_PLACEHOLDER[provider]}
+                        disabled={disabled}
+                        autoComplete="off"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowKey((s) => !s)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        tabIndex={-1}
+                      >
+                        {showKey ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={handleTest}
+                      disabled={disabled || testing}
+                    >
+                      {testing ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
+                      )}
+                      {t('testKey')}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="ai-embeddings-key">

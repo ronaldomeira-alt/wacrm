@@ -12,6 +12,8 @@ export interface ProviderArgs {
   timeoutMs: number
   /** Optional external AbortSignal (e.g., global budget or parent cancellation). */
   signal?: AbortSignal
+  /** Optional opaque, stable session identifier (no PII) for provider routing/caching. */
+  sessionId?: string
   /** When true, the provider must be constrained to return valid JSON
    *  (the structured handoff-decision format) rather than free text. */
   structuredOutputRequired?: boolean
