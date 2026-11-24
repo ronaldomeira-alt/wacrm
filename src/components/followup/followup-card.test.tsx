@@ -145,7 +145,7 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     expect(html).toContain('9/10');
     expect(html).toContain('88% confiança');
     expect(html).toContain('Avant Home');
-    expect(html).toContain('Studio em Bessa (Locação por temporada)');
+    expect(html).not.toContain('Necessidade principal');
     expect(html).toContain('está há 15 dias sem responder');
     expect(html).toContain('2 imóveis compatíveis no Match');
   });
@@ -227,26 +227,27 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     expect(cardSource).toContain('setFollowupOpen(true)');
     expect(cardSource).not.toContain('/api/whatsapp/send');
 
-    // 2. Preservação integral dos fluxos do FollowupDialog (review, choose_mode, free_draft, template_draft, plan_review) e seção secundária do Match
+    // 2. Preservação integral dos fluxos redesenhados do FollowupDialog (review, prepare_free, prepare_template, template_blocked)
     expect(dialogSource).toContain("step === 'review'");
-    expect(dialogSource).toContain("step === 'choose_mode'");
-    expect(dialogSource).toContain("step === 'free_draft'");
-    expect(dialogSource).toContain("step === 'template_draft'");
-    expect(dialogSource).toContain("step === 'plan_review'");
+    expect(dialogSource).toContain("step === 'prepare_free'");
+    expect(dialogSource).toContain("step === 'prepare_template'");
+    expect(dialogSource).toContain("step === 'template_blocked'");
+    expect(dialogSource).toContain('FOLLOWUP_REQUIRED_TEMPLATE_NAME');
     expect(dialogSource).toContain('data-testid="followup-dialog-compatible-properties"');
 
     // 3. Responsividade: grid de 3 colunas no desktop, 2 intermediárias, 1 no mobile + limitação visual de textos
     expect(pageSource).toContain('grid-cols-1 md:grid-cols-2 lg:grid-cols-3');
-    expect(cardSource).toContain('line-clamp-3');
+    expect(cardSource).toContain('line-clamp-4');
     expect(cardSource).toContain('grid-cols-3 gap-2');
 
-    // 4. Novo filtro padrão "Ontem" ('yesterday') + Anteontem + Últimos 3 dias + filtro de janela aberta + miniaturas reais no modal
-    expect(pageSource).toContain("DEFAULT_DATE_FILTER: FollowupDateFilter = 'yesterday'");
-    expect(pageSource).toContain('day_before_yesterday');
-    expect(pageSource).toContain('Últimos 3 dias');
-    expect(pageSource).toContain('Janela de atendimento aberta');
+    // 4. Fila padrão sincronizada com o Dashboard ('all'), sem banner burocrático antigo, e miniaturas reais no modal
+    expect(pageSource).toContain("DEFAULT_DATE_FILTER: FollowupDateFilter = 'all'");
+    expect(pageSource).not.toContain('followup-older-pending-banner');
+    expect(pageSource).not.toContain('cujo cliente falou em');
+    expect(pageSource).toContain('Ontem não tivemos nenhuma sugestão de follow-up.');
+    expect(pageSource).toContain('Hoje ainda não temos sugestões de follow-up.');
     expect(dialogSource).toContain('data-testid="followup-property-thumbnail-img"');
-    expect(dialogSource).toContain('data-testid="followup-selected-property-summary"');
+    expect(dialogSource).toContain('Imóveis selecionados para recomendar');
   });
 
   it('exibe discretamente o estado real da janela de atendimento de 24h (Janela aberta, Janela prestes a encerrar, Template necessário)', () => {
@@ -293,5 +294,104 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
       })
     );
     expect(htmlExpired).toContain('Template necessário');
+  });
+
+  it('Etapa 2 — exibe último contato em dias completos (ex.: 86h -> "Há 3 dias", nunca "há 86 horas") e valida layout responsivo Desktop (+50% largura, cards lado a lado) e PWA iPhone', () => {
+    const html86h = renderToStaticMarkup(
+      React.createElement(FollowupCard, {
+        item: makeItem({
+          lastCustomerMessageAt: undefined,
+          lastCommunicationAt: null,
+          hoursSinceLastCommunication: 86,
+          hoursSinceLastCustomerMessage: 86,
+          neverContacted: false,
+        }),
+        onUpdateStatus: vi.fn(),
+      })
+    );
+    expect(html86h).toContain('Há 3 dias');
+    expect(html86h).not.toContain('86h');
+    expect(html86h).not.toContain('86 horas');
+
+    const dialogSource = readFileSync(
+      join(process.cwd(), 'src/components/ai-hub/followup-dialog.tsx'),
+      'utf8'
+    );
+
+    // Desktop +50% largura (sm:max-w-2xl md:max-w-3xl lg:max-w-4xl) e PWA iPhone sem overflow horizontal + safe area
+    expect(dialogSource).toContain('sm:max-w-2xl md:max-w-3xl lg:max-w-4xl');
+    expect(dialogSource).toContain('w-[calc(100vw-1rem)] max-w-full');
+    expect(dialogSource).toContain('overflow-x-hidden');
+    expect(dialogSource).toContain('env(safe-area-inset-bottom)');
+
+    // Cards de imóveis lado a lado no desktop e empilhados na PWA iPhone, exibindo metragem (m²), quartos, valor e % compatível
+    expect(dialogSource).toContain('grid-cols-1 md:grid-cols-3');
+    expect(dialogSource).toContain('grid-cols-1 md:grid-cols-2');
+    expect(dialogSource).toContain('data-testid="followup-property-area-badge"');
+    expect(dialogSource).toContain('data-testid="followup-property-bedrooms-badge"');
+    expect(dialogSource).toContain('data-testid="followup-property-score-badge"');
+    expect(dialogSource).toContain('data-testid="followup-dialog-last-contact"');
+    expect(dialogSource).not.toContain('Necessidade principal');
+    expect(dialogSource).not.toContain('Sugestão de abordagem');
+  });
+
+  it('Etapa 3 — unifica Dashboard e aba Follow-up no mesmo FollowupDialog e valida expansão sob demanda ("Ver mais imóveis") preservando seleção', () => {
+    const cardSource = readFileSync(
+      join(process.cwd(), 'src/components/followup/followup-card.tsx'),
+      'utf8'
+    );
+    const dashboardCardSource = readFileSync(
+      join(process.cwd(), 'src/components/dashboard/followup-recommendations-card.tsx'),
+      'utf8'
+    );
+    const dialogSource = readFileSync(
+      join(process.cwd(), 'src/components/ai-hub/followup-dialog.tsx'),
+      'utf8'
+    );
+
+    // 1. Mesmo componente FollowupDialog e mesma prop totalCompatiblePropertiesCount no Dashboard e em /followup
+    expect(cardSource).toContain("from '@/components/ai-hub/followup-dialog'");
+    expect(dashboardCardSource).toContain("from '@/components/ai-hub/followup-dialog'");
+    expect(cardSource).toMatch(/totalCompatiblePropertiesCount=\{\s*item\.totalCompatiblePropertiesCount\s*\?\?\s*item\.compatiblePropertiesCount\s*\}/);
+    expect(dashboardCardSource).toMatch(/totalCompatiblePropertiesCount=\{\s*/);
+
+    // 2. Endpoint sob demanda e botão posicionado no DialogFooter imediatamente após "Ver conversa" e antes de "Aceitar"
+    expect(dialogSource).toContain('/properties?');
+    expect(dialogSource).toContain('exclude_ids');
+    expect(dialogSource).toContain('data-testid="followup-toggle-more-properties"');
+    expect(dialogSource).toContain('effectiveTotalCompatibleCount > compatibleProperties.length');
+    expect(dialogSource).toContain('Ver mais imóveis');
+    expect(dialogSource).toContain('Mostrar menos');
+    expect(dialogSource).toContain('Carregar mais opções');
+
+    const footerStart = dialogSource.lastIndexOf('<DialogFooter');
+    expect(footerStart).toBeGreaterThan(-1);
+    const footerSlice = dialogSource.slice(footerStart);
+    const convIdx = footerSlice.indexOf('Ver conversa');
+    const moreIdx = footerSlice.indexOf('Ver mais imóveis');
+    const acceptIdx = footerSlice.indexOf('Aceitar');
+    expect(convIdx).toBeGreaterThan(-1);
+    expect(moreIdx).toBeGreaterThan(convIdx);
+    expect(acceptIdx).toBeGreaterThan(moreIdx);
+
+    // 3. Preservação integral dos selecionados ao recolher ("Mostrar menos") e derivação única via allKnownProperties
+    expect(dialogSource).toContain('allKnownProperties.filter((p) => selectedPropertyIds.includes(p.propertyId))');
+    expect(dialogSource).toContain('data-testid="followup-hidden-extra-selected-badge"');
+
+    // 4. Janela aberta (múltipla seleção) vs janela encerrada (seleção única global mantendo slug/URL do imóvel escolhido)
+    expect(dialogSource).toContain('selectedPropertyIds');
+    expect(dialogSource).toContain('FOLLOWUP_REQUIRED_TEMPLATE_NAME');
+
+    // 5. FollowupCard continua renderizando normalmente quando item possui totalCompatiblePropertiesCount > compatibleProperties.length
+    const htmlWithMore = renderToStaticMarkup(
+      React.createElement(FollowupCard, {
+        item: makeItem({
+          compatiblePropertiesCount: 3,
+          totalCompatiblePropertiesCount: 6,
+        }),
+        onUpdateStatus: vi.fn(),
+      })
+    );
+    expect(htmlWithMore).toContain('Fernanda Oliveira');
   });
 });

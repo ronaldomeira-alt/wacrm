@@ -257,7 +257,7 @@ export async function POST(request: Request) {
             .eq('id', followup_suggestion_id)
             .eq('account_id', accountId)
             .eq('category', 'followup')
-            .eq('status', 'pending')
+            .in('status', ['pending', 'approved'])
           if (resolveError) {
             console.error('[whatsapp/send] follow-up auto-resolve failed:', resolveError)
           }

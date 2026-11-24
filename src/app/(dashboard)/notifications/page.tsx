@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { useTranslations } from "next-intl";
 import { ListChecks, Loader2, Target } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -17,6 +17,7 @@ import type { ActionItem } from "@/types";
 export default function ActionCenterPage() {
   const t = useTranslations("ActionCenter.page");
   const { accountId } = useAuth();
+  const instanceId = useId();
   const [interests, setInterests] = useState<ActionItem[] | null>(null);
   const [followups, setFollowups] = useState<ActionItem[] | null>(null);
   const [selected, setSelected] = useState<ActionItem | null>(null);
@@ -33,13 +34,19 @@ export default function ActionCenterPage() {
 
   const load = useCallback(async () => {
     if (!accountId) return;
-    const db = createClient();
-    const [interestRows, followupRows] = await Promise.all([
-      listInterestActionItems(db, accountId),
-      listWeekFollowupActionItems(db, accountId),
-    ]);
-    setInterests(interestRows);
-    setFollowups(followupRows);
+    try {
+      const db = createClient();
+      const [interestRows, followupRows] = await Promise.all([
+        listInterestActionItems(db, accountId),
+        listWeekFollowupActionItems(db, accountId),
+      ]);
+      setInterests(interestRows);
+      setFollowups(followupRows);
+    } catch (err) {
+      console.error("[action-center] failed to load action items:", err);
+      setInterests((prev) => prev ?? []);
+      setFollowups((prev) => prev ?? []);
+    }
   }, [accountId]);
 
   useEffect(() => {
@@ -56,7 +63,7 @@ export default function ActionCenterPage() {
     if (!accountId) return;
     const supabase = createClient();
     const channel = supabase
-      .channel("action-center-page")
+      .channel(`action-center-page-${instanceId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "action_items" }, load)
       .subscribe();
     window.addEventListener("wacrm:deal-stage-changed", load);
@@ -64,7 +71,7 @@ export default function ActionCenterPage() {
       supabase.removeChannel(channel);
       window.removeEventListener("wacrm:deal-stage-changed", load);
     };
-  }, [accountId, load]);
+  }, [accountId, instanceId, load]);
 
   const loading = interests === null || followups === null;
 

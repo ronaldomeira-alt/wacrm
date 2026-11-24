@@ -90,7 +90,6 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: "/dashboard", labelKey: "dashboard", icon: LayoutDashboard },
-  { href: "/sentinela", labelKey: "sentinela", icon: ShieldAlert },
   { href: "/inbox", labelKey: "inbox", icon: MessageSquare },
   { href: "/notifications", labelKey: "actionCenter", icon: ListChecks },
   { href: "/contacts", labelKey: "contacts", icon: Users },
@@ -102,6 +101,7 @@ const navItems: NavItem[] = [
   { href: "/flows", labelKey: "flows", icon: Workflow },
   { href: "/agents", labelKey: "aiHub", icon: BrainCircuit },
   { href: "/calculadora", labelKey: "calculadora", icon: Calculator },
+  { href: "/sentinela", labelKey: "sentinela", icon: ShieldAlert },
 ];
 
 const bottomNavItems = [
