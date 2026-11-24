@@ -19,7 +19,10 @@ import {
   sanitizeOffHoursHandoffResponse,
   type BusinessHoursContext,
 } from './business-hours';
-import { buildConversationalSystemPrompt } from './prompt-builder';
+import {
+  buildConversationalSystemPrompt,
+  resolvePropertyCommercialPurpose,
+} from './prompt-builder';
 import {
   getAvailablePropertyMedia,
   validateAndResolveMediaToSend,
@@ -1244,10 +1247,18 @@ export async function executeConversationalTurn(
     ...(leadContext?.promptExcerpts ? [leadContext.promptExcerpts] : []),
   ].filter((t): t is string => Boolean(t && t.trim()));
 
+  const resolvedCommercialPurpose = resolvePropertyCommercialPurpose({
+    property: propertyInfo,
+    propertyKnowledge: propertyKnowledgeChunks,
+    propertyMemories: propertyMemoriesText,
+  });
+
   const securityGuardResult = runSecurityGuard({
     responseText: decision.response_text,
     transferRequired: decision.transfer_required,
-    property: propertyInfo,
+    property: propertyInfo
+      ? { ...propertyInfo, commercialPurpose: resolvedCommercialPurpose }
+      : null,
     allKnowledgeAndMemoryTexts,
     officialPriceKnowledgeTexts,
   });

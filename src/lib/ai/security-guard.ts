@@ -39,6 +39,7 @@ export interface SecurityViolation {
 
 export interface SecurityGuardPropertyContext {
   stage?: string | null
+  commercialPurpose?: string | null
   /** 'provisorio' properties have zero confirmed data — mirrors
    *  prompt-builder.ts's isPropertyProvisional check exactly; see
    *  isReadyForPriceDisclosure below. */
@@ -89,7 +90,12 @@ export function isReadyForPriceDisclosure(property: SecurityGuardPropertyContext
   if (!property) return false
   const isProvisional = property.status === 'provisorio'
   const isReady = Boolean(property.stage && property.stage.toLowerCase().includes('pronto'))
-  return !isProvisional && isReady
+  const isRental =
+    Boolean(
+      property.commercialPurpose &&
+      ['locacao', 'locacao_anual', 'locacao_temporada'].includes(property.commercialPurpose),
+    ) || Boolean(property.name && /loca[cç][aã]o|aluguel/i.test(property.name))
+  return !isProvisional && (isReady || isRental)
 }
 
 // ------------------------------------------------------------

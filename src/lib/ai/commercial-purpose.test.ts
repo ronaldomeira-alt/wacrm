@@ -3,6 +3,7 @@ import {
   buildConversationalSystemPrompt,
   resolvePropertyCommercialPurpose,
 } from './prompt-builder';
+import { isReadyForPriceDisclosure } from './security-guard';
 import { generateOpenCodeGo } from './providers/opencode-go';
 import type { AiConfig } from './types';
 
@@ -152,6 +153,57 @@ describe('buildConversationalSystemPrompt commercial purpose directives', () => 
 
     expect(prompt).toContain('FINALIDADE COMERCIAL A CONFIRMAR');
     expect(prompt).not.toContain('Você busca para moradia ou pensa em investimento?');
+  });
+
+  it('authorizes rental price disclosure without anticipating caução and treats 80% as flexible', () => {
+    const prompt = buildConversationalSystemPrompt({
+      config: baseConfig,
+      mode: 'auto_reply',
+      isInitialContact: false,
+      property: {
+        id: 'sm',
+        name: 'Santa Maria',
+        stage: 'Pronto',
+        rawStage: 'pronto',
+        bookExtractedText:
+          '# CONHECIMENTO DO IMÓVEL — FLAT PARA LOCAÇÃO EM INTERMARES\nAluguel mensal: R$ 2.500\nPrazo de locação: exclusivamente anual, com contrato de 12 meses.',
+      },
+    });
+
+    expect(prompt).toContain('NÃO antecipe informações sobre caução');
+    expect(prompt).toContain('referência flexível (nunca obrigação mecânica)');
+    expect(prompt).toContain('evite perguntar prematuramente quando ele pretende se mudar');
+  });
+});
+
+describe('isReadyForPriceDisclosure', () => {
+  it('allows official rent disclosure on non-provisional rental properties even without stage "pronto"', () => {
+    expect(
+      isReadyForPriceDisclosure({
+        name: 'Santa Maria',
+        stage: null,
+        commercialPurpose: 'locacao_anual',
+        status: 'ativo',
+      }),
+    ).toBe(true);
+
+    expect(
+      isReadyForPriceDisclosure({
+        name: 'Santa Maria',
+        stage: 'Pronto',
+        commercialPurpose: 'locacao_anual',
+        status: 'provisorio',
+      }),
+    ).toBe(false);
+
+    expect(
+      isReadyForPriceDisclosure({
+        name: 'Live Park',
+        stage: 'Pré-lançamento',
+        commercialPurpose: 'venda',
+        status: 'ativo',
+      }),
+    ).toBe(false);
   });
 });
 
