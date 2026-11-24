@@ -180,8 +180,8 @@ export async function GET(request: Request) {
       opencode_subscription: opencodeQuota
         ? {
             quota: opencodeQuota,
-            wacrmReservePct: config?.opencodeWacrmReservePct ?? 15,
-            globalPreventivePct: config?.opencodeGlobalPreventivePct ?? 75,
+            weeklyPreventiveEnabled: config?.opencodeWeeklyPreventiveEnabled ?? true,
+            weeklyPreventivePct: config?.opencodeWeeklyPreventivePct ?? 90,
           }
         : null,
     })

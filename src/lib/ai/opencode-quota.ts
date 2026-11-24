@@ -175,10 +175,24 @@ export async function fetchOpenCodeGoQuota(
   }
 }
 
+export interface WindowPreventiveRule {
+  enabled: boolean
+  pct: number
+}
+
+export interface OpenCodeWindowRules {
+  fiveHour?: WindowPreventiveRule
+  weekly?: WindowPreventiveRule
+  monthly?: WindowPreventiveRule
+}
+
 /**
  * Evaluate whether WACRM is allowed to send inference to OpenCode Go based
- * on the global preventive threshold (default 75% across 5h/weekly/monthly)
- * and hard 100% exhaustion.
+ * on independent per-window preventive limits and hard 100% exhaustion:
+ * - Real exhaustion (>= 100%) on ANY window ALWAYS blocks and triggers fallback
+ *   until that window's `resetAt`.
+ * - Preventive threshold only blocks a window when `enabled` is true for that
+ *   specific window (defaults: 5h=disabled, weekly=90% enabled, monthly=disabled).
  *
  * Note: If the usage endpoint is unavailable, we return `allowed: true`
  * (fail-open to inference; actual 429/quota errors on inference still
@@ -186,10 +200,14 @@ export async function fetchOpenCodeGoQuota(
  */
 export async function checkOpenCodeGoQuotaGate(args: {
   apiKey: string
-  globalPreventivePct?: number
+  windows?: OpenCodeWindowRules
   bypassCache?: boolean
 }): Promise<OpenCodeQuotaDecision> {
-  const preventivePct = args.globalPreventivePct ?? 75
+  const rules = {
+    fiveHour: args.windows?.fiveHour ?? { enabled: false, pct: 90 },
+    weekly: args.windows?.weekly ?? { enabled: true, pct: 90 },
+    monthly: args.windows?.monthly ?? { enabled: false, pct: 90 },
+  }
   const snapshot = await fetchOpenCodeGoQuota(args.apiKey, {
     bypassCache: args.bypassCache,
   })
@@ -214,13 +232,17 @@ export async function checkOpenCodeGoQuotaGate(args: {
     }
   }
 
-  const windows: Array<{ label: string; win: QuotaWindowSnapshot | null }> = [
-    { label: 'janela de 5 horas', win: snapshot.fiveHour },
-    { label: 'limite semanal', win: snapshot.weekly },
-    { label: 'limite mensal', win: snapshot.monthly },
+  const windows: Array<{
+    label: string
+    win: QuotaWindowSnapshot | null
+    rule: WindowPreventiveRule
+  }> = [
+    { label: 'janela de 5 horas', win: snapshot.fiveHour, rule: rules.fiveHour },
+    { label: 'limite semanal', win: snapshot.weekly, rule: rules.weekly },
+    { label: 'limite mensal', win: snapshot.monthly, rule: rules.monthly },
   ]
 
-  for (const { label, win } of windows) {
+  for (const { label, win, rule } of windows) {
     if (!win) continue
     if (win.usagePercent >= 100) {
       return {
@@ -231,10 +253,10 @@ export async function checkOpenCodeGoQuotaGate(args: {
         snapshot,
       }
     }
-    if (win.usagePercent >= preventivePct) {
+    if (rule.enabled && win.usagePercent >= rule.pct) {
       return {
         allowed: false,
-        reason: `Limite preventivo global atingido (${label}: ${win.usagePercent.toFixed(1)}% >= ${preventivePct}%)`,
+        reason: `Limite preventivo atingido (${label}: ${win.usagePercent.toFixed(1)}% >= ${rule.pct}%)`,
         quotaExhausted: true,
         resetAt: win.resetAt,
         snapshot,

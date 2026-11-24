@@ -23,9 +23,12 @@ function makeConfig(overrides: Partial<AiConfig> = {}): AiConfig {
     secondaryModel: 'deepseek-flash',
     primaryTimeoutMs: 45_000,
     secondaryTimeoutMs: 45_000,
-    opencodeWacrmReservePct: 15,
-    opencodeGlobalPreventivePct: 75,
-    opencodeMarginPct: 25,
+    opencode5hPreventiveEnabled: false,
+    opencode5hPreventivePct: 90,
+    opencodeWeeklyPreventiveEnabled: true,
+    opencodeWeeklyPreventivePct: 90,
+    opencodeMonthlyPreventiveEnabled: false,
+    opencodeMonthlyPreventivePct: 90,
     circuitFailureThreshold: 3,
     circuitCooldownSeconds: 120,
     systemPrompt: null,
@@ -79,40 +82,90 @@ describe('AI Resilience, Fallback & Quota Guard', () => {
     }
   })
 
-  it('blocks OpenCode Go proactively when 5h, weekly, or monthly preventive quota >= 75% and routes to DeepSeek', async () => {
+  it('uses full capacity on disabled windows (5h/monthly at 95%) and triggers fallback at weekly >= 90% or any 100% exhaustion', async () => {
+    // 1. 5h and monthly at 95% with preventive disabled, weekly at 50% -> MUST allow OpenCode Go
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          rolling5h: { usagePercent: 80, resetInSec: 1200 },
-          weekly: { usagePercent: 20 },
-          monthly: { usagePercent: 30 },
+          rolling5h: { usagePercent: 95, resetInSec: 1200 },
+          weekly: { usagePercent: 50 },
+          monthly: { usagePercent: 95 },
         }),
         { status: 200 },
       ),
     )
-    const ocSpy = vi.spyOn(opencodeProvider, 'generateOpenCodeGo')
-    vi.spyOn(deepseekProvider, 'generateDeepSeek').mockResolvedValueOnce({
-      text: 'Atendimento contínuo via DeepSeek',
+    const ocSpy = vi.spyOn(opencodeProvider, 'generateOpenCodeGo').mockResolvedValueOnce({
+      text: 'Resposta normal GLM 5.3',
       usage: { promptTokens: 50, completionTokens: 10, totalTokens: 60 },
     })
 
-    const res = await executeAiInference({
+    const okRes = await executeAiInference({
       config: makeConfig(),
       mode: 'auto_reply',
       systemPrompt: 'Clara',
       messages: [{ role: 'user', content: 'Olá' }],
     })
+    expect(ocSpy).toHaveBeenCalledTimes(1)
+    expect(okRes.provider).toBe('opencode_go')
 
-    expect(ocSpy).not.toHaveBeenCalled()
-    expect(res.provider).toBe('deepseek')
-    expect(res.fallbackUsed).toBe(true)
+    // 2. Weekly at 92% (>= 90% preventive enabled) -> triggers immediate fallback to DeepSeek
+    clearOpenCodeQuotaCache()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          rolling5h: { usagePercent: 10 },
+          weekly: { usagePercent: 92, resetInSec: 3600 },
+          monthly: { usagePercent: 40 },
+        }),
+        { status: 200 },
+      ),
+    )
+    const dsSpy = vi.spyOn(deepseekProvider, 'generateDeepSeek').mockResolvedValueOnce({
+      text: 'Atendimento contínuo via DeepSeek',
+      usage: { promptTokens: 50, completionTokens: 10, totalTokens: 60 },
+    })
+
+    const fallbackRes = await executeAiInference({
+      config: makeConfig(),
+      mode: 'auto_reply',
+      systemPrompt: 'Clara',
+      messages: [{ role: 'user', content: 'Olá' }],
+    })
+    expect(ocSpy).toHaveBeenCalledTimes(1) // not called a second time
+    expect(dsSpy).toHaveBeenCalledTimes(1)
+    expect(fallbackRes.provider).toBe('deepseek')
+    expect(fallbackRes.fallbackUsed).toBe(true)
+
+    // 3. Real exhaustion (100%) on 5h even with preventive disabled -> triggers immediate fallback
+    clearOpenCodeQuotaCache()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          rolling5h: { usagePercent: 100, resetInSec: 600 },
+          weekly: { usagePercent: 20 },
+          monthly: { usagePercent: 20 },
+        }),
+        { status: 200 },
+      ),
+    )
+    dsSpy.mockResolvedValueOnce({
+      text: 'Fallback por esgotamento real de 5h',
+      usage: { promptTokens: 50, completionTokens: 10, totalTokens: 60 },
+    })
+    const exhaustedRes = await executeAiInference({
+      config: makeConfig(),
+      mode: 'auto_reply',
+      systemPrompt: 'Clara',
+      messages: [{ role: 'user', content: 'Oi' }],
+    })
+    expect(exhaustedRes.provider).toBe('deepseek')
+    expect(exhaustedRes.fallbackUsed).toBe(true)
   })
 
   it('does NOT treat unavailable OpenCode quota endpoint as quota exhaustion (fail-open)', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('ECONNREFUSED'))
     const gate = await checkOpenCodeGoQuotaGate({
       apiKey: 'oc-key',
-      globalPreventivePct: 75,
       bypassCache: true,
     })
     expect(gate.allowed).toBe(true)

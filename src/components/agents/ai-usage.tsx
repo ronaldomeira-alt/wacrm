@@ -105,8 +105,8 @@ interface UsageResponse {
       weekly: { usagePercent: number } | null;
       monthly: { usagePercent: number; usageDollars: number; limitDollars: number } | null;
     };
-    wacrmReservePct: number;
-    globalPreventivePct: number;
+    weeklyPreventiveEnabled: boolean;
+    weeklyPreventivePct: number;
   } | null;
 }
 
@@ -406,7 +406,9 @@ export function AiUsageCard() {
               <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs">
                 <span className="font-medium">Assinatura Global OpenCode Go (compartilhada com OpenBots):</span>{' '}
                 {data.opencode_subscription.quota.monthly.usagePercent.toFixed(1)}% da franquia mensal utilizada
-                (teto preventivo WACRM: {data.opencode_subscription.globalPreventivePct}% · reserva planejada: {data.opencode_subscription.wacrmReservePct}%).
+                {data.opencode_subscription.weeklyPreventiveEnabled
+                  ? ` (limite preventivo semanal ativo em ${data.opencode_subscription.weeklyPreventivePct}%).`
+                  : '.'}
               </div>
             )}
 

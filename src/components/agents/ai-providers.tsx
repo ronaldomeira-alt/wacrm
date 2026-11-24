@@ -79,9 +79,12 @@ interface ProvidersPayload {
     secondaryModel: string | null;
     primaryTimeoutMs: number;
     secondaryTimeoutMs: number;
-    opencodeWacrmReservePct: number;
-    opencodeGlobalPreventivePct: number;
-    opencodeMarginPct: number;
+    opencode5hPreventiveEnabled: boolean;
+    opencode5hPreventivePct: number;
+    opencodeWeeklyPreventiveEnabled: boolean;
+    opencodeWeeklyPreventivePct: number;
+    opencodeMonthlyPreventiveEnabled: boolean;
+    opencodeMonthlyPreventivePct: number;
     circuitFailureThreshold: number;
     circuitCooldownSeconds: number;
     hasApiKey: boolean;
@@ -153,9 +156,12 @@ export function AiProvidersPanel() {
   const [secondaryModel, setSecondaryModel] = useState('');
   const [primaryTimeoutSec, setPrimaryTimeoutSec] = useState('45');
   const [secondaryTimeoutSec, setSecondaryTimeoutSec] = useState('45');
-  const [reservePct, setReservePct] = useState('15');
-  const [globalPreventivePct, setGlobalPreventivePct] = useState('75');
-  const [marginPct, setMarginPct] = useState('25');
+  const [limit5hEnabled, setLimit5hEnabled] = useState(false);
+  const [limit5hPct, setLimit5hPct] = useState('90');
+  const [limitWeeklyEnabled, setLimitWeeklyEnabled] = useState(true);
+  const [limitWeeklyPct, setLimitWeeklyPct] = useState('90');
+  const [limitMonthlyEnabled, setLimitMonthlyEnabled] = useState(false);
+  const [limitMonthlyPct, setLimitMonthlyPct] = useState('90');
   const [failureThreshold, setFailureThreshold] = useState('3');
   const [opencodeGoKeyInput, setOpencodeGoKeyInput] = useState('');
 
@@ -173,9 +179,12 @@ export function AiProvidersPanel() {
       setSecondaryModel(json.settings.secondaryModel ?? '');
       setPrimaryTimeoutSec(String(Math.round(json.settings.primaryTimeoutMs / 1000)));
       setSecondaryTimeoutSec(String(Math.round(json.settings.secondaryTimeoutMs / 1000)));
-      setReservePct(String(json.settings.opencodeWacrmReservePct));
-      setGlobalPreventivePct(String(json.settings.opencodeGlobalPreventivePct));
-      setMarginPct(String(json.settings.opencodeMarginPct));
+      setLimit5hEnabled(Boolean(json.settings.opencode5hPreventiveEnabled));
+      setLimit5hPct(String(json.settings.opencode5hPreventivePct ?? 90));
+      setLimitWeeklyEnabled(Boolean(json.settings.opencodeWeeklyPreventiveEnabled));
+      setLimitWeeklyPct(String(json.settings.opencodeWeeklyPreventivePct ?? 90));
+      setLimitMonthlyEnabled(Boolean(json.settings.opencodeMonthlyPreventiveEnabled));
+      setLimitMonthlyPct(String(json.settings.opencodeMonthlyPreventivePct ?? 90));
       setFailureThreshold(String(json.settings.circuitFailureThreshold));
     } catch {
       toast.error('Erro ao carregar configurações dos provedores');
@@ -205,9 +214,12 @@ export function AiProvidersPanel() {
               : secondaryModel.trim() || DEFAULT_MODELS[secondaryProvider as AiProvider],
           primaryTimeoutMs: Number(primaryTimeoutSec) * 1000,
           secondaryTimeoutMs: Number(secondaryTimeoutSec) * 1000,
-          opencodeWacrmReservePct: Number(reservePct),
-          opencodeGlobalPreventivePct: Number(globalPreventivePct),
-          opencodeMarginPct: Number(marginPct),
+          opencode5hPreventiveEnabled: limit5hEnabled,
+          opencode5hPreventivePct: Number(limit5hPct),
+          opencodeWeeklyPreventiveEnabled: limitWeeklyEnabled,
+          opencodeWeeklyPreventivePct: Number(limitWeeklyPct),
+          opencodeMonthlyPreventiveEnabled: limitMonthlyEnabled,
+          opencodeMonthlyPreventivePct: Number(limitMonthlyPct),
           circuitFailureThreshold: Number(failureThreshold),
           ...(opencodeGoKeyInput.trim() ? { opencodeGoApiKey: opencodeGoKeyInput.trim() } : {}),
         }),
@@ -456,64 +468,34 @@ export function AiProvidersPanel() {
             </div>
           </div>
 
-          {/* Credencial & Limites Preventivos OpenCode Go */}
+          {/* Credencial & Limites Preventivos por Janela OpenCode Go */}
           <div className="grid gap-4 rounded-lg border border-border bg-muted/20 p-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>
-                Chave OpenCode Go{' '}
-                {data?.settings.hasOpencodeGoKey ? (
-                  <span className="text-xs text-emerald-500">(configurada no servidor)</span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">(não configurada)</span>
-                )}
-              </Label>
-              <Input
-                type="password"
-                placeholder={
-                  data?.settings.hasOpencodeGoKey
-                    ? '•••••••••••••••• (digite para substituir)'
-                    : 'Cole a chave Bearer do OpenCode Go'
-                }
-                value={opencodeGoKeyInput}
-                onChange={(e) => setOpencodeGoKeyInput(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Armazenada criptografada (AES-256-GCM) no servidor. Nunca é exibida no navegador.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs">Reserva planejada WACRM (%)</Label>
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label>
+                  Chave OpenCode Go{' '}
+                  {data?.settings.hasOpencodeGoKey ? (
+                    <span className="text-xs text-emerald-500">(configurada no servidor)</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">(não configurada)</span>
+                  )}
+                </Label>
                 <Input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={reservePct}
-                  onChange={(e) => setReservePct(e.target.value)}
+                  type="password"
+                  placeholder={
+                    data?.settings.hasOpencodeGoKey
+                      ? '•••••••••••••••• (digite para substituir)'
+                      : 'Cole a chave Bearer do OpenCode Go'
+                  }
+                  value={opencodeGoKeyInput}
+                  onChange={(e) => setOpencodeGoKeyInput(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Armazenada criptografada (AES-256-GCM) no servidor. Nunca é exibida no navegador.
+                </p>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Teto preventivo global (%)</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={globalPreventivePct}
-                  onChange={(e) => setGlobalPreventivePct(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Margem geral (%)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={marginPct}
-                  onChange={(e) => setMarginPct(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Falhas p/ abrir circuito</Label>
+                <Label className="text-xs">Falhas consecutivas p/ abrir circuito</Label>
                 <Input
                   type="number"
                   min={1}
@@ -522,6 +504,73 @@ export function AiProvidersPanel() {
                   onChange={(e) => setFailureThreshold(e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="space-y-2.5">
+              <Label className="text-xs font-medium">
+                Limites preventivos independentes (OpenCode Go)
+              </Label>
+
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+                <div className="flex items-center gap-2.5">
+                  <Switch checked={limit5hEnabled} onCheckedChange={setLimit5hEnabled} />
+                  <span className="text-xs font-medium">Janela de 5 horas</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={100}
+                    disabled={!limit5hEnabled}
+                    value={limit5hPct}
+                    onChange={(e) => setLimit5hPct(e.target.value)}
+                    className="h-8 w-20 text-right text-xs"
+                  />
+                  <span className="text-xs text-muted-foreground">%</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+                <div className="flex items-center gap-2.5">
+                  <Switch checked={limitWeeklyEnabled} onCheckedChange={setLimitWeeklyEnabled} />
+                  <span className="text-xs font-medium">Janela semanal</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={100}
+                    disabled={!limitWeeklyEnabled}
+                    value={limitWeeklyPct}
+                    onChange={(e) => setLimitWeeklyPct(e.target.value)}
+                    className="h-8 w-20 text-right text-xs"
+                  />
+                  <span className="text-xs text-muted-foreground">%</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+                <div className="flex items-center gap-2.5">
+                  <Switch checked={limitMonthlyEnabled} onCheckedChange={setLimitMonthlyEnabled} />
+                  <span className="text-xs font-medium">Janela mensal</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={100}
+                    disabled={!limitMonthlyEnabled}
+                    value={limitMonthlyPct}
+                    onChange={(e) => setLimitMonthlyPct(e.target.value)}
+                    className="h-8 w-20 text-right text-xs"
+                  />
+                  <span className="text-xs text-muted-foreground">%</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-muted-foreground">
+                Janelas desativadas usam toda a capacidade disponível. O esgotamento real (100%) de qualquer janela aciona o fallback imediatamente.
+              </p>
             </div>
           </div>
 
@@ -664,7 +713,7 @@ export function AiProvidersPanel() {
                   </div>
                 ))}
                 <p className="text-[11px] text-muted-foreground">
-                  A reserva de {reservePct}% é uma meta operacional do WACRM — não uma cota exclusiva garantida pelo OpenCode.
+                  Limites preventivos desativados usam 100% da janela; após renovação da cota, o circuito retorna automaticamente ao provedor principal.
                 </p>
               </div>
             ) : (

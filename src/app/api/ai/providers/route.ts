@@ -83,9 +83,12 @@ export async function GET() {
         secondaryModel: (row.secondary_model as string | null) ?? null,
         primaryTimeoutMs: Number(row.primary_timeout_ms ?? 45_000),
         secondaryTimeoutMs: Number(row.secondary_timeout_ms ?? 45_000),
-        opencodeWacrmReservePct: Number(row.opencode_wacrm_reserve_pct ?? 15),
-        opencodeGlobalPreventivePct: Number(row.opencode_global_preventive_pct ?? 75),
-        opencodeMarginPct: Number(row.opencode_margin_pct ?? 25),
+        opencode5hPreventiveEnabled: Boolean(row.opencode_5h_preventive_enabled ?? false),
+        opencode5hPreventivePct: Number(row.opencode_5h_preventive_pct ?? 90),
+        opencodeWeeklyPreventiveEnabled: Boolean(row.opencode_weekly_preventive_enabled ?? true),
+        opencodeWeeklyPreventivePct: Number(row.opencode_weekly_preventive_pct ?? 90),
+        opencodeMonthlyPreventiveEnabled: Boolean(row.opencode_monthly_preventive_enabled ?? false),
+        opencodeMonthlyPreventivePct: Number(row.opencode_monthly_preventive_pct ?? 90),
         circuitFailureThreshold: Number(row.circuit_failure_threshold ?? 3),
         circuitCooldownSeconds: Number(row.circuit_cooldown_seconds ?? 120),
         hasApiKey: Boolean(row.api_key),
@@ -209,14 +212,23 @@ export async function PATCH(request: Request) {
     const sTimeout = clampInt(body.secondaryTimeoutMs, 5000, 120000)
     if (sTimeout !== undefined) update.secondary_timeout_ms = sTimeout
 
-    const reservePct = clampPct(body.opencodeWacrmReservePct, 0, 100)
-    if (reservePct !== undefined) update.opencode_wacrm_reserve_pct = reservePct
+    if (typeof body.opencode5hPreventiveEnabled === 'boolean') {
+      update.opencode_5h_preventive_enabled = body.opencode5hPreventiveEnabled
+    }
+    const pct5h = clampPct(body.opencode5hPreventivePct, 1, 100)
+    if (pct5h !== undefined) update.opencode_5h_preventive_pct = pct5h
 
-    const globalPct = clampPct(body.opencodeGlobalPreventivePct, 1, 100)
-    if (globalPct !== undefined) update.opencode_global_preventive_pct = globalPct
+    if (typeof body.opencodeWeeklyPreventiveEnabled === 'boolean') {
+      update.opencode_weekly_preventive_enabled = body.opencodeWeeklyPreventiveEnabled
+    }
+    const pctWeekly = clampPct(body.opencodeWeeklyPreventivePct, 1, 100)
+    if (pctWeekly !== undefined) update.opencode_weekly_preventive_pct = pctWeekly
 
-    const marginPct = clampPct(body.opencodeMarginPct, 0, 100)
-    if (marginPct !== undefined) update.opencode_margin_pct = marginPct
+    if (typeof body.opencodeMonthlyPreventiveEnabled === 'boolean') {
+      update.opencode_monthly_preventive_enabled = body.opencodeMonthlyPreventiveEnabled
+    }
+    const pctMonthly = clampPct(body.opencodeMonthlyPreventivePct, 1, 100)
+    if (pctMonthly !== undefined) update.opencode_monthly_preventive_pct = pctMonthly
 
     const threshold = clampInt(body.circuitFailureThreshold, 1, 20)
     if (threshold !== undefined) update.circuit_failure_threshold = threshold

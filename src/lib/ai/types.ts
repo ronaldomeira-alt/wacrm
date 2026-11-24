@@ -51,9 +51,12 @@ export interface AiConfig {
   secondaryModel?: string | null
   primaryTimeoutMs?: number
   secondaryTimeoutMs?: number
-  opencodeWacrmReservePct?: number
-  opencodeGlobalPreventivePct?: number
-  opencodeMarginPct?: number
+  opencode5hPreventiveEnabled?: boolean
+  opencode5hPreventivePct?: number
+  opencodeWeeklyPreventiveEnabled?: boolean
+  opencodeWeeklyPreventivePct?: number
+  opencodeMonthlyPreventiveEnabled?: boolean
+  opencodeMonthlyPreventivePct?: number
   circuitFailureThreshold?: number
   circuitCooldownSeconds?: number
   systemPrompt: string | null

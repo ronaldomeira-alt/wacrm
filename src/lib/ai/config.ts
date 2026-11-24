@@ -13,9 +13,12 @@ interface AiConfigRow {
   secondary_model?: string | null
   primary_timeout_ms?: number | null
   secondary_timeout_ms?: number | null
-  opencode_wacrm_reserve_pct?: number | null
-  opencode_global_preventive_pct?: number | null
-  opencode_margin_pct?: number | null
+  opencode_5h_preventive_enabled?: boolean | null
+  opencode_5h_preventive_pct?: number | null
+  opencode_weekly_preventive_enabled?: boolean | null
+  opencode_weekly_preventive_pct?: number | null
+  opencode_monthly_preventive_enabled?: boolean | null
+  opencode_monthly_preventive_pct?: number | null
   circuit_failure_threshold?: number | null
   circuit_cooldown_seconds?: number | null
   system_prompt: string | null
@@ -43,7 +46,7 @@ interface AiConfigRow {
 // via that route) while still reaching the AI itself (which reads via
 // loadAiConfig below). One list, used by both paths.
 export const CONFIG_COLUMNS =
-  'provider, model, api_key, deepseek_api_key, opencode_go_api_key, fallback_enabled, secondary_provider, secondary_model, primary_timeout_ms, secondary_timeout_ms, opencode_wacrm_reserve_pct, opencode_global_preventive_pct, opencode_margin_pct, circuit_failure_threshold, circuit_cooldown_seconds, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key, identity_name, tone_style, team_presentation, global_never_rules, response_style_instructions, business_hours_start, business_hours_end, business_days, off_hours_instructions, safety_message_limit'
+  'provider, model, api_key, deepseek_api_key, opencode_go_api_key, fallback_enabled, secondary_provider, secondary_model, primary_timeout_ms, secondary_timeout_ms, opencode_5h_preventive_enabled, opencode_5h_preventive_pct, opencode_weekly_preventive_enabled, opencode_weekly_preventive_pct, opencode_monthly_preventive_enabled, opencode_monthly_preventive_pct, circuit_failure_threshold, circuit_cooldown_seconds, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key, identity_name, tone_style, team_presentation, global_never_rules, response_style_instructions, business_hours_start, business_hours_end, business_days, off_hours_instructions, safety_message_limit'
 
 /**
  * Load and decrypt the account's AI config for *use* (draft or
@@ -139,9 +142,12 @@ export async function loadAiConfig(
     secondaryModel: row.secondary_model ?? null,
     primaryTimeoutMs: row.primary_timeout_ms ?? 45_000,
     secondaryTimeoutMs: row.secondary_timeout_ms ?? 45_000,
-    opencodeWacrmReservePct: Number(row.opencode_wacrm_reserve_pct ?? 15),
-    opencodeGlobalPreventivePct: Number(row.opencode_global_preventive_pct ?? 75),
-    opencodeMarginPct: Number(row.opencode_margin_pct ?? 25),
+    opencode5hPreventiveEnabled: row.opencode_5h_preventive_enabled ?? false,
+    opencode5hPreventivePct: Number(row.opencode_5h_preventive_pct ?? 90),
+    opencodeWeeklyPreventiveEnabled: row.opencode_weekly_preventive_enabled ?? true,
+    opencodeWeeklyPreventivePct: Number(row.opencode_weekly_preventive_pct ?? 90),
+    opencodeMonthlyPreventiveEnabled: row.opencode_monthly_preventive_enabled ?? false,
+    opencodeMonthlyPreventivePct: Number(row.opencode_monthly_preventive_pct ?? 90),
     circuitFailureThreshold: row.circuit_failure_threshold ?? 3,
     circuitCooldownSeconds: row.circuit_cooldown_seconds ?? 120,
     systemPrompt: row.system_prompt,

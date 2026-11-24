@@ -269,11 +269,24 @@ export async function executeAiInference(
         isProbe = circuit.isProbe
       }
 
-      // 2. OpenCode Go proactive quota check
+      // 2. OpenCode Go proactive per-window quota check
       if (candidate.provider === 'opencode_go' && !bypassCircuitBreaker) {
         const quotaGate = await checkOpenCodeGoQuotaGate({
           apiKey: candidate.apiKey,
-          globalPreventivePct: config.opencodeGlobalPreventivePct ?? 75,
+          windows: {
+            fiveHour: {
+              enabled: config.opencode5hPreventiveEnabled ?? false,
+              pct: config.opencode5hPreventivePct ?? 90,
+            },
+            weekly: {
+              enabled: config.opencodeWeeklyPreventiveEnabled ?? true,
+              pct: config.opencodeWeeklyPreventivePct ?? 90,
+            },
+            monthly: {
+              enabled: config.opencodeMonthlyPreventiveEnabled ?? false,
+              pct: config.opencodeMonthlyPreventivePct ?? 90,
+            },
+          },
         })
         if (!quotaGate.allowed) {
           const code = quotaGate.quotaExhausted ? 'quota_exhausted' : 'invalid_key'
