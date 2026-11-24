@@ -853,7 +853,15 @@ export async function executeConversationalTurn(
   }
 
   // 2. Load Property Details & Media if propertyId is provided
-  let propertyInfo: { id: string; name: string; stage?: string | null; status?: string | null } | null = null;
+  let propertyInfo: {
+    id: string;
+    name: string;
+    stage?: string | null;
+    rawStage?: string | null;
+    status?: string | null;
+    subjectiveKnowledge?: string | null;
+    bookExtractedText?: string | null;
+  } | null = null;
   let propertyStyleInstructions: string[] = [];
   let availableMedia: PropertyMediaSummary[] = [];
   if (propertyId) {
@@ -862,19 +870,22 @@ export async function executeConversationalTurn(
         db.from('properties').select('id, name, status').eq('id', propertyId).maybeSingle(),
         db
           .from('property_ai_contexts')
-          .select('stage, response_style_instructions')
+          .select('stage, response_style_instructions, subjective_knowledge, book_extracted_text')
           .eq('property_id', propertyId)
           .maybeSingle(),
         getAvailablePropertyMedia(db, accountId, propertyId),
       ]);
 
       if (propRes.data) {
-        const rawStage = (ctxRes.data?.stage as PropertyStage) || 'lancamento';
+        const rawStage = (ctxRes.data?.stage as PropertyStage) || null;
         propertyInfo = {
           id: propRes.data.id,
           name: propRes.data.name,
-          stage: STAGE_LABELS[rawStage] || rawStage,
+          stage: rawStage ? (STAGE_LABELS[rawStage] || rawStage) : undefined,
+          rawStage,
           status: (propRes.data.status as string | null) ?? 'ativo',
+          subjectiveKnowledge: (ctxRes.data?.subjective_knowledge as string | null) ?? null,
+          bookExtractedText: (ctxRes.data?.book_extracted_text as string | null) ?? null,
         };
       }
       propertyStyleInstructions = Array.isArray(ctxRes.data?.response_style_instructions)

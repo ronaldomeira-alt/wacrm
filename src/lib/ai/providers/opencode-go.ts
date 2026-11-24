@@ -11,6 +11,8 @@ import {
 } from './shared'
 
 const OPENCODE_GO_BASE = 'https://opencode.ai/zen/go/v1'
+const JSON_RETRY_ENFORCEMENT =
+  '[INSTRUÇÃO ESTRUTURAL DE SISTEMA: Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente o esquema pedido no prompt do sistema, iniciando com { e terminando com }, sem blocos markdown e sem texto fora do JSON.]'
 
 interface OpenCodeChatResponse {
   choices?: {
@@ -59,14 +61,26 @@ interface OpenCodeResponsesApiResponse {
 
 function pickReasoningEffort(
   spec: CatalogModel | null,
-  preferred: 'low' | 'high' | 'max' = 'low',
+  preferred: 'none' | 'low' | 'high' | 'max' = 'none',
+  modelId?: string,
 ): string | undefined {
+  const normalizedModel = (modelId ?? '').trim().toLowerCase()
+  const supportsExplicitNone =
+    Boolean(spec?.capabilities.reasoningEfforts?.includes('none')) ||
+    normalizedModel.startsWith('deepseek-v4.1-flash') ||
+    normalizedModel.startsWith('glm-5.3')
+
+  if (preferred === 'none') {
+    if (spec && !spec.capabilities.reasoningSupported) return undefined
+    return supportsExplicitNone ? 'none' : undefined
+  }
+
   if (!spec) return preferred
   if (!spec.capabilities.reasoningSupported) return undefined
   const efforts = spec.capabilities.reasoningEfforts
   if (!efforts || efforts.length === 0) return undefined
   if (efforts.includes(preferred)) return preferred
-  const priority = ['low', 'minimal', 'none', 'medium', 'high', 'xhigh', 'max']
+  const priority = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
   return priority.find((e) => efforts.includes(e)) ?? efforts[0]
 }
 
@@ -75,7 +89,7 @@ function pickReasoningEffort(
  * `messages`, or `responses`) and capability metadata from `/zen/go/v1/models`.
  */
 export async function generateOpenCodeGo(
-  args: ProviderArgs & { reasoningEffort?: 'low' | 'high' | 'max' },
+  args: ProviderArgs & { reasoningEffort?: 'none' | 'low' | 'high' | 'max' },
 ): Promise<ProviderResult> {
   const {
     apiKey,
@@ -87,7 +101,7 @@ export async function generateOpenCodeGo(
     sessionId,
     structuredOutputRequired,
     maxOutputTokens,
-    reasoningEffort = 'low',
+    reasoningEffort = 'none',
   } = args
 
   if (!apiKey || !apiKey.trim()) {
@@ -97,6 +111,7 @@ export async function generateOpenCodeGo(
     })
   }
 
+  const deadline = Date.now() + timeoutMs
   const resolvedModel = model?.trim() || 'glm-5.3-flash'
   const spec = getCachedOpenCodeModelSpec({
     modelId: resolvedModel,
@@ -132,6 +147,10 @@ export async function generateOpenCodeGo(
       ? [...apiMessages, { role: 'assistant' as const, content: '{' }]
       : apiMessages
 
+    const disableThinking =
+      reasoningEffort === 'none' &&
+      resolvedModel.toLowerCase().startsWith('qwen')
+
     let res: Response
     try {
       res = await fetch(`${OPENCODE_GO_BASE}/messages`, {
@@ -145,6 +164,7 @@ export async function generateOpenCodeGo(
           model: resolvedModel,
           system: systemPrompt,
           max_tokens: effectiveMaxTokens,
+          ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
           messages: prefillMessages,
         }),
         signal: requestSignal,
@@ -179,7 +199,7 @@ export async function generateOpenCodeGo(
   }
 
   if (apiKind === 'responses') {
-    const effort = pickReasoningEffort(spec, reasoningEffort)
+    const effort = pickReasoningEffort(spec, reasoningEffort, resolvedModel)
     const supportsStructured = spec ? spec.capabilities.structuredOutput : true
 
     let res: Response
@@ -235,7 +255,7 @@ export async function generateOpenCodeGo(
   }
 
   // Default: OpenAI-compatible Chat Completions (`/zen/go/v1/chat/completions`)
-  const effort = pickReasoningEffort(spec, reasoningEffort)
+  const effort = pickReasoningEffort(spec, reasoningEffort, resolvedModel)
   const supportsStructured = spec ? spec.capabilities.structuredOutput : true
 
   let res: Response
@@ -265,11 +285,59 @@ export async function generateOpenCodeGo(
     throw await providerHttpError('OpenCode Go', res)
   }
 
-  const data = (await res.json().catch(() => null)) as OpenCodeChatResponse | null
+  let data = (await res.json().catch(() => null)) as OpenCodeChatResponse | null
   const choice = data?.choices?.[0]?.message
-  const text = structuredOutputRequired
+  let text = structuredOutputRequired
     ? (choice?.content ?? '')
     : (choice?.content || choice?.reasoning_content || '')
+
+  const remainingMs = deadline - Date.now()
+  if (
+    structuredOutputRequired &&
+    supportsStructured &&
+    (!text || typeof text !== 'string' || !text.trim()) &&
+    !signal?.aborted &&
+    remainingMs > 2000
+  ) {
+    console.warn(
+      `[opencode_go] Empty content with json_object response_format (${resolvedModel}); retrying without response_format and with strict JSON enforcement.`,
+    )
+    const retryMessages = mergedMessages.map((m) => ({ ...m }))
+    const lastIdx = retryMessages.length - 1
+    if (lastIdx >= 0 && retryMessages[lastIdx].role === 'user') {
+      retryMessages[lastIdx].content = `${retryMessages[lastIdx].content}\n\n${JSON_RETRY_ENFORCEMENT}`
+    } else {
+      retryMessages.push({ role: 'user', content: JSON_RETRY_ENFORCEMENT })
+    }
+
+    let retryRes: Response
+    try {
+      retryRes = await fetch(`${OPENCODE_GO_BASE}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: resolvedModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...retryMessages,
+          ],
+          max_tokens: effectiveMaxTokens,
+          ...(effort ? { reasoning_effort: effort } : {}),
+        }),
+        signal: buildRequestSignal(remainingMs, signal),
+      })
+    } catch (err) {
+      throw toNetworkError(err)
+    }
+
+    if (!retryRes.ok) {
+      throw await providerHttpError('OpenCode Go', retryRes)
+    }
+
+    const retryData = (await retryRes.json().catch(() => null)) as OpenCodeChatResponse | null
+    data = retryData
+    text = retryData?.choices?.[0]?.message?.content ?? ''
+  }
 
   if (!text || typeof text !== 'string' || !text.trim()) {
     throw new AiError('OpenCode Go returned an empty response.', {
