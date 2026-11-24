@@ -576,6 +576,9 @@ export function FollowupCard({
             onRefresh?.();
           }}
           compatibleProperties={item.compatibleProperties}
+          totalCompatiblePropertiesCount={
+            item.totalCompatiblePropertiesCount ?? item.compatiblePropertiesCount
+          }
           stageName={item.stageName}
           hoursSinceLastCommunication={effectiveHours}
           neverContacted={item.neverContacted}

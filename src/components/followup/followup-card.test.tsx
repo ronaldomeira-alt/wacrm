@@ -334,4 +334,64 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     expect(dialogSource).not.toContain('Necessidade principal');
     expect(dialogSource).not.toContain('Sugestão de abordagem');
   });
+
+  it('Etapa 3 — unifica Dashboard e aba Follow-up no mesmo FollowupDialog e valida expansão sob demanda ("Ver mais imóveis") preservando seleção', () => {
+    const cardSource = readFileSync(
+      join(process.cwd(), 'src/components/followup/followup-card.tsx'),
+      'utf8'
+    );
+    const dashboardCardSource = readFileSync(
+      join(process.cwd(), 'src/components/dashboard/followup-recommendations-card.tsx'),
+      'utf8'
+    );
+    const dialogSource = readFileSync(
+      join(process.cwd(), 'src/components/ai-hub/followup-dialog.tsx'),
+      'utf8'
+    );
+
+    // 1. Mesmo componente FollowupDialog e mesma prop totalCompatiblePropertiesCount no Dashboard e em /followup
+    expect(cardSource).toContain("from '@/components/ai-hub/followup-dialog'");
+    expect(dashboardCardSource).toContain("from '@/components/ai-hub/followup-dialog'");
+    expect(cardSource).toMatch(/totalCompatiblePropertiesCount=\{\s*item\.totalCompatiblePropertiesCount\s*\?\?\s*item\.compatiblePropertiesCount\s*\}/);
+    expect(dashboardCardSource).toMatch(/totalCompatiblePropertiesCount=\{\s*/);
+
+    // 2. Endpoint sob demanda e botão posicionado no DialogFooter imediatamente após "Ver conversa" e antes de "Aceitar"
+    expect(dialogSource).toContain('/properties?');
+    expect(dialogSource).toContain('exclude_ids');
+    expect(dialogSource).toContain('data-testid="followup-toggle-more-properties"');
+    expect(dialogSource).toContain('effectiveTotalCompatibleCount > compatibleProperties.length');
+    expect(dialogSource).toContain('Ver mais imóveis');
+    expect(dialogSource).toContain('Mostrar menos');
+    expect(dialogSource).toContain('Carregar mais opções');
+
+    const footerStart = dialogSource.lastIndexOf('<DialogFooter');
+    expect(footerStart).toBeGreaterThan(-1);
+    const footerSlice = dialogSource.slice(footerStart);
+    const convIdx = footerSlice.indexOf('Ver conversa');
+    const moreIdx = footerSlice.indexOf('Ver mais imóveis');
+    const acceptIdx = footerSlice.indexOf('Aceitar');
+    expect(convIdx).toBeGreaterThan(-1);
+    expect(moreIdx).toBeGreaterThan(convIdx);
+    expect(acceptIdx).toBeGreaterThan(moreIdx);
+
+    // 3. Preservação integral dos selecionados ao recolher ("Mostrar menos") e derivação única via allKnownProperties
+    expect(dialogSource).toContain('allKnownProperties.filter((p) => selectedPropertyIds.includes(p.propertyId))');
+    expect(dialogSource).toContain('data-testid="followup-hidden-extra-selected-badge"');
+
+    // 4. Janela aberta (múltipla seleção) vs janela encerrada (seleção única global mantendo slug/URL do imóvel escolhido)
+    expect(dialogSource).toContain('selectedPropertyIds');
+    expect(dialogSource).toContain('FOLLOWUP_REQUIRED_TEMPLATE_NAME');
+
+    // 5. FollowupCard continua renderizando normalmente quando item possui totalCompatiblePropertiesCount > compatibleProperties.length
+    const htmlWithMore = renderToStaticMarkup(
+      React.createElement(FollowupCard, {
+        item: makeItem({
+          compatiblePropertiesCount: 3,
+          totalCompatiblePropertiesCount: 6,
+        }),
+        onUpdateStatus: vi.fn(),
+      })
+    );
+    expect(htmlWithMore).toContain('Fernanda Oliveira');
+  });
 });

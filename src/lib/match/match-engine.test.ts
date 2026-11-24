@@ -904,7 +904,8 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
     expect(evalApto.matchScore).toBeGreaterThanOrEqual(85);
   });
 
-  it('12. Etapa 2 — Caso real Vilela (plantas maiores de 50 a 75 m²): elimina unidades de 19, 20 e 22 m² e impede que preço de unidade de 21,6 m² represente planta de 63 m²', () => {
+  it('12. Etapa 3 — Sugestão da equipe vs. necessidade confirmada: Vilela (sugestão não confirmada pela Clara) vs. Aldeci (plantas maiores confirmadas) + proteção planta vs. preço', () => {
+    // 1. Caso real Vilela: Clara sugeriu unir flats para 50 ou 75 m², mas Vilela não confirmou exigência -> largerPlansSource === 'team_suggested'
     const vilelaProfile = buildProfileFromData(
       {
         id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
@@ -917,12 +918,12 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
       },
       {
         summary: {
-          purpose: ['Moradia', 'Investimento'],
+          purpose: ['moradia', 'investimento'],
           property_type: ['flat'],
           location: ['Bessa'],
-          price_min: 350000,
+          price_min: null,
           notes:
-            'Interesse inicial no Mahal Resort no Bessa para moradia e investimento. Solicitou valores e avalia possibilidade de unir unidades para formar plantas de 50 ou 75 m².',
+            'Interesse inicial no Mahal Resort (Bessa). Aceita avaliar plantas maiores (50 ou 75 m²) por união de unidades, conforme oferecido pelo atendente — sem confirmação explícita do cliente.',
         },
       },
       [],
@@ -931,16 +932,69 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
           source_id: '120252018175280493',
           headline: 'Rooftop com vista pro mar no Bessa',
         },
-      }
+      },
+      'Sim, gostaria de saber mais! Os dois. Gostaria de saber os valores'
     );
 
-    expect(vilelaProfile.prefersLargerPlans).toBe(true);
-    expect(vilelaProfile.areaMin).toBe(50);
-    expect(vilelaProfile.areaMax).toBe(75);
-    expect(vilelaProfile.propertyTypes).toContain('Apartamento');
-    expect(vilelaProfile.propertyTypes.map((t) => t.toLowerCase())).not.toContain('flat');
+    expect(vilelaProfile.largerPlansSource).toBe('team_suggested');
+    expect(vilelaProfile.prefersLargerPlans).toBe(false);
+    expect(vilelaProfile.areaMin).toBeNull();
+    expect(vilelaProfile.propertyTypes).toContain('flat');
+    // Sem orçamento e quartos declarados, a confiança da avaliação é menor do que a de um perfil completo
+    const flatMahal = createMockProperty({
+      propertyId: 'prop-flat-25',
+      title: 'Mahal Resort',
+      propertyType: 'flat',
+      neighborhood: 'Bessa',
+      priceMin: 350000,
+      priceMax: 350000,
+      bedroomsMin: 1,
+      bedroomsMax: 1,
+      areaMin: 25,
+      areaMax: 25,
+    });
+    const evalVilela = evaluateMatch(vilelaProfile, flatMahal);
+    expect(evalVilela.eligible).toBe(true);
+    expect(evalVilela.evaluationConfidence).toBeLessThan(70);
 
-    // 1. Unidade de 18,94 m² (Studios e apartamentos de 1 quarto no Bessa) -> ELIMINADA (nunca 92%)
+    // 2. Caso real Aldeci / cliente que confirmou "Maior, com certeza" (plantas de 50 a 75 m²) -> largerPlansSource === 'customer_declared'
+    const largerPlansConfirmedProfile = buildProfileFromData(
+      {
+        id: 'd0e1a261-a410-423c-8c44-afb7e40747dd',
+        account_id: 'acc-1',
+        name: 'Aldeci Moraes',
+        phone: '5583990001122',
+        ai_score: 6,
+        paused_at: null,
+        archived_at: null,
+      },
+      {
+        summary: {
+          purpose: ['Moradia'],
+          property_type: ['Flat'],
+          location: ['Bessa'],
+          price_min: 350000,
+          notes: 'Busca plantas maiores (50 ou 75 m²) para moradia no Bessa.',
+        },
+      },
+      [],
+      {
+        ctwa_referral: {
+          source_id: '120252018175280493',
+          headline: 'Rooftop com vista pro mar no Bessa',
+        },
+      },
+      'Moradia. Maior, com certeza. E o preço?'
+    );
+
+    expect(largerPlansConfirmedProfile.largerPlansSource).toBe('customer_declared');
+    expect(largerPlansConfirmedProfile.prefersLargerPlans).toBe(true);
+    expect(largerPlansConfirmedProfile.areaMin).toBe(50);
+    expect(largerPlansConfirmedProfile.areaMax).toBe(75);
+    expect(largerPlansConfirmedProfile.propertyTypes).toContain('Apartamento');
+    expect(largerPlansConfirmedProfile.propertyTypes.map((t) => t.toLowerCase())).not.toContain('flat');
+
+    // Unidades de 18,94 m² e 19,85 m² -> ELIMINADAS
     const unit19m = createMockProperty({
       propertyId: 'prop-19m',
       title: 'Studios e apartamentos de 1 quarto no Bessa',
@@ -953,9 +1007,8 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
       areaMin: 18.94,
       areaMax: 18.94,
     });
-    expect(evaluateMatch(vilelaProfile, unit19m).eligible).toBe(false);
+    expect(evaluateMatch(largerPlansConfirmedProfile, unit19m).eligible).toBe(false);
 
-    // 2. Unidade de 19,85 m² (Park H2orizon, 0 quartos) -> ELIMINADA
     const unit20m = createMockProperty({
       propertyId: 'prop-20m',
       title: 'Park H2orizon',
@@ -968,9 +1021,9 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
       areaMin: 19.85,
       areaMax: 19.85,
     });
-    expect(evaluateMatch(vilelaProfile, unit20m).eligible).toBe(false);
+    expect(evaluateMatch(largerPlansConfirmedProfile, unit20m).eligible).toBe(false);
 
-    // 3. Empreendimento misto (orulo-84567: 21,6 m² a 63,3 m², mas preço único R$ 299.012 referente à unidade de 21,6 m²) -> ELIMINADO (Seção 6)
+    // Empreendimento misto (orulo-84567: 21,6 m² a 63,3 m², preço único R$ 299.012 referente à unidade de 21,6 m²) -> ELIMINADO (Seção 17)
     const mixed22to63m = createMockProperty({
       propertyId: 'prop-mixed-22m',
       title: 'Apartamento no Bessa (orulo-84567)',
@@ -983,11 +1036,11 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
       areaMin: 21.6,
       areaMax: 63.3,
     });
-    const evalMixed = evaluateMatch(vilelaProfile, mixed22to63m);
+    const evalMixed = evaluateMatch(largerPlansConfirmedProfile, mixed22to63m);
     expect(evalMixed.eligible).toBe(false);
     expect(evalMixed.eliminatedReason).toContain('21.6 m²');
 
-    // 4. Apartamento real com planta de 54,7 m² e 2 quartos no Bessa -> ELEGÍVEL com alta compatibilidade
+    // Apartamento real com planta de 54,7 m² e 2 quartos no Bessa -> ELEGÍVEL
     const apto55m = createMockProperty({
       propertyId: 'prop-55m',
       title: 'Apartamento no Bessa 55m²',
@@ -1000,9 +1053,9 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
       areaMin: 54.7,
       areaMax: 105.6,
     });
-    const eval55m = evaluateMatch(vilelaProfile, apto55m);
+    const eval55m = evaluateMatch(largerPlansConfirmedProfile, apto55m);
     expect(eval55m.eligible).toBe(true);
-    expect(eval55m.matchScore).toBeGreaterThanOrEqual(88);
+    expect(eval55m.matchScore).toBeGreaterThanOrEqual(85);
   });
 
   it('13. Etapa 2 — Limite financeiro inegociável vs. trava anti-compensação estrutural (<= 59%)', () => {

@@ -11,10 +11,9 @@ import {
   type ContactRow,
   type TagWithJoin,
 } from '@/lib/match/profile-builder';
-import { evaluateMatch } from '@/lib/match/engine';
 import { calculateProfileMaturity } from '@/lib/match/maturity';
-import { resolveValidatedPublicPropertyUrl } from '@/lib/match/smart-send';
-import type { DeliveryStatus, LeadSearchProfile, PropertyProjection } from '@/lib/match/types';
+import { buildCompatibleSalePropertiesForLead } from '@/lib/followup/compatible-properties';
+import type { LeadSearchProfile } from '@/lib/match/types';
 import {
   FOLLOWUP_MAX_RECOMMENDED_PROPERTIES,
   calculateFollowupCommercialPriority,
@@ -28,10 +27,8 @@ import {
   extractLeadPrimaryNeed,
   filterFollowupItems,
   getFollowupRecencyTier,
-  propertyViolatesExplicitRestrictions,
   reconcileFollowupReasonAndApproach,
   summarizeConversationMessages,
-  type CompatiblePropertySummary,
   type ConversationMessageStats,
   type EnrichedFollowupItem,
   type FollowupDateFilter,
@@ -59,66 +56,6 @@ interface RawFollowupPayload {
   score?: number | null;
   draft?: Record<string, unknown> | null;
   [key: string]: unknown;
-}
-
-/**
- * Resolve o link público validado de uma projeção do Match, extraindo o identificador
- * público (`dev-...`) do `cover_url` quando `public_url` estiver nulo na tabela de projeções.
- */
-function resolveCompatiblePropertyPublicUrl(prop: {
-  public_url?: unknown;
-  cover_url?: unknown;
-  code?: unknown;
-  property_id?: unknown;
-}): string | null {
-  const explicitUrl =
-    typeof prop.public_url === 'string' && prop.public_url.trim() ? prop.public_url.trim() : null;
-  const coverUrl =
-    typeof prop.cover_url === 'string' && prop.cover_url.trim() ? prop.cover_url.trim() : null;
-  const coverInventoryId = coverUrl?.match(/\/properties\/([^/]+)/)?.[1]?.trim() || null;
-  const codeOrId =
-    typeof prop.code === 'string' && prop.code.trim()
-      ? String(prop.property_id || '').trim() || null
-      : null;
-
-  const fallbackPageId = explicitUrl ? null : coverInventoryId || codeOrId;
-  const resolved = resolveValidatedPublicPropertyUrl(explicitUrl, fallbackPageId);
-  return resolved.url;
-}
-
-function toPropertyProjection(
-  prop: Record<string, unknown>,
-  accountId: string
-): PropertyProjection {
-  const rawDelivery = String(prop.delivery_status || 'pronto').trim().toLowerCase();
-  const deliveryStatus: DeliveryStatus =
-    rawDelivery === 'planta' || rawDelivery === 'em_construcao'
-      ? (rawDelivery as DeliveryStatus)
-      : 'pronto';
-  return {
-    propertyId: String(prop.property_id || ''),
-    accountId: String(prop.account_id || accountId),
-    status: 'ativo',
-    operation: String(prop.operation || 'venda').toLowerCase() === 'locacao' ? 'locacao' : 'venda',
-    title: String(prop.title || 'Imóvel compatível'),
-    code: prop.code ? String(prop.code) : null,
-    propertyType: String(prop.property_type || 'apartamento'),
-    neighborhood: String(prop.neighborhood || ''),
-    city: String(prop.city || 'João Pessoa'),
-    priceMin: Number(prop.price_min || 0),
-    priceMax: Number(prop.price_max || prop.price_min || 0),
-    bedroomsMin: prop.bedrooms_min != null ? Number(prop.bedrooms_min) : null,
-    bedroomsMax: prop.bedrooms_max != null ? Number(prop.bedrooms_max) : null,
-    areaMin: prop.area_min != null ? Number(prop.area_min) : null,
-    areaMax: prop.area_max != null ? Number(prop.area_max) : null,
-    deliveryStatus,
-    deliveryDeadline: prop.delivery_deadline ? String(prop.delivery_deadline) : null,
-    features: Array.isArray(prop.features)
-      ? (prop.features as unknown[]).map((f) => String(f))
-      : [],
-    coverUrl: prop.cover_url ? String(prop.cover_url) : null,
-    publicUrl: prop.public_url ? String(prop.public_url) : null,
-  };
 }
 
 export async function GET(request: Request) {
@@ -384,6 +321,7 @@ export async function GET(request: Request) {
     const latestConvByContactMap = new Map<string, Record<string, unknown>>();
     const msgStatsByConversationMap = new Map<string, ConversationMessageStats>();
     const recentMessagesTextByConvMap = new Map<string, string>();
+    const recentBusinessTextsByConvMap = new Map<string, string[]>();
     const dealsByContactMap = new Map<
       string,
       { stageId: string; stageName: string; stageColor: string | null }
@@ -394,6 +332,10 @@ export async function GET(request: Request) {
     const sharedPropertyKeysByLead = new Map<string, Set<string>>();
     const lastShareAtByLead = new Map<string, number>();
     const rawMatchesByLead = new Map<string, Array<Record<string, unknown>>>();
+
+    if (propertiesRes.error) {
+      console.error('[api/followup GET] error fetching property_match_projections:', propertiesRes.error);
+    }
 
     await Promise.all([
       ...convChunks.map(async (chunk) => {
@@ -413,8 +355,21 @@ export async function GET(request: Request) {
               )
               .in('conversation_id', chunk)
               .order('created_at', { ascending: false })
-          ).catch(() => ({ data: null })),
+          ).catch((err) => {
+            console.error('[api/followup GET] exception querying messages:', err);
+            return { data: null, error: err };
+          }),
         ]);
+
+        if (convRes.error) {
+          console.error('[api/followup GET] error querying conversations:', convRes.error);
+        }
+        if ((msgRes as { error?: unknown })?.error) {
+          console.error(
+            '[api/followup GET] error querying messages:',
+            (msgRes as { error?: unknown }).error
+          );
+        }
 
         for (const c of (convRes.data || []) as Array<Record<string, unknown>>) {
           const cid = String(c.id || '');
@@ -447,6 +402,17 @@ export async function GET(request: Request) {
             .join(' ');
           if (customerTexts) {
             recentMessagesTextByConvMap.set(cid, customerTexts);
+          }
+          const businessTexts = list
+            .filter((m) => {
+              const s = String(m.sender_type || '').toLowerCase();
+              return (s === 'agent' || s === 'bot') && (m.content_text || m.transcript_text);
+            })
+            .slice(0, 8)
+            .map((m) => String(m.content_text || m.transcript_text || '').trim())
+            .filter((t) => Boolean(t) && !/instagram\.com\/ronaldomeiracorretor/i.test(t));
+          if (businessTexts.length > 0) {
+            recentBusinessTextsByConvMap.set(cid, businessTexts);
           }
         }
       }),
@@ -677,28 +643,17 @@ export async function GET(request: Request) {
           paused_at: (rawContact.paused_at as string | null) ?? null,
           archived_at: (rawContact.archived_at as string | null) ?? null,
         };
-        const mergedSummary: Record<string, unknown> | null =
-          summary || recentCustomerTexts
-            ? {
-                ...(summary || {}),
-                notes: [
-                  typeof summary?.notes === 'string' ? summary.notes.trim() : '',
-                  recentCustomerTexts,
-                ]
-                  .filter(Boolean)
-                  .join(' | '),
-              }
-            : null;
         profile = buildProfileFromData(
           contactForProfile,
-          mergedSummary ? { summary: mergedSummary } : null,
+          summary ? { summary } : null,
           contactTags,
           conv
             ? {
                 ctwa_referral:
                   (conv.ctwa_referral as Record<string, unknown> | null) ?? null,
               }
-            : null
+            : null,
+          recentCustomerTexts
         );
         profileMaturity = calculateProfileMaturity(profile).maturity;
       }
@@ -808,174 +763,55 @@ export async function GET(request: Request) {
         lastCustomerText: msgStats?.lastCustomerText ?? convLastMessageText,
       });
 
-      // Imóveis compatíveis de VENDA com link público válido, reavaliados contra o perfil estruturado unificado (Seções 3, 4, 5 e 6)
+      // Imóveis compatíveis de VENDA com link público válido, reavaliados contra o perfil estruturado unificado
       const sharedSet = sharedPropertyKeysByLead.get(contactId) ?? new Set<string>();
       const leadRawMatches = rawMatchesByLead.get(contactId) || [];
-      const compatibleList: CompatiblePropertySummary[] = [];
-      const seenPropIds = new Set<string>();
-      const allExcludedTypes = Array.from(
-        new Set([...(profile?.excludedPropertyTypes ?? []), ...restrictions.excludedTypes])
-      );
-
-      for (const m of leadRawMatches) {
-        const propId = String(m.property_id || '');
-        if (!propId || seenPropIds.has(propId)) continue;
-        const prop = projectionsMap.get(propId);
-        if (!prop) continue;
-
-        const propOperation = String(prop.operation || '').toLowerCase();
-        if (propOperation !== 'venda') continue;
-
-        const propTitle = String(prop.title || 'Imóvel compatível');
-        const propType = prop.property_type ? String(prop.property_type) : null;
-
-        // Restrição explícita é obrigatória
-        if (
-          propertyViolatesExplicitRestrictions(
-            { propertyType: propType, title: propTitle },
-            allExcludedTypes
-          )
-        ) {
-          continue;
-        }
-
-        // Reavaliação estrutural ao vivo (elimina studios/unidades de 19–22m² quando o cliente busca plantas maiores ou 2+ quartos)
-        let effectiveMatchScore = Math.round(Number(m.match_score || 0));
-        const effectivePriority = Number(m.commercial_priority || 0);
-        const breakdown =
-          m.score_breakdown && typeof m.score_breakdown === 'object'
-            ? (m.score_breakdown as Record<string, unknown>)
-            : {};
-        let effectiveReasons = Array.isArray(breakdown.reasons)
-          ? (breakdown.reasons as unknown[]).map((r) => String(r)).filter(Boolean)
-          : [];
-
-        if (profile) {
-          const liveEval = evaluateMatch(profile, toPropertyProjection(prop, accountId));
-          if (!liveEval.eligible || liveEval.matchScore < 70) {
-            continue;
-          }
-          effectiveMatchScore = liveEval.matchScore;
-          const liveReasons = liveEval.scoreBreakdown?.reasons ?? [];
-          if (liveReasons.length > 0 && effectiveReasons.length === 0) {
-            effectiveReasons = liveReasons;
-          } else if (profile.prefersLargerPlans || profile.budgetIsFlexibleFromAd) {
-            effectiveReasons = liveReasons;
-          }
-        }
-
-        // Cada imóvel recomendado precisa de um link público válido e compartilhável
-        const resolvedPublicUrl = resolveCompatiblePropertyPublicUrl(prop);
-        if (!resolvedPublicUrl) continue;
-
-        seenPropIds.add(propId);
-        compatibleList.push({
-          matchId: String(m.id || ''),
-          propertyId: propId,
-          title: propTitle,
-          code: prop.code ? String(prop.code) : null,
-          neighborhood: String(prop.neighborhood || ''),
-          city: String(prop.city || 'João Pessoa'),
-          operation: 'venda',
-          propertyType: propType,
-          priceMin: Number(prop.price_min || 0),
-          priceMax: Number(prop.price_max || 0),
-          bedroomsMin: prop.bedrooms_min != null ? Number(prop.bedrooms_min) : null,
-          bedroomsMax: prop.bedrooms_max != null ? Number(prop.bedrooms_max) : null,
-          areaMin: prop.area_min != null ? Number(prop.area_min) : null,
-          areaMax: prop.area_max != null ? Number(prop.area_max) : null,
-          deliveryStatus: prop.delivery_status ? String(prop.delivery_status) : null,
-          coverUrl: prop.cover_url ? String(prop.cover_url) : null,
-          publicUrl: resolvedPublicUrl,
-          matchScore: effectiveMatchScore,
-          commercialPriority: effectivePriority,
-          matchStatus: String(m.match_status || 'novo'),
-          reasons: effectiveReasons,
-          alreadyShared: sharedSet.has(propId) || String(m.match_status || '') === 'enviado',
-        });
-      }
-
-      // Se os matches pré-gravados eram de perfil antigo (ex.: studios de 19–22m² eliminados porque o cliente
-      // declarou busca por plantas maiores ou 2+ quartos), avalia as projeções ativas de venda em tempo real
-      if (
-        compatibleList.length < FOLLOWUP_MAX_RECOMMENDED_PROPERTIES &&
-        profile &&
-        profile.operation === 'venda' &&
-        !profile.isShortStayOnly &&
-        !profile.isSellerOrOutOfArea &&
-        (leadRawMatches.length > 0 || profile.prefersLargerPlans || profile.bedrooms.length > 0)
-      ) {
-        for (const [propId, prop] of projectionsMap.entries()) {
-          if (seenPropIds.has(propId)) continue;
-          const propTitle = String(prop.title || 'Imóvel compatível');
-          const propType = prop.property_type ? String(prop.property_type) : null;
-          if (
-            propertyViolatesExplicitRestrictions(
-              { propertyType: propType, title: propTitle },
-              allExcludedTypes
-            )
-          ) {
-            continue;
-          }
-          const resolvedPublicUrl = resolveCompatiblePropertyPublicUrl(prop);
-          if (!resolvedPublicUrl) continue;
-
-          const liveEval = evaluateMatch(profile, toPropertyProjection(prop, accountId));
-          if (!liveEval.eligible || liveEval.matchScore < 70) continue;
-
-          seenPropIds.add(propId);
-          compatibleList.push({
-            matchId: `live-${contactId}-${propId}`,
-            propertyId: propId,
-            title: propTitle,
-            code: prop.code ? String(prop.code) : null,
-            neighborhood: String(prop.neighborhood || ''),
-            city: String(prop.city || 'João Pessoa'),
-            operation: 'venda',
-            propertyType: propType,
-            priceMin: Number(prop.price_min || 0),
-            priceMax: Number(prop.price_max || 0),
-            bedroomsMin: prop.bedrooms_min != null ? Number(prop.bedrooms_min) : null,
-            bedroomsMax: prop.bedrooms_max != null ? Number(prop.bedrooms_max) : null,
-            areaMin: prop.area_min != null ? Number(prop.area_min) : null,
-            areaMax: prop.area_max != null ? Number(prop.area_max) : null,
-            deliveryStatus: prop.delivery_status ? String(prop.delivery_status) : null,
-            coverUrl: prop.cover_url ? String(prop.cover_url) : null,
-            publicUrl: resolvedPublicUrl,
-            matchScore: liveEval.matchScore,
-            commercialPriority: liveEval.matchScore,
-            matchStatus: 'novo',
-            reasons: liveEval.scoreBreakdown?.reasons ?? [],
-            alreadyShared: sharedSet.has(propId),
-          });
-        }
-      }
-
-      // Prioriza opções ainda não apresentadas quando houver empate próximo de compatibilidade
-      compatibleList.sort((a, b) => {
-        if (Boolean(a.alreadyShared) !== Boolean(b.alreadyShared)) {
-          return a.alreadyShared ? 1 : -1;
-        }
-        if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
-        return b.commercialPriority - a.commercialPriority;
+      const compatibleList = buildCompatibleSalePropertiesForLead({
+        accountId,
+        contactId,
+        profile,
+        rawMatches: leadRawMatches,
+        projectionsMap,
+        sharedPropertyIds: sharedSet,
+        extraExcludedTypes: restrictions.excludedTypes,
+        includeCatalogExpansion: true,
       });
 
+      const totalCompatiblePropertiesCount = compatibleList.length;
       const topCompatibleProperties = compatibleList.slice(0, FOLLOWUP_MAX_RECOMMENDED_PROPERTIES);
 
-      // Compromisso comercial pendente da equipe (somente se evidenciado na conversa)
+      // Compromisso comercial pendente da equipe (considera mensagens e transcrições recentes, nunca inventa)
       const lastBusinessMs = timing.lastBusinessMessageAt
         ? new Date(timing.lastBusinessMessageAt).getTime()
         : 0;
       const lastShareMs = lastShareAtByLead.get(contactId) ?? 0;
+      const hoursSinceLastPropertyShare =
+        lastShareMs > 0 ? Math.max(0, (nowMs - lastShareMs) / (1000 * 60 * 60)) : null;
+      const recentBusinessTexts = conversationId
+        ? recentBusinessTextsByConvMap.get(conversationId) || []
+        : [];
       const commitment = detectPendingTeamCommitment({
         lastBusinessText: msgStats?.lastBusinessText ?? null,
+        recentBusinessTexts,
         lastCustomerMessageAt: timing.lastCustomerMessageAt,
         lastBusinessMessageAt: timing.lastBusinessMessageAt,
         hasSharedPropertiesAfterLastBusiness:
           lastShareMs > 0 && lastBusinessMs > 0 && lastShareMs >= lastBusinessMs,
       });
 
-      // Avaliação de elegibilidade comercial (Seções 1, 2 e 8)
+      const hasRealConvOrMsgData = Boolean(conv || msgStats || resolvedLastCustomerAt);
+      const effectiveCustomerAtForWindow =
+        timing.lastCustomerMessageAt ??
+        (!hasRealConvOrMsgData ? String(suggestion.created_at || nowIso) : null);
+
+      const sessionWindow = evaluateFollowupSessionWindow({
+        lastCustomerMessageAt: effectiveCustomerAtForWindow,
+        isCtwaLead,
+        ctwaFepExpiresAt,
+        nowMs,
+      });
+
+      // Avaliação de elegibilidade comercial (Seções 1, 2, 19 e 22)
       const eligibility = evaluateFollowupCommercialEligibility({
         profile,
         hasPurchased,
@@ -992,6 +828,8 @@ export async function GET(request: Request) {
         interestProperty,
         awaitingBusinessReply: timing.awaitingBusinessReply,
         teamCooldownHours: FOLLOWUP_RECENT_TEAM_CONTACT_COOLDOWN_HOURS,
+        windowOpen: sessionWindow.windowOpen,
+        hoursSinceLastPropertyShare,
         nowMs,
         isHistoricalView: rowStatus !== 'pending',
       });
@@ -1012,7 +850,7 @@ export async function GET(request: Request) {
         continue;
       }
 
-      // Motivo comercial personalizado e natural (Seção 7)
+      // Motivo comercial personalizado e natural (Seções 10 e 11)
       const reconciled = reconcileFollowupReasonAndApproach({
         rawReason,
         rawApproachSummary,
@@ -1032,22 +870,15 @@ export async function GET(request: Request) {
         isCtwaOrigin: isCtwaLead,
       });
 
-      const hasRealConvOrMsgData = Boolean(conv || msgStats || resolvedLastCustomerAt);
-      const effectiveCustomerAtForWindow =
-        timing.lastCustomerMessageAt ??
-        (!hasRealConvOrMsgData ? String(suggestion.created_at || nowIso) : null);
-
-      const sessionWindow = evaluateFollowupSessionWindow({
-        lastCustomerMessageAt: effectiveCustomerAtForWindow,
-        isCtwaLead,
-        ctwaFepExpiresAt,
-        nowMs,
-      });
-
       const confidenceScore =
         typeof payload.score === 'number' && Number.isFinite(payload.score)
           ? Math.max(0, Math.min(100, Math.round(payload.score)))
           : null;
+      const evaluationConfidence =
+        topCompatibleProperties.length > 0 &&
+        typeof topCompatibleProperties[0].evaluationConfidence === 'number'
+          ? topCompatibleProperties[0].evaluationConfidence
+          : (profile?.profileConfidence ?? null);
 
       const bestMatchScore =
         topCompatibleProperties.length > 0 ? topCompatibleProperties[0].matchScore : null;
@@ -1135,6 +966,8 @@ export async function GET(request: Request) {
         lastCustomerMessagePreview: msgStats?.lastCustomerText ?? null,
         lastBusinessMessagePreview: msgStats?.lastBusinessText ?? null,
         compatiblePropertiesCount: topCompatibleProperties.length,
+        totalCompatiblePropertiesCount,
+        evaluationConfidence,
         compatibleProperties: topCompatibleProperties,
         commercialOperation: eligibility.operation,
         hasPendingCommitment: commitment.hasPendingCommitment,

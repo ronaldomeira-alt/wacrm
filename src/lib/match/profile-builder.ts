@@ -80,11 +80,14 @@ export function buildProfileFromData(
   contact: ContactRow,
   intelligence: { summary?: Record<string, unknown> } | null,
   contactTags: TagWithJoin[] | null,
-  conversation: { ctwa_referral?: Record<string, unknown> | null } | null
+  conversation: { ctwa_referral?: Record<string, unknown> | null } | null,
+  recentCustomerText?: string | null
 ): LeadSearchProfile {
   const accountId = contact.account_id;
   const rawSummary = (intelligence?.summary || {}) as Record<string, unknown>;
   const ctwaReferral = conversation?.ctwa_referral || null;
+  const cleanRecentCustomerText =
+    typeof recentCustomerText === 'string' ? recentCustomerText.trim() : '';
 
   // Processa tags por categoria e proveniência
   const tagCategories: Record<string, { names: string[]; source: InfoProvenance }[]> = {};
@@ -284,7 +287,9 @@ export function buildProfileFromData(
   const allPurposes = purposeList.map(normalizeString);
 
   const notesNorm = normalizeString(
-    [notesText, stageSignalText, intentText, profileArrText].filter(Boolean).join(' ')
+    [notesText, stageSignalText, intentText, profileArrText, cleanRecentCustomerText]
+      .filter(Boolean)
+      .join(' ')
   );
   const ctwaNorm = normalizeString(
     [
@@ -468,9 +473,50 @@ export function buildProfileFromData(
       stageSignalText,
       intentText,
       profileArrText,
+      cleanRecentCustomerText,
       ...requiredFeatures,
       ...preferredFeatures,
       JSON.stringify(reqObj),
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
+
+  const recentCustNorm = normalizeString(cleanRecentCustomerText);
+
+  // Separa sentenças de `notes` / `features` que descrevem apenas sugestões/ofertas da equipe ou da Clara
+  // sem confirmação explícita do cliente (Seções 8 e 9).
+  const TEAM_UNCONFIRMED_CLAUSE_RE =
+    /(?:sem\s+confirmacao\s+explicita|conforme\s+oferecido\s+pelo\s+atendente|oferecido\s+pel[ao]\s+(?:atendente|clara|corretor)|possibilidade\s+de\s+unir\s+(?:unidades|flats)|opcao\s+de\s+unir\s+unidades|nao\s+confirmou\s+esse\s+produto|o\s+atendente\s+ofereceu)/;
+
+  const isConfirmedCustomerClause = (text: string): boolean => {
+    const norm = normalizeString(text);
+    if (!norm) return false;
+    return !TEAM_UNCONFIRMED_CLAUSE_RE.test(norm);
+  };
+
+  const confirmedNotesSegments = notesText
+    .split(/[.;!\n]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && isConfirmedCustomerClause(s));
+
+  const confirmedFeatures = [...requiredFeatures, ...preferredFeatures].filter((f) =>
+    isConfirmedCustomerClause(f)
+  );
+
+  // Detecção adicional quando `notes` como um todo indica que plantas maiores foram apenas oferecidas pela equipe sem confirmação
+  const notesHasUnconfirmedLargerPlanOffer =
+    TEAM_UNCONFIRMED_CLAUSE_RE.test(allContextNorm) &&
+    !/\b(maior,?\s*com\s+certeza|quero\s+plantas?\s+maiores|procuro\s+plantas?\s+maiores|acima\s+de\s+\d+\s*m|a\s+partir\s+de\s+\d+\s*m)\b/.test(
+      recentCustNorm || allContextNorm
+    );
+
+  const customerDeclaredNorm = normalizeString(
+    [
+      recentCustNorm,
+      notesHasUnconfirmedLargerPlanOffer ? '' : confirmedNotesSegments.join(' '),
+      notesHasUnconfirmedLargerPlanOffer ? '' : confirmedFeatures.join(' '),
+      stageSignalText,
     ]
       .filter(Boolean)
       .join(' ')
@@ -535,7 +581,8 @@ export function buildProfileFromData(
     }
   }
 
-  // 8.3 Extração de metragem e preferência por plantas maiores ("plantas maiores", "50 ou 75 m²", "80m² +/-")
+  // 8.3 Extração de metragem e preferência por plantas maiores (Seções 8, 9, 13 e 14)
+  // Distingue claramente necessidade confirmada/declarada pelo cliente vs. sugestão não confirmada da equipe/Clara!
   let areaMin: number | null =
     typeof rawSummary.area_min === 'number' && rawSummary.area_min > 0
       ? rawSummary.area_min
@@ -548,61 +595,111 @@ export function buildProfileFromData(
       : null;
   let areaStrict = reqObj.area_strict === true;
 
-  const mentionsLargerPlans =
-    /\b(plantas?\s+maiores|mais\s+espaco|maior\s+metragem|unir\s+unidades|uniao\s+de\s+(?:unidades|flats)|apartamento\s+maior|imovel\s+maior|acha\s+(?:pequeno|compacto)|muito\s+pequeno)\b/.test(
-      allContextNorm
-    );
+  const customerLargerPlanMarkersRe =
+    /\b(plantas?\s+maiores|maior\s+metragem|maior,?\s*com\s+certeza|mais\s+espaco|apartamento\s+maior|imovel\s+maior|muito\s+pequeno|acima\s+de\s+\d+|a\s+partir\s+de\s+\d+\s*m)\b/;
+  const teamLargerPlanOfferMarkersRe =
+    /\b(plantas?\s+maiores|unir\s+unidades|uniao\s+de\s+(?:unidades|flats)|50\s*(?:ou|e|a)\s*75\s*m)\b/;
 
-  // Extrai metragens explícitas associadas a "a partir de X m²", "no mínimo X m²", "plantas de X e Y m²", "Xm² +/-"
-  const strictAreaMatch = allContextNorm.match(
-    /\b(?:a\s+partir\s+de|no\s+minimo|minimo\s+de|acima\s+de|pelo\s+menos)\s+(\d{2,3})\s*m(?:2|²|\b)/
+  const customerMentionsLargerPlans =
+    !notesHasUnconfirmedLargerPlanOffer &&
+    (customerLargerPlanMarkersRe.test(customerDeclaredNorm) ||
+      (/\b(maior|grande)\b/.test(recentCustNorm) && /\b(planta|metragem|espaco|m2|m²)\b/.test(notesNorm)));
+
+  const teamSuggestedLargerPlans =
+    !customerMentionsLargerPlans &&
+    (notesHasUnconfirmedLargerPlanOffer || teamLargerPlanOfferMarkersRe.test(allContextNorm));
+
+  // Extrai metragens explícitas SOMENTE da fala/evidência confirmada do cliente (não de ofertas não confirmadas de 50/75m²)
+  const areaSourceNorm = customerMentionsLargerPlans
+    ? `${customerDeclaredNorm} ${allContextNorm}`
+    : customerDeclaredNorm;
+
+  const strictAreaMatch = areaSourceNorm.match(
+    /\b(?:a\s+partir\s+de|no\s+minimo|minimo\s+de|acima\s+de|pelo\s+menos)\s+(\d{2,3})\s*(?:m(?:2|²|\b)|(?=\s|$))/
   );
   if (strictAreaMatch) {
     const parsed = parseInt(strictAreaMatch[1], 10);
-    if (parsed >= 30 && parsed <= 500) {
+    if (parsed >= 20 && parsed <= 500) {
       areaMin = areaMin !== null ? Math.max(areaMin, parsed) : parsed;
-      areaStrict = true;
+      if (parsed >= 22) {
+        areaStrict = true;
+      }
     }
   }
 
-  const rangeAreaMatch = allContextNorm.match(
-    /\b(?:plantas?\s+(?:maiores\s*)?(?:de|\()?\s*|formar\s+plantas?\s+de\s+|entre\s+)(\d{2,3})\s*(?:ou|e|a)\s*(\d{2,3})\s*m(?:2|²|\b)/
-  );
-  if (rangeAreaMatch) {
-    const a1 = parseInt(rangeAreaMatch[1], 10);
-    const a2 = parseInt(rangeAreaMatch[2], 10);
-    const low = Math.min(a1, a2);
-    const high = Math.max(a1, a2);
-    if (low >= 35 && low <= 500) {
-      areaMin = areaMin ?? low;
-      areaMax = areaMax ?? high;
+  if (customerMentionsLargerPlans) {
+    const rangeAreaMatch = areaSourceNorm.match(
+      /\b(?:plantas?\s+(?:maiores\s*)?(?:de|\()?\s*|entre\s+)(\d{2,3})\s*(?:ou|e|a)\s*(\d{2,3})\s*m(?:2|²|\b)/
+    );
+    if (rangeAreaMatch) {
+      const a1 = parseInt(rangeAreaMatch[1], 10);
+      const a2 = parseInt(rangeAreaMatch[2], 10);
+      const low = Math.min(a1, a2);
+      const high = Math.max(a1, a2);
+      if (low >= 35 && low <= 500) {
+        areaMin = areaMin ?? low;
+        areaMax = areaMax ?? high;
+      }
     }
-  }
 
-  const approxAreaMatch = allContextNorm.match(/\b(\d{2,3})\s*m(?:2|²)\s*(?:\+\/-|aprox|em\s+media)?/);
-  if (areaMin === null && approxAreaMatch) {
-    const val = parseInt(approxAreaMatch[1], 10);
-    // Só define areaMin se for uma metragem de busca de espaço (>= 45m²), não a descrição de um flat de 22/25m²
-    if (val >= 45 && val <= 400) {
-      areaMin = Math.round(val * 0.85);
+    const approxAreaMatch = areaSourceNorm.match(/\b(\d{2,3})\s*m(?:2|²)\s*(?:\+\/-|aprox|em\s+media)?/);
+    if (areaMin === null && approxAreaMatch) {
+      const val = parseInt(approxAreaMatch[1], 10);
+      if (val >= 45 && val <= 400) {
+        areaMin = Math.round(val * 0.85);
+      }
     }
   }
 
   const prefersLargerPlans =
-    mentionsLargerPlans || (areaMin !== null && areaMin >= 45);
+    customerMentionsLargerPlans || (areaMin !== null && areaMin >= 45);
+  const largerPlansSource: 'customer_declared' | 'team_suggested' | 'none' = prefersLargerPlans
+    ? 'customer_declared'
+    : teamSuggestedLargerPlans
+      ? 'team_suggested'
+      : 'none';
 
   if (prefersLargerPlans && areaMin === null) {
-    areaMin = 48; // Referência comercial para superar studios/flats compactos de 18–35 m²
+    areaMin = 48; // Referência comercial apenas quando o próprio cliente confirmou busca por plantas maiores
   }
 
-  // 8.4 Prevalência da conversa sobre o anúncio de origem (Seção 3):
-  // Se o cliente entrou por um anúncio de studio/flat, mas na conversa declarou que procura 2+ quartos ou plantas maiores (>= 45 m²),
-  // o perfil deve atualizar a quantidade de quartos e buscar 'Apartamento', sem ficar preso ao studio/flat do anúncio!
+  // Extrai faixa de orçamento diretamente da fala do cliente (ex.: áudios "500, 600... 400 mil") quando o summary está nulo
+  let budgetSource: 'customer_declared' | 'ad_inferred' | 'none' =
+    priceMax !== null || priceMin !== null ? 'customer_declared' : 'none';
+  if (priceMin === null && priceMax === null && cleanRecentCustomerText) {
+    const kMatches: number[] = [];
+    const rangeKRe = /\b([2-9]\d{2}|1[.,]\d{1,2})\s*(?:mil|k)?\b/g;
+    if (/\b(mil|k|valor|orcamento|entrada|financiar|r\$)\b/.test(recentCustNorm)) {
+      let km: RegExpExecArray | null;
+      while ((km = rangeKRe.exec(recentCustNorm)) !== null) {
+        const rawNum = parseFloat(km[1].replace(',', '.'));
+        if (rawNum >= 180 && rawNum <= 999) {
+          kMatches.push(rawNum * 1000);
+        } else if (rawNum >= 1 && rawNum < 10 && recentCustNorm.includes('mi')) {
+          kMatches.push(rawNum * 1_000_000);
+        }
+      }
+    }
+    if (kMatches.length >= 2) {
+      priceMin = Math.min(...kMatches);
+      priceMax = Math.max(...kMatches);
+      budgetSource = 'customer_declared';
+    } else if (kMatches.length === 1) {
+      priceMax = kMatches[0];
+      budgetSource = 'customer_declared';
+    }
+  }
+
+  // 8.4 Prevalência da conversa sobre o anúncio de origem (Seções 3 e 14):
+  // Apenas quando o cliente explicitamente declarou busca por 2+ quartos ou apartamento convencional,
+  // atualizamos a tipologia do anúncio. Se o cliente busca explicitamente "flat acima de 22m²" ou
+  // plantas maiores sem rejeitar flat/studio, preservamos a tipologia declarada!
   const explicitMultiBedRe =
-    /(?:busca|procura|quer|precisa\s+de|prefere|interesse\s+em|apartamento\s+de|apto\s+de|imovel\s+de)\s+(?:um\s+)?(?:apartamento\s+de\s+|apto\s+de\s+)?([2-5])\s*(?:ou\s*([2-5])\s*)?(?:quartos|qts|dormitorios)/g;
+    /(?:busca|procura|quer|precisa\s+de|prefere|interesse\s+em|apartamento\s+de|apto\s+de|imovel\s+de|teria\s+algum\s+apartamento\s+de)\s+(?:um\s+)?(?:apartamento\s+de\s+|apto\s+de\s+)?([2-5])\s*(?:[,eou\s]+([2-5])\s*)?(?:quartos|qts|dormitorios)/g;
   const fromConversationBedrooms: number[] = [];
   let bedMatch: RegExpExecArray | null;
-  while ((bedMatch = explicitMultiBedRe.exec(allContextNorm)) !== null) {
+  const bedContextToScan = `${recentCustNorm} ${confirmedNotesSegments.map(normalizeString).join(' ')}`;
+  while ((bedMatch = explicitMultiBedRe.exec(bedContextToScan)) !== null) {
     const b1 = parseInt(bedMatch[1], 10);
     if (b1 >= 2 && !fromConversationBedrooms.includes(b1)) fromConversationBedrooms.push(b1);
     if (bedMatch[2]) {
@@ -614,18 +711,29 @@ export function buildProfileFromData(
     bedrooms.splice(0, bedrooms.length, ...fromConversationBedrooms);
   }
 
+  const rawSummaryPropertyTypes = Array.isArray(rawSummary.property_type)
+    ? (rawSummary.property_type as unknown[]).map((t) => String(t))
+    : [];
   const wantsMultiBedroom = bedrooms.some((b) => b >= 2);
-  if (wantsMultiBedroom || prefersLargerPlans) {
+  const customerDeclaredFlat = /\bflats?\b/.test(recentCustNorm);
+  const customerDeclaredApartamento =
+    /\b(apartamento|apto)\b/.test(recentCustNorm) ||
+    rawSummaryPropertyTypes.some((t) => normalizeString(t).includes('apartamento'));
+
+  if (
+    wantsMultiBedroom ||
+    (prefersLargerPlans && (customerDeclaredApartamento || !customerDeclaredFlat))
+  ) {
     for (let i = propertyTypes.length - 1; i >= 0; i--) {
       const normT = normalizeString(propertyTypes[i]);
-      if (normT.includes('studio') || normT.includes('estudio') || normT.includes('flat')) {
+      if (normT.includes('studio') || normT.includes('estudio') || (normT.includes('flat') && !customerDeclaredFlat)) {
         propertyTypes.splice(i, 1);
       }
     }
     if (!propertyTypes.some((t) => normalizeString(t).includes('apartamento'))) {
       propertyTypes.unshift('Apartamento');
     }
-    if (wantsMultiBedroom) {
+    if (wantsMultiBedroom && fromConversationBedrooms.length > 0) {
       bedroomsStrict = true;
     }
   }
@@ -643,19 +751,38 @@ export function buildProfileFromData(
     priceStrictMax = true;
   }
 
+  const hasCtwa = !!ctwaReferral;
   let budgetIsFlexibleFromAd = false;
   let effectivePriceFlexMax = priceFlexMax;
+  const priceTagWasOnlyFromCtwa =
+    valorTags.length > 0 &&
+    !hasPurchaseValueTag &&
+    tagCategories['Faixa de valor']?.every((t) => t.source === 'ctwa');
   if (
     !priceStrictMax &&
     priceMax !== null &&
     priceMax > 0 &&
     priceMax <= 360000 &&
-    (wantsMultiBedroom || prefersLargerPlans)
+    (wantsMultiBedroom || prefersLargerPlans) &&
+    (hasCtwa || priceTagWasOnlyFromCtwa || /\b(anuncio|studio)\b/.test(allContextNorm))
   ) {
-    // O valor inicial (ex.: R$ 270k–350k) veio do anúncio de studio, mas o cliente busca apartamento maior (2+ quartos / 50+ m²)
+    // O valor inicial (ex.: R$ 270k) veio do anúncio de studio, mas o cliente busca apartamento maior (2+ quartos / 50+ m²)
     budgetIsFlexibleFromAd = true;
+    budgetSource = 'ad_inferred';
     effectivePriceFlexMax = Math.max(effectivePriceFlexMax ?? 0, priceMax * 1.9, 650000);
   }
+
+  // Calcula confiança do perfil (0–100) baseada exclusivamente nas informações reais conhecidas (Seção 16)
+  let confidencePts = 0;
+  if (operation === 'venda') confidencePts += 15;
+  if (locations.length > 0) confidencePts += 20;
+  if (propertyTypes.length > 0 && largerPlansSource !== 'team_suggested') confidencePts += 15;
+  else if (propertyTypes.length > 0) confidencePts += 8;
+  if (bedrooms.length > 0) confidencePts += 15;
+  if (budgetSource === 'customer_declared' && priceMax !== null && priceMax > 0) confidencePts += 20;
+  if (purposeList.length > 0) confidencePts += 10;
+  if (areaMin !== null || requiredFeatures.length > 0 || preferredFeatures.length > 0) confidencePts += 5;
+  const profileConfidence = Math.min(100, confidencePts);
 
   if (
     /\b(?:somente\s+no\s+bairro|apenas\s+no\s+|so\s+no\s+bessa|so\s+em\s+manaira|so\s+em\s+cabo\s+branco|nao\s+abre\s+mao\s+do\s+bairro)\b/.test(
@@ -672,8 +799,6 @@ export function buildProfileFromData(
   } else if (locations.some((l) => l.toLowerCase().includes('praia') || l.toLowerCase().includes('sul'))) {
     locationSpecificity = 'region';
   }
-
-  const hasCtwa = !!ctwaReferral;
 
   return {
     accountId,
@@ -705,6 +830,9 @@ export function buildProfileFromData(
     areaMax,
     areaStrict,
     prefersLargerPlans,
+    largerPlansSource,
+    budgetSource,
+    profileConfidence,
     excludedPropertyTypes,
     budgetIsFlexibleFromAd,
     isSellerOrOutOfArea,

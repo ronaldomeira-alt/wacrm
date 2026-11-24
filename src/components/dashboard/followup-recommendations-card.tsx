@@ -276,6 +276,10 @@ export function FollowupRecommendationsCard() {
           }}
           onResolved={handleResolved}
           compatibleProperties={selectedItem.compatibleProperties}
+          totalCompatiblePropertiesCount={
+            selectedItem.totalCompatiblePropertiesCount ??
+            selectedItem.compatiblePropertiesCount
+          }
           stageName={selectedItem.stageName}
           hoursSinceLastCommunication={
             selectedItem.hoursSinceLastCustomerMessage ?? selectedItem.hoursSinceLastCommunication

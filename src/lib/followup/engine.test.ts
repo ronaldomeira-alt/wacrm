@@ -3,13 +3,18 @@ import {
   buildObjectiveFollowupRecommendation,
   buildPersonalizedCommercialReason,
   calculateFollowupCommercialPriority,
+  canReactivateFollowupSuggestion,
   classifyFollowupTimingAndType,
+  classifyRejectionPermanence,
   compareFollowupItems,
+  detectPendingTeamCommitment,
+  evaluateFollowupCommercialEligibility,
   evaluateFollowupSessionWindow,
   extractInterestProperty,
   extractLeadPrimaryNeed,
   filterFollowupItems,
   formatNaturalElapsedContactPtBr,
+  formatNeighborhoodWithPrepositionPtBr,
   matchesFollowupDateFilter,
   reconcileFollowupReasonAndApproach,
   resolveFollowupDateFilterRange,
@@ -685,36 +690,170 @@ describe('Etapa 2 — Formatação Natural de Tempo, Transcrição de Áudio e C
     expect(stats.lastBusinessText).toContain('unidades a partir de R$ 350 mil');
   });
 
-  it('constrói motivo comercial unificado natural para o caso Vilela (plantas maiores de 50 a 75 m² no Bessa) incorporando a abordagem sem jargão burocrático', () => {
+  it('constrói motivo comercial unificado natural para cliente com plantas maiores confirmadas (50 a 75 m² no Bessa) com preposição correta e sem jargão burocrático', () => {
     const reason = buildPersonalizedCommercialReason({
-      contactName: 'Vilela',
+      contactName: 'Aldeci',
       stageName: 'Qualificação',
       interestProperty: 'Mahal Resort',
       isCtwaOrigin: true,
-      lastCustomerText: 'Gostaria de saber os valores',
+      lastCustomerText: 'Maior, com certeza',
       compatiblePropertiesCount: 3,
       opportunityType: 'resumption',
       contactState: 'resumption',
       profile: {
         operation: 'venda',
-        purpose: ['Moradia', 'Investimento'],
+        purpose: ['Moradia'],
         propertyTypes: ['Apartamento'],
         locations: ['Bessa'],
         prefersLargerPlans: true,
+        largerPlansSource: 'customer_declared',
         areaMin: 50,
         areaMax: 75,
-        priceMin: 350000,
       },
     });
 
-    expect(reason).toContain('Vilela');
+    expect(reason).toContain('Aldeci');
     expect(reason).toContain('Mahal Resort');
     expect(reason).toContain('50 a 75 m²');
-    expect(reason).toContain('Bessa');
-    expect(reason).toContain('três opções compatíveis com o espaço que ele procura');
+    expect(reason).toContain('no Bessa');
+    expect(reason).not.toContain('em Bessa');
+    expect(reason).toContain('três opções compatíveis');
     expect(reason).not.toMatch(/Lead demonstrou interesse inicial/i);
     expect(reason).not.toMatch(/Próximo passo pendente/i);
     expect(reason).not.toMatch(/Necessidade principal identificada/i);
     expect(reason).not.toMatch(/Ausência de registro de desinteresse/i);
+  });
+
+  it('Etapa 3 — preposições de bairros, caso Vilela com sugestão não confirmada pela equipe, compromisso pendente de Alex/Sirleida, cooldown 6h em janela aberta e reativação inteligente', () => {
+    // 1. Preposições corretas
+    expect(formatNeighborhoodWithPrepositionPtBr('Bessa')).toBe('no Bessa');
+    expect(formatNeighborhoodWithPrepositionPtBr('Intermares')).toBe('em Intermares');
+    expect(formatNeighborhoodWithPrepositionPtBr('Manaíra')).toBe('em Manaíra');
+    expect(formatNeighborhoodWithPrepositionPtBr('Cabo Branco')).toBe('no Cabo Branco');
+    expect(formatNeighborhoodWithPrepositionPtBr('Tambaú')).toBe('em Tambaú');
+
+    // 2. Caso Vilela: equipe apresentou possibilidade de plantas maiores sem confirmação do cliente
+    const vilelaReason = buildPersonalizedCommercialReason({
+      contactName: 'Vilela',
+      interestProperty: 'Mahal Resort',
+      isCtwaOrigin: true,
+      lastCustomerText: 'Gostaria de saber os valores',
+      compatiblePropertiesCount: 3,
+      profile: {
+        operation: 'venda',
+        purpose: ['moradia', 'investimento'],
+        propertyTypes: ['flat'],
+        locations: ['Bessa'],
+        prefersLargerPlans: false,
+        largerPlansSource: 'team_suggested',
+      },
+    });
+    expect(vilelaReason).toContain('Vilela chegou pelo Mahal Resort');
+    expect(vilelaReason).toContain('no Bessa');
+    expect(vilelaReason).toContain('para moradia e investimento');
+    expect(vilelaReason).toContain('Apresentamos a possibilidade de plantas maiores, mas ainda não confirmou qual configuração prefere');
+    expect(vilelaReason).not.toContain('em Bessa');
+
+    // 2b. Caso Alex Diniz & Sirleida: quartos/orçamento declarados superam team_suggested e fechamento é neutro em gênero
+    const alexReason = buildPersonalizedCommercialReason({
+      contactName: 'Alex Diniz',
+      interestProperty: 'Mahal Resort',
+      isCtwaOrigin: true,
+      hasPendingCommitment: true,
+      compatiblePropertiesCount: 3,
+      profile: {
+        operation: 'venda',
+        propertyTypes: ['apartamento'],
+        bedrooms: [2, 3],
+        priceMin: 400000,
+        priceMax: 600000,
+        locations: [],
+        prefersLargerPlans: false,
+        largerPlansSource: 'team_suggested',
+      },
+    });
+    expect(alexReason).toContain('Alex procura um apartamento de 2 ou 3 quartos');
+    expect(alexReason).toContain('entre R$ 400 mil e R$ 600 mil');
+    expect(alexReason).toContain('Você ficou de enviar algumas opções');
+    expect(alexReason).toContain('para apresentar agora');
+    expect(alexReason).not.toContain('para ele');
+    expect(alexReason).not.toContain('ainda não confirmou qual configuração prefere');
+
+    // 3. Compromisso pendente em múltiplas mensagens comerciais recentes (ex.: Alex e Sirleida)
+    const commitment = detectPendingTeamCommitment({
+      recentBusinessTexts: ['Tem preferência de bairro?', 'Deixa eu ver outro e te mando'],
+      lastBusinessMessageAt: '2026-11-17T13:55:37.000Z',
+      hasSharedPropertiesAfterLastBusiness: false,
+    });
+    expect(commitment.hasPendingCommitment).toBe(true);
+
+    // 4. Cooldown de atendimento humano (Seção 19):
+    // - < 6h bloqueia mesmo com janela aberta (sem compromisso pendente)
+    // - >= 6h com janela de 24h aberta e sem envio recente de imóvel -> LIBERA!
+    // - >= 6h e < 12h com janela encerrada -> BLOQUEIA pelo cooldown de 12h
+    const nowMs = new Date('2026-11-23T18:00:00.000Z').getTime();
+    const agent3hAgo = new Date(nowMs - 3 * 60 * 60 * 1000).toISOString();
+    const agent8hAgo = new Date(nowMs - 8 * 60 * 60 * 1000).toISOString();
+    const cust10hAgo = new Date(nowMs - 10 * 60 * 60 * 1000).toISOString();
+
+    const baseArgs = {
+      profile: {
+        operation: 'venda' as const,
+        isShortStayOnly: false,
+        isArchived: false,
+        isPaused: false,
+      },
+      compatibleSalePropertiesCount: 3,
+      profileMaturity: 70,
+      aiScore: 7,
+      lastCustomerMessageAt: cust10hAgo,
+      nowMs,
+    };
+
+    expect(
+      evaluateFollowupCommercialEligibility({
+        ...baseArgs,
+        lastAgentMessageAt: agent3hAgo,
+        windowOpen: true,
+      }).reasons
+    ).toContain('active_human_attendance');
+
+    expect(
+      evaluateFollowupCommercialEligibility({
+        ...baseArgs,
+        lastAgentMessageAt: agent8hAgo,
+        windowOpen: true,
+      }).eligible
+    ).toBe(true);
+
+    expect(
+      evaluateFollowupCommercialEligibility({
+        ...baseArgs,
+        lastAgentMessageAt: agent8hAgo,
+        windowOpen: false,
+        teamCooldownHours: 12,
+      }).reasons
+    ).toContain('active_human_attendance');
+
+    // 5. Reativação inteligente: rejeição temporária por falta de estoque pode reativar quando surge imóvel; locação/desinteresse nunca reativa
+    expect(classifyRejectionPermanence(['no_compatible_sale_properties'])).toBe('temporary');
+    expect(classifyRejectionPermanence(['rental_only'])).toBe('permanent');
+    expect(classifyRejectionPermanence(['customer_disinterest'])).toBe('permanent');
+
+    expect(
+      canReactivateFollowupSuggestion({
+        previousRejectionReasons: ['no_compatible_sale_properties'],
+        currentEligibility: { eligible: true, reasons: [], operation: 'venda' },
+        hasStockOrProfileChange: true,
+      })
+    ).toBe(true);
+
+    expect(
+      canReactivateFollowupSuggestion({
+        previousRejectionReasons: ['customer_disinterest'],
+        currentEligibility: { eligible: true, reasons: [], operation: 'venda' },
+        hasStockOrProfileChange: true,
+      })
+    ).toBe(false);
   });
 });

@@ -283,11 +283,13 @@ export function evaluateMatch(
     }
   }
 
-  // 1.6b Metragem, necessidade de espaço e compatibilidade por planta/unidade (Seções 4 e 6)
+  // 1.6b Metragem, necessidade de espaço e compatibilidade por planta/unidade (Seções 4, 6, 8 e 17)
+  // Sugestões não confirmadas pela equipe ('team_suggested') NÃO funcionam como critério eliminatório!
+  const isLargerPlansCustomerConfirmed = profile.largerPlansSource !== 'team_suggested';
   const targetAreaMin =
-    profile.areaMin != null && profile.areaMin > 0
+    profile.areaMin != null && profile.areaMin > 0 && isLargerPlansCustomerConfirmed
       ? profile.areaMin
-      : profile.prefersLargerPlans
+      : profile.prefersLargerPlans && isLargerPlansCustomerConfirmed
         ? 48
         : null;
 
@@ -303,13 +305,13 @@ export function evaluateMatch(
     const minAcceptableArea = profile.areaStrict ? targetAreaMin : targetAreaMin * 0.92;
     if (propMaxAreaVal < minAcceptableArea) {
       return eliminated(
-        `Cliente busca plantas maiores (~${targetAreaMin} m²+) e o imóvel oferece no máximo ${propMaxAreaVal} m²`,
+        `Cliente busca plantas com ${targetAreaMin} m²+ e o imóvel oferece no máximo ${propMaxAreaVal} m²`,
         breakdown
       );
     }
 
-    // Regra de ouro de planta vs. preço (Seção 6):
-    // Quando o cliente busca plantas maiores, não recomendar empreendimentos cuja menor unidade (areaMin)
+    // Regra de ouro de planta vs. preço (Seções 6 e 17):
+    // Quando o cliente busca metragem mínima, não recomendar empreendimentos cuja menor unidade (areaMin)
     // esteja abaixo da metragem buscada (< targetAreaMin * 0.95) quando houver apenas um preço único cadastrado
     // (pois esse preço único refere-se à unidade menor, e não à planta maior!).
     if (
@@ -405,12 +407,17 @@ export function evaluateMatch(
   // 3. PONTUAÇÃO POR CRITÉRIO
   // ------------------------------------------------------------
 
-  // 3.1 Preço (Base 25%)
+  // 3.1 Preço (Base 25%) — não confundir ausência de orçamento com compatibilidade comprovada (Seção 15)
+  let knownCriteriaWeight = 0;
+  let totalCriteriaWeight = 0;
+  totalCriteriaWeight += 25;
   if (profile.priceMax === null || profile.priceMax <= 0 || entryPrice <= 0) {
-    // Sem restrição de preço declarada pelo cliente: pontuação neutra proporcional
-    breakdown.price = Math.round(weightPrice * 0.8 * 10) / 10;
-    breakdown.reasons.push('Preço compatível (sem restrição financeira estrita informada)');
+    // Orçamento ainda desconhecido: pontuação neutra moderada (0.68), reduzindo falsa precisão de 95%
+    breakdown.price = Math.round(weightPrice * 0.68 * 10) / 10;
+    breakdown.reasons.push('Orçamento ainda não informado pelo cliente');
   } else {
+    if (profile.budgetSource !== 'ad_inferred') knownCriteriaWeight += 25;
+    else knownCriteriaWeight += 10;
     const clientBudget = profile.priceMax;
     if (entryPrice <= clientBudget) {
       breakdown.price = Math.round(weightPrice * 10) / 10;
@@ -436,12 +443,14 @@ export function evaluateMatch(
   // 3.2 Localização (Base 20%)
   const propTitleNorm = normalizeString(property.title || '');
 
+  totalCriteriaWeight += 20;
   let locationNeverMentioned = false;
   if (profile.locations.length === 0) {
     // Cliente não citou bairros
-    breakdown.location = Math.round(weightLocation * 0.7 * 10) / 10;
+    breakdown.location = Math.round(weightLocation * 0.55 * 10) / 10;
     breakdown.reasons.push(`Localização em ${property.neighborhood}, ${property.city}`);
   } else {
+    knownCriteriaWeight += 20;
     const acceptedLocs = profile.locations.map(normalizeString);
     const exactNeighborhoodMatch = acceptedLocs.find(
       (l) =>
@@ -477,10 +486,12 @@ export function evaluateMatch(
   }
 
   // 3.3 Tipologia (Base 15%)
+  totalCriteriaWeight += 15;
   let hasStructuralMismatch = false;
   if (profile.propertyTypes.length === 0) {
-    breakdown.propertyType = Math.round(weightType * 0.8 * 10) / 10;
+    breakdown.propertyType = Math.round(weightType * 0.65 * 10) / 10;
   } else {
+    knownCriteriaWeight += 15;
     const acceptedTypes = profile.propertyTypes.map(normalizeString);
     const isCompactProperty =
       (property.bedroomsMin != null && property.bedroomsMin <= 1 && (propMaxAreaVal === null || propMaxAreaVal <= 40)) ||
@@ -502,7 +513,7 @@ export function evaluateMatch(
       if (propTypeNorm.includes(t) || t.includes(propTypeNorm) || propTitleNorm.includes(t)) {
         return true;
       }
-      // Equivalência de mercado: Flats/Studios cadastrados como 'apartamento' compacto (apenas quando o cliente não busca planta maior)
+      // Equivalência de mercado: Flats/Studios cadastrados como 'apartamento' compacto (apenas quando o cliente não confirmou planta maior)
       if (
         ['flat', 'studio', 'loft', 'kitnet'].includes(t) &&
         propTypeNorm.includes('apartamento') &&
@@ -526,21 +537,25 @@ export function evaluateMatch(
 
   // 3.4 Quartos / Configuração (Base 15%)
   if (isApplicableBedrooms) {
+    totalCriteriaWeight += 15;
     if (profile.bedrooms.length === 0) {
-      // Se o cliente busca plantas maiores (>= 45 m²), imóveis com 0 quartos (studios) perdem pontos e sofrem trava estrutural
+      // Se o cliente confirmou plantas maiores (>= 45 m²), imóveis com 0 quartos (studios) perdem pontos e sofrem trava estrutural
       if (targetAreaMin !== null && targetAreaMin >= 45 && property.bedroomsMax === 0) {
         hasStructuralMismatch = true;
         breakdown.bedrooms = 0;
         breakdown.penalties.push('Unidade sem quarto privativo (0 quartos) incompatível com busca por planta maior');
       } else if (targetAreaMin !== null && targetAreaMin >= 45 && (property.bedroomsMin ?? 0) >= 2) {
-        breakdown.bedrooms = Math.round(weightBedrooms * 10) / 10;
+        knownCriteriaWeight += 8;
+        breakdown.bedrooms = Math.round(weightBedrooms * 0.9 * 10) / 10;
         breakdown.reasons.push(`Configuração de ${property.bedroomsMin} quartos adequada para planta maior`);
       } else {
-        breakdown.bedrooms = Math.round(weightBedrooms * 0.8 * 10) / 10;
+        breakdown.bedrooms = Math.round(weightBedrooms * 0.68 * 10) / 10;
       }
     } else if (!hasPropBedroomInfo) {
-      breakdown.bedrooms = Math.round(weightBedrooms * 0.8 * 10) / 10;
+      knownCriteriaWeight += 10;
+      breakdown.bedrooms = Math.round(weightBedrooms * 0.72 * 10) / 10;
     } else {
+      knownCriteriaWeight += 15;
       const propMinBed = property.bedroomsMin ?? property.bedroomsMax ?? 1;
       const propMaxBed = property.bedroomsMax ?? propMinBed;
       const hasIntersection = profile.bedrooms.some((b) => b >= propMinBed && b <= propMaxBed);
@@ -559,17 +574,21 @@ export function evaluateMatch(
   }
 
   // 3.5 Finalidade (Base 10%)
+  totalCriteriaWeight += 10;
   if (profile.purpose.length === 0) {
-    breakdown.purpose = Math.round(weightPurpose * 0.8 * 10) / 10;
+    breakdown.purpose = Math.round(weightPurpose * 0.7 * 10) / 10;
   } else {
+    knownCriteriaWeight += 10;
     breakdown.purpose = Math.round(weightPurpose * 10) / 10;
     breakdown.reasons.push(`Finalidade adequada (${profile.purpose.join(', ')})`);
   }
 
   // 3.6 Pronto / Planta / Prazo (Base 10%)
+  totalCriteriaWeight += 10;
   if (profile.deliveryStatus.length === 0) {
-    breakdown.delivery = Math.round(weightDelivery * 0.8 * 10) / 10;
+    breakdown.delivery = Math.round(weightDelivery * 0.72 * 10) / 10;
   } else {
+    knownCriteriaWeight += 10;
     if (profile.deliveryStatus.includes(property.deliveryStatus)) {
       breakdown.delivery = Math.round(weightDelivery * 10) / 10;
       breakdown.reasons.push(`Momento da obra compatível: ${property.deliveryStatus}`);
@@ -581,7 +600,9 @@ export function evaluateMatch(
 
   // 3.7 Metragem e Espaço (Base 5%)
   if (isApplicableArea) {
+    totalCriteriaWeight += 5;
     if (targetAreaMin !== null && propMinAreaVal !== null) {
+      knownCriteriaWeight += 5;
       if (propMinAreaVal >= targetAreaMin) {
         breakdown.area = Math.round(weightArea * 10) / 10;
         breakdown.reasons.push(`Metragem compatível (${Math.round(propMinAreaVal)} m²)`);
@@ -594,9 +615,14 @@ export function evaluateMatch(
         breakdown.penalties.push(`Metragem abaixo da necessidade de espaço (~${targetAreaMin} m²)`);
       }
     } else {
-      breakdown.area = Math.round(weightArea * 10) / 10;
+      breakdown.area = Math.round(weightArea * 0.7 * 10) / 10;
     }
   }
+
+  const evaluationConfidence =
+    totalCriteriaWeight > 0
+      ? Math.round((knownCriteriaWeight / totalCriteriaWeight) * 100)
+      : 50;
 
   // Soma bruta de compatibilidade
   let rawScore =
@@ -641,6 +667,7 @@ export function evaluateMatch(
   return {
     eligible: true,
     matchScore: rawScore,
+    evaluationConfidence,
     scoreBreakdown: breakdown,
     commercialPriority: 0, // Será calculado em priority.ts
     isStrongMatch: isStrong,
@@ -655,6 +682,7 @@ function eliminated(reason: string, breakdown: MatchScoreBreakdown, score = 0): 
     eligible: false,
     eliminatedReason: reason,
     matchScore: score,
+    evaluationConfidence: 0,
     scoreBreakdown: breakdown,
     commercialPriority: 0,
     isStrongMatch: false,

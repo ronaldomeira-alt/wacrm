@@ -8,6 +8,8 @@ import {
   Building2,
   Check,
   CheckSquare,
+  ChevronDown,
+  ChevronUp,
   Circle,
   CircleDot,
   Clock,
@@ -160,6 +162,7 @@ export function FollowupDialog({
   onOpenChange,
   onResolved,
   compatibleProperties: initialCompatibleProperties,
+  totalCompatiblePropertiesCount: initialTotalCompatibleCount,
   stageName: overrideStageName,
   hoursSinceLastCommunication,
   neverContacted,
@@ -173,6 +176,7 @@ export function FollowupDialog({
   onOpenChange: (open: boolean) => void;
   onResolved: () => void;
   compatibleProperties?: CompatiblePropertySummary[];
+  totalCompatiblePropertiesCount?: number;
   stageName?: string | null;
   hoursSinceLastCommunication?: number | null;
   neverContacted?: boolean;
@@ -206,6 +210,15 @@ export function FollowupDialog({
     null
   );
   const [loadingMatches, setLoadingMatches] = useState(false);
+
+  // Estado sob demanda para expansão "Ver mais imóveis" (Seções 4–7)
+  const [expandedMore, setExpandedMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [extraProperties, setExtraProperties] = useState<CompatiblePropertySummary[]>([]);
+  const [extraLoadedOnce, setExtraLoadedOnce] = useState(false);
+  const [hasMoreExtra, setHasMoreExtra] = useState(false);
+  const [nextExtraOffset, setNextExtraOffset] = useState(0);
+  const [extraTotalRemaining, setExtraTotalRemaining] = useState<number | null>(null);
 
   // Chave de idempotência para evitar envios duplicados em cliques repetidos
   const sendAttemptRef = useRef<string | null>(null);
@@ -285,21 +298,58 @@ export function FollowupDialog({
       : [initial[0].propertyId];
   });
 
-  // Inicializa seleção quando os imóveis são carregados sob demanda
+  const allKnownProperties = useMemo<CompatiblePropertySummary[]>(() => {
+    const merged: CompatiblePropertySummary[] = [...compatibleProperties];
+    const seen = new Set(merged.map((p) => p.propertyId));
+    for (const p of extraProperties) {
+      if (seen.has(p.propertyId)) continue;
+      if (String(p.operation || 'venda').toLowerCase() !== 'venda') continue;
+      const resolvedUrl = resolveClientPublicPropertyUrl(p);
+      if (!resolvedUrl) continue;
+      seen.add(p.propertyId);
+      merged.push({ ...p, operation: 'venda', publicUrl: resolvedUrl });
+    }
+    return merged;
+  }, [compatibleProperties, extraProperties]);
+
+  const displayedProperties = useMemo<CompatiblePropertySummary[]>(
+    () => (expandedMore ? allKnownProperties : compatibleProperties),
+    [expandedMore, allKnownProperties, compatibleProperties]
+  );
+
+  // Total conhecido para decidir se exibe o botão "Ver mais imóveis"
+  const effectiveTotalCompatibleCount =
+    typeof extraTotalRemaining === 'number'
+      ? compatibleProperties.length + extraTotalRemaining
+      : (initialTotalCompatibleCount ?? compatibleProperties.length);
+  const hasAdditionalProperties =
+    effectiveTotalCompatibleCount > compatibleProperties.length || extraProperties.length > 0;
+
+  // Quantidade de imóveis extras selecionados que estão ocultos quando a lista está recolhida
+  const hiddenSelectedExtraCount = useMemo(() => {
+    if (expandedMore) return 0;
+    const initialIds = new Set(compatibleProperties.map((p) => p.propertyId));
+    return selectedPropertyIds.filter(
+      (id) => !initialIds.has(id) && extraProperties.some((p) => p.propertyId === id)
+    ).length;
+  }, [expandedMore, compatibleProperties, extraProperties, selectedPropertyIds]);
+
+  // Inicializa seleção quando os imóveis são carregados sob demanda (preservando extras selecionados)
   useEffect(() => {
-    if (compatibleProperties.length === 0) return;
+    if (allKnownProperties.length === 0) return;
     setSelectedPropertyIds((prev) => {
       const validPrev = prev.filter((id) =>
-        compatibleProperties.some((p) => p.propertyId === id)
+        allKnownProperties.some((p) => p.propertyId === id)
       );
       if (validPrev.length > 0) {
         return isWindowOpen ? validPrev : [validPrev[0]];
       }
+      if (compatibleProperties.length === 0) return [];
       return isWindowOpen
         ? compatibleProperties.map((p) => p.propertyId)
         : [compatibleProperties[0].propertyId];
     });
-  }, [compatibleProperties, isWindowOpen]);
+  }, [allKnownProperties, compatibleProperties, isWindowOpen]);
 
   // Carrega matches sob demanda se o modal foi aberto sem a lista pré-hidratada
   useEffect(() => {
@@ -372,13 +422,75 @@ export function FollowupDialog({
   }, [open, suggestion.contact_id, initialCompatibleProperties]);
 
   const selectedProperties = useMemo(
-    () => compatibleProperties.filter((p) => selectedPropertyIds.includes(p.propertyId)),
-    [compatibleProperties, selectedPropertyIds]
+    () => allKnownProperties.filter((p) => selectedPropertyIds.includes(p.propertyId)),
+    [allKnownProperties, selectedPropertyIds]
   );
 
+  // Carregamento sob demanda das opções adicionais do botão "Ver mais imóveis"
+  const fetchExtraPropertiesPage = useCallback(
+    async (offset: number, append: boolean) => {
+      if (loadingMore) return;
+      setLoadingMore(true);
+      try {
+        const excludeIds = compatibleProperties.map((p) => p.propertyId).join(',');
+        const qs = new URLSearchParams({
+          exclude_ids: excludeIds,
+          offset: String(offset),
+          limit: '12',
+        });
+        const res = await fetch(
+          `/api/followup/${encodeURIComponent(suggestion.id)}/properties?${qs.toString()}`,
+          { cache: 'no-store' }
+        );
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData?.error || 'Falha ao carregar imóveis compatíveis adicionais.');
+        }
+        const data = (await res.json()) as {
+          properties?: CompatiblePropertySummary[];
+          totalRemainingCount?: number;
+          hasMore?: boolean;
+          nextOffset?: number;
+        };
+        const incoming = Array.isArray(data.properties) ? data.properties : [];
+        setExtraProperties((prev) => {
+          const base = append ? prev : [];
+          const existingIds = new Set([
+            ...compatibleProperties.map((p) => p.propertyId),
+            ...base.map((p) => p.propertyId),
+          ]);
+          const uniqueIncoming = incoming.filter((p) => !existingIds.has(p.propertyId));
+          return [...base, ...uniqueIncoming];
+        });
+        setHasMoreExtra(Boolean(data.hasMore));
+        setNextExtraOffset(Number(data.nextOffset ?? offset + incoming.length));
+        if (typeof data.totalRemainingCount === 'number') {
+          setExtraTotalRemaining(data.totalRemainingCount);
+        }
+        setExtraLoadedOnce(true);
+      } catch (err) {
+        toast.error((err as Error).message || 'Não foi possível carregar mais imóveis compatíveis.');
+      } finally {
+        setLoadingMore(false);
+      }
+    },
+    [loadingMore, compatibleProperties, suggestion.id]
+  );
+
+  const handleToggleMoreProperties = useCallback(async () => {
+    if (expandedMore) {
+      setExpandedMore(false);
+      return;
+    }
+    setExpandedMore(true);
+    if (!extraLoadedOnce) {
+      await fetchExtraPropertiesPage(0, false);
+    }
+  }, [expandedMore, extraLoadedOnce, fetchExtraPropertiesPage]);
+
   // Alterna seleção respeitando estritamente a regra da janela:
-  // - Janela aberta: multi-seleção (1 ou vários imóveis)
-  // - Janela encerrada: seleção única (exatamente 1 imóvel)
+  // - Janela aberta: multi-seleção global (combinando iniciais e adicionais)
+  // - Janela encerrada: seleção única global (substitui automaticamente anterior)
   const handleToggleProperty = useCallback(
     (prop: CompatiblePropertySummary) => {
       let nextIds: string[];
@@ -394,7 +506,7 @@ export function FollowupDialog({
       setSelectedPropertyIds(nextIds);
       sendAttemptRef.current = null;
 
-      const nextSelected = compatibleProperties.filter((p) => nextIds.includes(p.propertyId));
+      const nextSelected = allKnownProperties.filter((p) => nextIds.includes(p.propertyId));
 
       // Se já estiver preparando a mensagem livre, atualiza texto e links imediatamente
       if (step === 'prepare_free') {
@@ -427,7 +539,7 @@ export function FollowupDialog({
     [
       isWindowOpen,
       selectedPropertyIds,
-      compatibleProperties,
+      allKnownProperties,
       step,
       contactName,
       interestProperty,
@@ -786,19 +898,32 @@ export function FollowupDialog({
       : null;
 
   const gridColsClass =
-    compatibleProperties.length <= 1
+    displayedProperties.length <= 1
       ? 'grid-cols-1'
-      : compatibleProperties.length === 2
+      : displayedProperties.length === 2
         ? 'grid-cols-1 md:grid-cols-2'
         : 'grid-cols-1 md:grid-cols-3';
 
   const renderPropertyCards = () => (
     <div data-testid="followup-dialog-compatible-properties" className="space-y-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-          <Sparkles className="size-3.5 text-primary shrink-0" />
-          Imóveis selecionados para recomendar
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+            <Sparkles className="size-3.5 text-primary shrink-0" />
+            Imóveis selecionados para recomendar
+          </span>
+          {hiddenSelectedExtraCount > 0 && (
+            <span
+              data-testid="followup-hidden-extra-selected-badge"
+              className="rounded-full bg-primary/15 border border-primary/30 px-2 py-0.5 text-[10px] font-semibold text-primary"
+            >
+              +{hiddenSelectedExtraCount}{' '}
+              {hiddenSelectedExtraCount === 1
+                ? 'opção adicional selecionada'
+                : 'opções adicionais selecionadas'}
+            </span>
+          )}
+        </div>
         <span className="text-[11px] text-muted-foreground">
           {isWindowOpen
             ? 'Selecione um ou mais imóveis'
@@ -811,148 +936,171 @@ export function FollowupDialog({
           <Loader2 className="size-3.5 animate-spin text-primary" />
           <span>Buscando opções compatíveis no estoque...</span>
         </div>
-      ) : compatibleProperties.length === 0 ? (
+      ) : displayedProperties.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
           Nenhum imóvel de venda compatível com link público válido disponível no momento.
         </div>
       ) : (
-        <div
-          data-testid="followup-properties-grid"
-          className={`grid ${gridColsClass} gap-3`}
-        >
-          {compatibleProperties.map((prop) => {
-            const isSelected = selectedPropertyIds.includes(prop.propertyId);
-            const typeLabel = formatPropertyTypePtBr(prop.propertyType);
-            const priceLabel = formatCommercialPricePtBr(prop.priceMin, prop.priceMax);
-            const bedroomsLabel =
-              prop.bedroomsMin && prop.bedroomsMax && prop.bedroomsMax > prop.bedroomsMin
-                ? `${prop.bedroomsMin} a ${prop.bedroomsMax} quartos`
-                : prop.bedroomsMin
-                  ? `${prop.bedroomsMin} ${prop.bedroomsMin === 1 ? 'quarto' : 'quartos'}`
-                  : null;
-            const areaMinVal =
-              prop.areaMin != null && prop.areaMin > 0 ? Math.round(prop.areaMin) : null;
-            const areaMaxVal =
-              prop.areaMax != null && prop.areaMax > 0 ? Math.round(prop.areaMax) : null;
-            const areaLabel =
-              areaMinVal && areaMaxVal && areaMaxVal > areaMinVal
-                ? `${areaMinVal} a ${areaMaxVal} m²`
-                : areaMinVal
-                  ? `${areaMinVal} m²`
-                  : areaMaxVal
-                    ? `${areaMaxVal} m²`
+        <div className="space-y-3">
+          <div
+            data-testid="followup-properties-grid"
+            className={`grid ${gridColsClass} gap-3`}
+          >
+            {displayedProperties.map((prop) => {
+              const isSelected = selectedPropertyIds.includes(prop.propertyId);
+              const typeLabel = formatPropertyTypePtBr(prop.propertyType);
+              const priceLabel = formatCommercialPricePtBr(prop.priceMin, prop.priceMax);
+              const bedroomsLabel =
+                prop.bedroomsMin && prop.bedroomsMax && prop.bedroomsMax > prop.bedroomsMin
+                  ? `${prop.bedroomsMin} a ${prop.bedroomsMax} quartos`
+                  : prop.bedroomsMin
+                    ? `${prop.bedroomsMin} ${prop.bedroomsMin === 1 ? 'quarto' : 'quartos'}`
                     : null;
+              const areaMinVal =
+                prop.areaMin != null && prop.areaMin > 0 ? Math.round(prop.areaMin) : null;
+              const areaMaxVal =
+                prop.areaMax != null && prop.areaMax > 0 ? Math.round(prop.areaMax) : null;
+              const areaLabel =
+                areaMinVal && areaMaxVal && areaMaxVal > areaMinVal
+                  ? `${areaMinVal} a ${areaMaxVal} m²`
+                  : areaMinVal
+                    ? `${areaMinVal} m²`
+                    : areaMaxVal
+                      ? `${areaMaxVal} m²`
+                      : null;
 
-            return (
-              <div
-                key={prop.propertyId}
-                data-testid="followup-compatible-property-option"
-                onClick={() => handleToggleProperty(prop)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    handleToggleProperty(prop);
-                  }
-                }}
-                className={`flex flex-col justify-between gap-2.5 rounded-xl border p-3 text-xs transition-all cursor-pointer min-h-[112px] ${
-                  isSelected
-                    ? 'border-primary bg-primary/10 ring-1 ring-primary/25 shadow-xs'
-                    : 'border-border/60 bg-background/50 hover:border-border'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                    <span className="shrink-0 text-primary mt-0.5" aria-hidden>
-                      {isWindowOpen ? (
-                        isSelected ? (
-                          <CheckSquare className="size-4" />
+              return (
+                <div
+                  key={prop.propertyId}
+                  data-testid="followup-compatible-property-option"
+                  onClick={() => handleToggleProperty(prop)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleToggleProperty(prop);
+                    }
+                  }}
+                  className={`flex flex-col justify-between gap-2.5 rounded-xl border p-3 text-xs transition-all cursor-pointer min-h-[112px] ${
+                    isSelected
+                      ? 'border-primary bg-primary/10 ring-1 ring-primary/25 shadow-xs'
+                      : 'border-border/60 bg-background/50 hover:border-border'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                      <span className="shrink-0 text-primary mt-0.5" aria-hidden>
+                        {isWindowOpen ? (
+                          isSelected ? (
+                            <CheckSquare className="size-4" />
+                          ) : (
+                            <Square className="size-4 text-muted-foreground" />
+                          )
+                        ) : isSelected ? (
+                          <CircleDot className="size-4" />
                         ) : (
-                          <Square className="size-4 text-muted-foreground" />
-                        )
-                      ) : isSelected ? (
-                        <CircleDot className="size-4" />
-                      ) : (
-                        <Circle className="size-4 text-muted-foreground" />
-                      )}
-                    </span>
+                          <Circle className="size-4 text-muted-foreground" />
+                        )}
+                      </span>
 
-                    <PropertyThumbnail coverUrl={prop.coverUrl} title={prop.title} />
+                      <PropertyThumbnail coverUrl={prop.coverUrl} title={prop.title} />
 
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex items-start justify-between gap-1.5">
-                        <span
-                          className="font-semibold text-foreground leading-snug line-clamp-2"
-                          title={prop.title}
-                        >
-                          {prop.title}
-                        </span>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-start justify-between gap-1.5">
+                          <span
+                            className="font-semibold text-foreground leading-snug line-clamp-2"
+                            title={prop.title}
+                          >
+                            {prop.title}
+                          </span>
+                        </div>
+
+                        {prop.neighborhood && (
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {[prop.neighborhood, typeLabel].filter(Boolean).join(' • ')}
+                          </p>
+                        )}
                       </div>
+                    </div>
 
-                      {prop.neighborhood && (
-                        <p className="text-[11px] text-muted-foreground truncate">
-                          {[prop.neighborhood, typeLabel].filter(Boolean).join(' • ')}
-                        </p>
+                    {prop.publicUrl && (
+                      <a
+                        href={prop.publicUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex h-9 w-9 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
+                        title="Visualizar imóvel"
+                      >
+                        <ExternalLink className="size-3.5" />
+                      </a>
+                    )}
+                  </div>
+
+                  {/* Metragem, Quartos, Valor e Compatibilidade */}
+                  <div className="flex flex-col gap-1.5 pt-2 border-t border-border/40">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {areaLabel && (
+                        <span
+                          data-testid="followup-property-area-badge"
+                          className="rounded-md bg-muted/70 border border-border/60 px-1.5 py-0.5 text-[10px] font-semibold text-foreground"
+                        >
+                          {areaLabel}
+                        </span>
+                      )}
+                      {bedroomsLabel && (
+                        <span
+                          data-testid="followup-property-bedrooms-badge"
+                          className="rounded-md bg-muted/70 border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-foreground/90"
+                        >
+                          {bedroomsLabel}
+                        </span>
+                      )}
+                      {prop.matchScore > 0 && (
+                        <span
+                          data-testid="followup-property-score-badge"
+                          className="ml-auto rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-400 shrink-0"
+                        >
+                          {prop.matchScore}% compatível
+                        </span>
                       )}
                     </div>
-                  </div>
 
-                  {prop.publicUrl && (
-                    <a
-                      href={prop.publicUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-flex h-9 w-9 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
-                      title="Visualizar imóvel"
-                    >
-                      <ExternalLink className="size-3.5" />
-                    </a>
-                  )}
-                </div>
-
-                {/* Metragem, Quartos, Valor e Compatibilidade */}
-                <div className="flex flex-col gap-1.5 pt-2 border-t border-border/40">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {areaLabel && (
-                      <span
-                        data-testid="followup-property-area-badge"
-                        className="rounded-md bg-muted/70 border border-border/60 px-1.5 py-0.5 text-[10px] font-semibold text-foreground"
+                    {priceLabel && (
+                      <p
+                        data-testid="followup-property-price"
+                        className="text-xs font-bold text-foreground"
                       >
-                        {areaLabel}
-                      </span>
-                    )}
-                    {bedroomsLabel && (
-                      <span
-                        data-testid="followup-property-bedrooms-badge"
-                        className="rounded-md bg-muted/70 border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-foreground/90"
-                      >
-                        {bedroomsLabel}
-                      </span>
-                    )}
-                    {prop.matchScore > 0 && (
-                      <span
-                        data-testid="followup-property-score-badge"
-                        className="ml-auto rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-400 shrink-0"
-                      >
-                        {prop.matchScore}% compatível
-                      </span>
+                        {priceLabel}
+                      </p>
                     )}
                   </div>
-
-                  {priceLabel && (
-                    <p
-                      data-testid="followup-property-price"
-                      className="text-xs font-bold text-foreground"
-                    >
-                      {priceLabel}
-                    </p>
-                  )}
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+
+          {expandedMore && loadingMore && (
+            <div className="flex items-center justify-center gap-2 rounded-xl border border-border/50 bg-muted/20 p-2.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin text-primary" />
+              <span>Carregando mais imóveis compatíveis...</span>
+            </div>
+          )}
+
+          {expandedMore && hasMoreExtra && !loadingMore && (
+            <div className="flex justify-center pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void fetchExtraPropertiesPage(nextExtraOffset, true)}
+                className="h-8 text-xs"
+              >
+                Carregar mais opções
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1148,7 +1296,7 @@ export function FollowupDialog({
         )}
 
         {/* 4. Ações comerciais */}
-        <DialogFooter className="flex-col sm:flex-row gap-2 sm:justify-between pt-2 border-t border-border/50">
+        <DialogFooter className="flex-col sm:flex-row gap-2.5 sm:justify-between pt-2.5 border-t border-border/50">
           {step === 'review' && (
             <>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -1158,7 +1306,7 @@ export function FollowupDialog({
                   size="sm"
                   disabled={busy}
                   onClick={() => void handleIgnore()}
-                  className="h-8 px-2.5 text-xs text-muted-foreground hover:text-rose-400 gap-1"
+                  className="min-h-[36px] sm:h-8 px-2.5 text-xs text-muted-foreground hover:text-rose-400 gap-1"
                 >
                   <Ban className="size-3.5" />
                   Ignorar
@@ -1169,7 +1317,7 @@ export function FollowupDialog({
                   size="sm"
                   disabled={busy}
                   onClick={() => void handleSnooze()}
-                  className="h-8 px-2.5 text-xs text-muted-foreground gap-1"
+                  className="min-h-[36px] sm:h-8 px-2.5 text-xs text-muted-foreground gap-1"
                 >
                   <Clock className="size-3.5" />
                   Adiar
@@ -1179,11 +1327,31 @@ export function FollowupDialog({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 px-2.5 text-xs text-muted-foreground gap-1"
+                    className="min-h-[36px] sm:h-8 px-2.5 text-xs text-muted-foreground gap-1"
                     render={<a href={`/inbox?c=${encodeURIComponent(suggestion.conversation_id)}`} />}
                   >
                     <MessageSquare className="size-3.5" />
                     Ver conversa
+                  </Button>
+                )}
+                {(hasAdditionalProperties || expandedMore) && (
+                  <Button
+                    type="button"
+                    data-testid="followup-toggle-more-properties"
+                    variant="ghost"
+                    size="sm"
+                    disabled={loadingMore}
+                    onClick={() => void handleToggleMoreProperties()}
+                    className="min-h-[36px] sm:h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground gap-1"
+                  >
+                    {loadingMore ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : expandedMore ? (
+                      <ChevronUp className="size-3.5" />
+                    ) : (
+                      <ChevronDown className="size-3.5" />
+                    )}
+                    {expandedMore ? 'Mostrar menos' : 'Ver mais imóveis'}
                   </Button>
                 )}
               </div>
@@ -1196,7 +1364,7 @@ export function FollowupDialog({
                     size="sm"
                     disabled={busy}
                     onClick={() => void handleAccept()}
-                    className="h-8 px-3 text-xs gap-1"
+                    className="min-h-[38px] sm:h-8 px-3 text-xs gap-1"
                   >
                     <Check className="size-3.5" />
                     Aceitar
@@ -1207,7 +1375,7 @@ export function FollowupDialog({
                   size="sm"
                   disabled={busy || selectedProperties.length === 0}
                   onClick={() => void handlePrepareMessage()}
-                  className="h-8 px-3 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
+                  className="min-h-[38px] sm:h-8 px-3 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
                 >
                   {busy ? (
                     <Loader2 className="size-3.5 animate-spin" />

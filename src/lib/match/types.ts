@@ -88,11 +88,14 @@ export interface LeadSearchProfile {
   
   isShortStayOnly: boolean;        // Se busca exclusivamente aluguel por temporada
 
-  // Metragem, necessidade de espaço e restrições unificadas (Etapa 2)
+  // Metragem, necessidade de espaço e restrições unificadas (Etapas 2 e 3)
   areaMin?: number | null;         // Metragem mínima buscada ou de referência para plantas maiores
   areaMax?: number | null;         // Metragem máxima de referência quando aplicável
   areaStrict?: boolean;            // true = exigência expressa de metragem mínima
-  prefersLargerPlans?: boolean;    // true = cliente busca/avalia plantas maiores que studios/flats compactos
+  prefersLargerPlans?: boolean;    // true = cliente declarou/confirmou preferência por plantas maiores
+  largerPlansSource?: 'customer_declared' | 'team_suggested' | 'none';
+  budgetSource?: 'customer_declared' | 'ad_inferred' | 'none';
+  profileConfidence?: number;      // 0–100: confiança baseada nas informações efetivamente informadas pelo cliente
   excludedPropertyTypes?: string[]; // Tipologias explicitamente rejeitadas (ex.: ['flat', 'studio'])
   budgetIsFlexibleFromAd?: boolean; // true = valor inicial veio de anúncio compacto mas cliente busca planta maior
   isSellerOrOutOfArea?: boolean;   // true = proprietário vendendo imóvel próprio ou busca em outro estado
@@ -162,6 +165,7 @@ export interface MatchEvaluationResult {
   eligible: boolean;
   eliminatedReason?: string | null;
   matchScore: number;       // 0–100%
+  evaluationConfidence?: number; // 0–100%: confiança da avaliação segundo a completude real dos critérios
   scoreBreakdown: MatchScoreBreakdown;
   commercialPriority: number;
   isStrongMatch: boolean;   // >= 85%

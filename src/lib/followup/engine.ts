@@ -78,6 +78,7 @@ export interface CompatiblePropertySummary {
   coverUrl?: string | null;
   publicUrl?: string | null;
   matchScore: number;
+  evaluationConfidence?: number | null;
   commercialPriority: number;
   matchStatus: string;
   reasons: string[];
@@ -151,6 +152,10 @@ export interface EnrichedFollowupItem {
   lastBusinessMessagePreview?: string | null;
   /** Recomendações complementares do motor de Match */
   compatiblePropertiesCount: number;
+  /** Quantidade total de imóveis compatíveis elegíveis (para controlar o botão "Ver mais imóveis") */
+  totalCompatiblePropertiesCount?: number;
+  /** Confiança da avaliação de Match (0–100) baseada na completude das informações do cliente */
+  evaluationConfidence?: number | null;
   compatibleProperties: CompatiblePropertySummary[];
   /** Operação comercial validada (exclusivamente 'venda' na fila ativa) */
   commercialOperation?: LeadCommercialOperation;
@@ -903,7 +908,7 @@ const DISINTEREST_CUSTOMER_RE =
   /\b(j[aá]\s+comprei|j[aá]\s+fechei|n[aã]o\s+tenho\s+mais\s+interesse|pode\s+encerrar|desisti\s+da\s+compra|n[aã]o\s+quero\s+mais|pare\s+de\s+mandar|n[aã]o\s+precisa\s+mais|obrigad[oa],?\s+mas\s+n[aã]o\s+tenho\s+interesse|somente\s+aluguel|s[oó]\s+aluguel|apenas\s+aluguel|s[oó]\s+loca[çc][aã]o)\b/i;
 
 const TEAM_PROMISE_RE =
-  /\b(vou\s+(?:te\s+)?(?:enviar|mandar|separar|passar|encaminhar|buscar|levantar|ver|verificar)|j[aá]\s+(?:te\s+)?(?:envio|mando|passo)|te\s+(?:envio|mando|passo|retorno)\s+(?:algumas|umas|op[çc][õo]es|as\s+op[çc][õo]es|ainda\s+hoje|j[aá]|em\s+seguida|logo)|fiquei\s+de\s+(?:te\s+)?(?:enviar|mandar)|combinado,?\s+(?:te\s+)?(?:envio|mando))\b/i;
+  /\b(vou\s+(?:te\s+|lhe\s+)?(?:enviar|mandar|separar|passar|encaminhar|buscar|levantar|ver|verificar)|j[aá]\s+(?:te\s+|lhe\s+)?(?:envio|mando|passo)|te\s+(?:envio|mando|passo|retorno)\s+(?:algumas|umas|op[çc][õo]es|as\s+op[çc][õo]es|ainda\s+hoje|j[aá]|em\s+seguida|logo)|deixa\s+eu\s+ver\s+(?:outro|outras|op[çc][õo]es)\s+(?:e\s+)?te\s+mand(?:o|ar)|fiquei\s+de\s+(?:te\s+|lhe\s+)?(?:enviar|mandar)|combinado,?\s+(?:te\s+|lhe\s+)?(?:envio|mando))\b/i;
 
 const PROMOTIONAL_HEADLINE_RE =
   /(r\$\s*\d|\b\d+\s*(mil|k|reais)\b|\bentrada\b|\bparcela|\ba\s+partir\s+de\b|\bcondi[çc][aã]o\b|\boportunidade\b|\brooftop\b|\brua\s+do\s+mar\b|\brentabilizar\b|\baluguel\b|\bloca[çc][aã]o\b|\bmensal\b|\b[úu]ltimas\s+unidades\b|\bdesconto\b|\bchama\s+no\s+whatsapp\b|\bsaiba\s+mais\b|\bconfira\b|\binvestir\b|\blucrar\b|\bflats?\s+em\s+constru|\bapartamentos?\s+em\s+constru|\bapenas\s+uma\s+rua\b|%)/i;
@@ -1040,29 +1045,73 @@ export function propertyViolatesExplicitRestrictions(
  */
 export function detectPendingTeamCommitment(args: {
   lastBusinessText?: string | null;
+  recentBusinessTexts?: string[];
   lastCustomerMessageAt?: string | null;
   lastBusinessMessageAt?: string | null;
   hasSharedPropertiesAfterLastBusiness?: boolean;
 }): { hasPendingCommitment: boolean; commitmentText: string | null } {
-  const businessText = typeof args.lastBusinessText === 'string' ? args.lastBusinessText.trim() : '';
-  if (!businessText) return { hasPendingCommitment: false, commitmentText: null };
+  const candidates = [
+    ...(args.recentBusinessTexts || []),
+    ...(typeof args.lastBusinessText === 'string' && args.lastBusinessText.trim()
+      ? [args.lastBusinessText]
+      : []),
+  ]
+    .map((t) => t.trim())
+    .filter(Boolean);
 
-  // Se a última mensagem comercial já contém link de imóvel enviado, o envio já foi realizado
-  if (/https?:\/\/\S+\/imovel\//i.test(businessText)) {
+  if (candidates.length === 0) return { hasPendingCommitment: false, commitmentText: null };
+
+  // Se alguma mensagem comercial recente já contém link de imóvel enviado ou envio registrado posterior,
+  // o compromisso foi cumprido.
+  if (candidates.some((t) => /https?:\/\/\S+\/imovel\//i.test(t))) {
     return { hasPendingCommitment: false, commitmentText: null };
   }
   if (args.hasSharedPropertiesAfterLastBusiness) {
     return { hasPendingCommitment: false, commitmentText: null };
   }
 
-  if (TEAM_PROMISE_RE.test(businessText)) {
+  const promiseText = candidates.find((t) => TEAM_PROMISE_RE.test(t));
+  if (promiseText) {
     return {
       hasPendingCommitment: true,
-      commitmentText: businessText,
+      commitmentText: promiseText,
     };
   }
 
   return { hasPendingCommitment: false, commitmentText: null };
+}
+
+/**
+ * Classifica motivos de inelegibilidade em temporários (elegíveis à reativação quando houver
+ * mudança no estoque, perfil ou encerramento de cooldown/adiamento) vs. permanentes (nunca reativar).
+ */
+const PERMANENT_REJECTION_REASONS = new Set([
+  'rental_only',
+  'already_purchased',
+  'contact_archived',
+  'contact_paused',
+  'discarded_or_closed_stage',
+  'customer_disinterest',
+  'seller_or_out_of_area',
+]);
+
+export function classifyRejectionPermanence(reasons: string[]): 'temporary' | 'permanent' {
+  if (!Array.isArray(reasons) || reasons.length === 0) return 'temporary';
+  if (reasons.some((r) => PERMANENT_REJECTION_REASONS.has(r))) {
+    return 'permanent';
+  }
+  return 'temporary';
+}
+
+export function canReactivateFollowupSuggestion(args: {
+  previousRejectionReasons?: string[] | null;
+  currentEligibility: FollowupEligibilityResult;
+  hasStockOrProfileChange?: boolean;
+}): boolean {
+  if (!args.currentEligibility.eligible) return false;
+  const prev = args.previousRejectionReasons ?? [];
+  if (classifyRejectionPermanence(prev) === 'permanent') return false;
+  return args.hasStockOrProfileChange ?? true;
 }
 
 export interface FollowupEligibilityResult {
@@ -1100,6 +1149,10 @@ export function evaluateFollowupCommercialEligibility(args: {
   teamCooldownHours?: number;
   liveChatQuietHours?: number;
   nowMs?: number;
+  /** Quando true, indica que a janela de 24h está aberta e permite aproveitar a janela após 6h do último contato humano */
+  windowOpen?: boolean;
+  /** Horas desde o último envio registrado de imóvel para evitar repetição excessiva */
+  hoursSinceLastPropertyShare?: number | null;
   /** Quando true (ex.: abas históricas done/ignored/approved), não exige imóvel ativo nem bloqueia por cooldown */
   isHistoricalView?: boolean;
 }): FollowupEligibilityResult {
@@ -1118,8 +1171,10 @@ export function evaluateFollowupCommercialEligibility(args: {
     aiScore = 0,
     interestProperty = null,
     awaitingBusinessReply = false,
-    teamCooldownHours = 48,
+    teamCooldownHours = 12,
     liveChatQuietHours = 2,
+    windowOpen = false,
+    hoursSinceLastPropertyShare = null,
     nowMs = Date.now(),
     isHistoricalView = false,
   } = args;
@@ -1160,7 +1215,10 @@ export function evaluateFollowupCommercialEligibility(args: {
     reasons.push('customer_disinterest');
   }
 
-  // 3. Atendimento ao vivo ou acompanhamento humano recente concorrente
+  // 3. Atendimento ao vivo ou acompanhamento humano recente concorrente (Seção 19)
+  // - < 6h do último contato humano sem retorno do cliente -> atendimento em andamento (bloqueia salvo compromisso pendente).
+  // - Janela de 24h ABERTA e >= 6h sem retorno (sem envio recente de imóvel nas últimas 6h) -> libera para aproveitar a janela antes que feche.
+  // - Janela encerrada -> respeita teamCooldownHours (12h padrão).
   const custMs = lastCustomerMessageAt ? new Date(lastCustomerMessageAt).getTime() : NaN;
   const agentMs = lastAgentMessageAt ? new Date(lastAgentMessageAt).getTime() : NaN;
 
@@ -1168,10 +1226,17 @@ export function evaluateFollowupCommercialEligibility(args: {
     reasons.push('live_conversation_in_progress');
   }
 
+  const recentShareBlock =
+    typeof hoursSinceLastPropertyShare === 'number' &&
+    Number.isFinite(hoursSinceLastPropertyShare) &&
+    hoursSinceLastPropertyShare < 12;
+
+  const effectiveHumanCooldownHours = windowOpen && !recentShareBlock ? 6 : teamCooldownHours;
+
   if (
     Number.isFinite(agentMs) &&
     (!Number.isFinite(custMs) || agentMs >= custMs) &&
-    nowMs - agentMs < teamCooldownHours * 60 * 60 * 1000 &&
+    nowMs - agentMs < effectiveHumanCooldownHours * 60 * 60 * 1000 &&
     !hasPendingCommitment
   ) {
     reasons.push('active_human_attendance');
@@ -1231,9 +1296,58 @@ function formatCountWordsPtBr(n: number): string {
 }
 
 /**
- * Constrói o motivo comercial personalizado, natural e informal (Seção 7),
- * como um assistente comercial explicando ao corretor por que vale a pena retomar
- * aquela conversa — fiel estritamente aos fatos conhecidos, sem inventar dados.
+ * Formata corretamente nomes de bairros com a preposição adequada em português (Seção 11):
+ * Exemplos: "no Bessa", "em Intermares", "em Manaíra", "no Cabo Branco", "em Tambaú".
+ */
+export function formatNeighborhoodWithPrepositionPtBr(neighborhood: string): string {
+  const clean = neighborhood.trim();
+  if (!clean) return '';
+  const norm = normalizeForMatch(clean);
+
+  const masculineSingular = [
+    'bessa',
+    'cabo branco',
+    'altiplano',
+    'jardim oceania',
+    'aeroclube',
+    'centro',
+    'portal do sol',
+    'jacare',
+    'poco',
+    'seixas',
+    'castelo branco',
+    'cristo',
+    'geisel',
+    'valentina',
+    'planalto',
+    'bairros dos estados',
+  ];
+  const masculinePlural = ['bancarios', 'estados', 'ipes'];
+  const feminineSingular = ['torre', 'varzea nova', 'ponta de campina', 'praia', 'orla', 'ilha'];
+
+  if (masculinePlural.some((m) => norm === m || norm.endsWith(` ${m}`))) {
+    return `nos ${clean}`;
+  }
+  if (masculineSingular.some((m) => norm === m || norm.startsWith(`${m} `))) {
+    return `no ${clean}`;
+  }
+  if (feminineSingular.some((f) => norm === f || norm.startsWith(`${f} `))) {
+    return `na ${clean}`;
+  }
+  return `em ${clean}`;
+}
+
+function formatLocationsListWithPrepositionPtBr(locations: string[]): string {
+  const clean = locations.map((l) => l.trim()).filter(Boolean).slice(0, 2);
+  if (clean.length === 0) return '';
+  if (clean.length === 1) return formatNeighborhoodWithPrepositionPtBr(clean[0]);
+  return `${formatNeighborhoodWithPrepositionPtBr(clean[0])} ou ${formatNeighborhoodWithPrepositionPtBr(clean[1])}`;
+}
+
+/**
+ * Constrói o motivo comercial personalizado, natural e objetivo (Seções 10 e 11),
+ * explicando ao corretor por que vale a pena retomar aquela conversa — fiel estritamente
+ * aos fatos confirmados pelo cliente, distinguindo sugestões não confirmadas da equipe.
  */
 export function buildPersonalizedCommercialReason(args: {
   contactName?: string | null;
@@ -1252,16 +1366,37 @@ export function buildPersonalizedCommercialReason(args: {
   const profile = args.profile ?? null;
   const sentences: string[] = [];
 
-  // 1. O que o cliente procura / como chegou
   const types = (profile?.propertyTypes ?? []).filter(Boolean);
   const bedrooms = (profile?.bedrooms ?? []).filter((b) => Number.isFinite(b) && b > 0);
   const locations = (profile?.locations ?? []).filter(Boolean);
   const purposes = (profile?.purpose ?? []).filter(Boolean).map((p) => p.toLowerCase());
-  const budgetText = formatBudgetShortPtBr(profile?.priceMin, profile?.priceMax);
+  const budgetText =
+    profile?.budgetSource === 'ad_inferred'
+      ? null
+      : formatBudgetShortPtBr(profile?.priceMin, profile?.priceMax);
   const excludedLabels = (args.excludedTypeLabels ?? []).filter(Boolean);
-  const prefersLargerPlans = Boolean(profile?.prefersLargerPlans);
-  const areaMin = typeof profile?.areaMin === 'number' && profile.areaMin > 0 ? Math.round(profile.areaMin) : null;
-  const areaMax = typeof profile?.areaMax === 'number' && profile.areaMax > 0 ? Math.round(profile.areaMax) : null;
+  const largerPlansSource = profile?.largerPlansSource ?? (profile?.prefersLargerPlans ? 'customer_declared' : 'none');
+  const prefersLargerPlans = Boolean(profile?.prefersLargerPlans) && largerPlansSource === 'customer_declared';
+  const areaMin =
+    largerPlansSource !== 'team_suggested' &&
+    typeof profile?.areaMin === 'number' &&
+    profile.areaMin > 0
+      ? Math.round(profile.areaMin)
+      : null;
+  const areaMax =
+    largerPlansSource !== 'team_suggested' &&
+    typeof profile?.areaMax === 'number' &&
+    profile.areaMax > 0
+      ? Math.round(profile.areaMax)
+      : null;
+
+  const featuresCombinedNorm = normalizeForMatch(
+    [
+      ...(profile?.requiredFeatures ?? []),
+      ...(profile?.preferredFeatures ?? []),
+      args.lastCustomerText || '',
+    ].join(' ')
+  );
 
   let areaClause = '';
   if (prefersLargerPlans) {
@@ -1273,22 +1408,32 @@ export function buildPersonalizedCommercialReason(args: {
       areaClause = 'plantas maiores';
     }
   } else if (areaMin) {
-    areaClause = `a partir de ${areaMin} m²`;
+    areaClause = `acima de ${areaMin} m²`;
   }
 
   let purposeClause = '';
-  if (purposes.includes('moradia') && purposes.includes('investimento')) {
+  if (purposes.some((p) => p.includes('moradia')) && purposes.some((p) => p.includes('invest'))) {
     purposeClause = 'para moradia e investimento';
-  } else if (purposes.includes('moradia')) {
+  } else if (purposes.some((p) => p.includes('moradia'))) {
     purposeClause = 'para moradia';
-  } else if (purposes.includes('investimento')) {
+  } else if (purposes.some((p) => p.includes('invest'))) {
     purposeClause = 'para investimento';
+  }
+
+  const featureHighlights: string[] = [];
+  if (/\b(espaco\s+gourmet|churrasqueira|varanda\s+gourmet)\b/.test(featuresCombinedNorm)) {
+    featureHighlights.push('com espaço gourmet/churrasqueira');
+  } else if (/\bvaranda\b/.test(featuresCombinedNorm) && /\bvista\s+(?:do|pro)\s+mar\b/.test(featuresCombinedNorm)) {
+    featureHighlights.push('com varanda e vista do mar');
+  }
+  if (/\b(garagem\s+rotativa\s+[, ]*e\s+complicado|nao\s+aceita\s+bem\s+garagem\s+rotativa|vaga\s+(?:de\s+garagem\s+)?fixa)\b/.test(featuresCombinedNorm)) {
+    featureHighlights.push('com vaga de garagem fixa');
   }
 
   const searchParts: string[] = [];
   if (types.length > 0) {
     const firstType = types[0].toLowerCase();
-    searchParts.push(firstType === 'apartamento' ? 'um apartamento' : firstType);
+    searchParts.push(firstType === 'apartamento' ? 'um apartamento' : `um ${firstType}`);
   }
   if (bedrooms.length > 0) {
     const bedStr =
@@ -1298,15 +1443,13 @@ export function buildPersonalizedCommercialReason(args: {
     searchParts.push(searchParts.length > 0 ? `de ${bedStr}` : `imóvel de ${bedStr}`);
   }
   if (areaClause) {
-    if (prefersLargerPlans) {
-      searchParts.push(searchParts.length > 0 ? `com ${areaClause}` : areaClause);
-    } else {
-      searchParts.push(`(${areaClause})`);
-    }
+    searchParts.push(prefersLargerPlans && searchParts.length > 0 ? `com ${areaClause}` : areaClause);
+  }
+  if (featureHighlights.length > 0) {
+    searchParts.push(featureHighlights.join(' e '));
   }
   if (locations.length > 0) {
-    const loc = locations.slice(0, 2).join(' ou ');
-    searchParts.push(`em ${loc}`);
+    searchParts.push(formatLocationsListWithPrepositionPtBr(locations));
   }
   if (purposeClause) {
     searchParts.push(purposeClause);
@@ -1314,80 +1457,101 @@ export function buildPersonalizedCommercialReason(args: {
 
   const searchPhrase = searchParts.join(' ');
   const restrictionClause =
-    excludedLabels.length > 0
-      ? ` e não quer ${excludedLabels.join(' nem ')}`
-      : '';
+    excludedLabels.length > 0 ? ` e não quer ${excludedLabels.join(' nem ')}` : '';
+  const locFormatted = formatLocationsListWithPrepositionPtBr(locations);
+  const custLower = (args.lastCustomerText || '').toLowerCase();
+  const askedPrice = /\b(valor|pre[çc]o|tabela|entrada|parcela|quanto)\b/.test(custLower);
+  const askedVisit = /\b(visita|conhecer|agendar)\b/.test(custLower);
 
-  if (args.interestProperty && args.isCtwaOrigin) {
-    const custLower = (args.lastCustomerText || '').toLowerCase();
-    const detailClause = /\b(valor|pre[çc]o|tabela|entrada|parcela|quanto)\b/.test(custLower)
-      ? ' e perguntou sobre valores e condições'
-      : /\b(visita|conhecer|agendar)\b/.test(custLower)
-        ? ' e demonstrou interesse em conhecer o imóvel'
-        : ' e pediu mais detalhes sobre o empreendimento';
+  // Caso 1: Equipe apresentou possibilidade de plantas maiores, mas cliente NÃO confirmou (ex.: Vilela, Marcos Perallta)
+  if (
+    largerPlansSource === 'team_suggested' &&
+    args.interestProperty &&
+    bedrooms.length === 0 &&
+    !budgetText
+  ) {
+    const introParts = [`${firstName} chegou pelo ${args.interestProperty} buscando opções`];
+    if (locFormatted) introParts.push(locFormatted);
+    if (purposeClause) introParts.push(purposeClause);
+    let intro = introParts.join(' ');
+    if (askedPrice) intro += ' e perguntou sobre valores';
+    sentences.push(`${intro}.`);
+    sentences.push(
+      'Apresentamos a possibilidade de plantas maiores, mas ainda não confirmou qual configuração prefere.'
+    );
+    if (!budgetText) {
+      sentences.push('Ainda não informou o orçamento.');
+    }
+    sentences.push('Vale retomar a conversa para entender melhor essa necessidade.');
+    return sentences.join(' ');
+  }
 
+  // Caso 2: Cliente declarou busca própria diferente/específica (ex.: Alex Diniz, Sirleida, Aldeci Moraes)
+  if (args.hasPendingCommitment && searchPhrase) {
+    sentences.push(
+      `${firstName} procura ${searchPhrase}${budgetText ? ` (${budgetText})` : ''}${restrictionClause}.`
+    );
+  } else if (args.interestProperty && args.isCtwaOrigin) {
     if (prefersLargerPlans) {
-      const locSuffix = locations.length > 0 ? ` em ${locations.slice(0, 2).join(' ou ')}` : '';
-      const purpSuffix = purposeClause ? ` ${purposeClause}` : '';
       sentences.push(
-        `${firstName} chegou pelo anúncio do ${args.interestProperty}${purpSuffix}${detailClause}. Na conversa, surgiu o interesse em avaliar ${areaClause}${locSuffix}${restrictionClause}.`
+        `${firstName} veio pelo anúncio do ${args.interestProperty}${purposeClause ? ` ${purposeClause}` : ''} e confirmou interesse em ${areaClause}${featureHighlights.length > 0 ? ` (${featureHighlights.join(', ')})` : ''}${locFormatted ? ` ${locFormatted}` : ''}${restrictionClause}.`
       );
+    } else if (searchPhrase) {
+      const originIntro = askedPrice
+        ? `${firstName} entrou pelo ${args.interestProperty}, perguntou sobre valores e busca ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
+        : `${firstName} entrou pelo ${args.interestProperty} e demonstrou interesse em ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`;
+      sentences.push(originIntro);
     } else {
-      sentences.push(`${firstName} chegou pelo anúncio do ${args.interestProperty}${detailClause}.`);
-      if (searchPhrase) {
-        sentences.push(
-          `Busca ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
-        );
-      }
+      const detail = askedPrice
+        ? 'e perguntou sobre valores e condições'
+        : askedVisit
+          ? 'e demonstrou interesse em visitar o imóvel'
+          : 'e pediu mais detalhes sobre o empreendimento';
+      sentences.push(`${firstName} demonstrou interesse no ${args.interestProperty} ${detail}${budgetText ? ` (${budgetText})` : ''}.`);
     }
   } else if (searchPhrase) {
-    const stageLower = (args.stageName || '').trim().toLowerCase();
-    const stagePrefix =
-      stageLower === 'qualificação' || stageLower === 'qualificacao'
-        ? `${firstName} está em qualificação e busca `
-        : `${firstName} procura `;
     sentences.push(
-      `${stagePrefix}${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
+      `${firstName} procura ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
     );
   } else if (args.interestProperty) {
     sentences.push(
       `${firstName} demonstrou interesse no ${args.interestProperty}${budgetText ? ` (${budgetText})` : ''}${restrictionClause}.`
     );
   } else {
-    sentences.push(`${firstName} demonstrou interesse em compra de imóvel${budgetText ? `, ${budgetText}` : ''}.`);
+    sentences.push(
+      `${firstName} demonstrou interesse em compra de imóvel${budgetText ? `, ${budgetText}` : ''}.`
+    );
   }
 
-  // 2. Orçamento desconhecido (informar naturalmente sem inventar)
-  if (!budgetText && !args.hasPendingCommitment && !prefersLargerPlans) {
-    sentences.push('Ainda não informou o orçamento.');
+  if (!budgetText && !args.hasPendingCommitment) {
+    sentences.push('Ainda não informou quanto pretende investir.');
   }
 
-  // 3. Compromisso pendente real ou estado da conversa + opções selecionadas integrando a abordagem
   const propCount = Math.min(FOLLOWUP_MAX_RECOMMENDED_PROPERTIES, args.compatiblePropertiesCount ?? 0);
 
   if (args.hasPendingCommitment) {
-    sentences.push('Você ficou de enviar opções e ainda não encontramos registro desse envio.');
+    sentences.push('Você ficou de enviar algumas opções e ainda não encontramos registro desse envio.');
     if (propCount > 0) {
-      sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} para cumprir esse retorno.`);
+      sentences.push(`Separei ${formatCountWordsPtBr(propCount)} para apresentar agora.`);
     }
   } else if (args.opportunityType === 'first_contact') {
     if (propCount > 0) {
-      sentences.push(`Ainda aguarda o primeiro retorno comercial — selecionei ${formatCountWordsPtBr(propCount)} para iniciar o atendimento.`);
+      sentences.push(
+        `Ainda aguarda o primeiro retorno comercial — separei ${formatCountWordsPtBr(propCount)} para iniciar o atendimento.`
+      );
     } else {
       sentences.push('Ainda aguarda o primeiro retorno comercial.');
     }
   } else if (args.contactState === 'awaiting_business_reply') {
     if (propCount > 0) {
-      sentences.push(`Enviou a última mensagem e aguarda retorno — selecionei ${formatCountWordsPtBr(propCount)} para responder.`);
+      sentences.push(
+        `Enviou a última mensagem e aguarda retorno — separei ${formatCountWordsPtBr(propCount)} para responder.`
+      );
     } else {
       sentences.push('Enviou a última mensagem e está aguardando resposta.');
     }
   } else if (propCount > 0) {
-    if (prefersLargerPlans) {
-      sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} com o espaço que ele procura para retomar o contato.`);
-    } else {
-      sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} alinhadas a esse perfil para retomar o contato.`);
-    }
+    sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} que podem ajudar a retomar a conversa.`);
   }
 
   return sentences.join(' ');
@@ -2187,9 +2351,9 @@ export function buildMultiPropertyFreeFollowupMessage(args: {
   );
   const locText =
     neighborhoods.length === 1
-      ? ` em ${neighborhoods[0]}`
+      ? ` ${formatNeighborhoodWithPrepositionPtBr(neighborhoods[0])}`
       : neighborhoods.length > 1
-        ? ` em ${neighborhoods.slice(0, 2).join(' e ')}`
+        ? ` ${formatLocationsListWithPrepositionPtBr(neighborhoods).replace(' ou ', ' e ')}`
         : '';
 
   const intro =
