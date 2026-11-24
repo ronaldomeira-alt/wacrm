@@ -42,7 +42,7 @@ const PROVIDER_LABEL: Record<AiProvider, string> = {
   openai: 'OpenAI',
   deepseek: 'DeepSeek',
   anthropic: 'Anthropic (Claude)',
-  opencode_go: 'OpenCode Go (GLM)',
+  opencode_go: 'OpenCode Go',
 };
 
 const KEY_PLACEHOLDER: Record<AiProvider, string> = {

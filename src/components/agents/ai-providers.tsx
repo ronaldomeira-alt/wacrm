@@ -33,11 +33,13 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/dashboard/skeleton';
+import { ModelSelector } from './model-selector';
+import type { ProviderCatalogResult } from '@/lib/ai/model-catalog';
 import type { AiProvider, CircuitBreakerState } from '@/lib/ai/types';
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
   deepseek: 'DeepSeek (API Oficial)',
-  opencode_go: 'OpenCode Go (GLM)',
+  opencode_go: 'OpenCode Go',
   openai: 'OpenAI',
   anthropic: 'Anthropic',
 };
@@ -164,6 +166,34 @@ export function AiProvidersPanel() {
   const [limitMonthlyPct, setLimitMonthlyPct] = useState('90');
   const [failureThreshold, setFailureThreshold] = useState('3');
   const [opencodeGoKeyInput, setOpencodeGoKeyInput] = useState('');
+  const [catalogs, setCatalogs] = useState<Partial<Record<AiProvider, ProviderCatalogResult>>>({});
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
+
+  const loadCatalog = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) setCatalogRefreshing(true);
+    else setCatalogLoading(true);
+    try {
+      const res = await fetch(`/api/ai/models${forceRefresh ? '?refresh=1' : ''}`, {
+        cache: 'no-store',
+      });
+      const json = (await res.json().catch(() => null)) as {
+        providers?: Partial<Record<AiProvider, ProviderCatalogResult>>;
+      } | null;
+      if (res.ok && json?.providers) {
+        setCatalogs(json.providers);
+        if (forceRefresh) {
+          const ocCount = json.providers.opencode_go?.models?.length ?? 0;
+          toast.success(`Catálogo atualizado (${ocCount} modelos conversacionais no OpenCode Go).`);
+        }
+      }
+    } catch {
+      if (forceRefresh) toast.error('Não foi possível atualizar o catálogo de modelos.');
+    } finally {
+      setCatalogLoading(false);
+      setCatalogRefreshing(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -195,7 +225,8 @@ export function AiProvidersPanel() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadCatalog(false);
+  }, [load, loadCatalog]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -353,7 +384,8 @@ export function AiProvidersPanel() {
                   onValueChange={(v) => {
                     const p = v as AiProvider;
                     setProvider(p);
-                    setModel(DEFAULT_MODELS[p]);
+                    const list = catalogs[p]?.models ?? [];
+                    setModel(list[0]?.id ?? DEFAULT_MODELS[p]);
                   }}
                 >
                   <SelectTrigger>
@@ -361,7 +393,7 @@ export function AiProvidersPanel() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="deepseek">DeepSeek (API Oficial)</SelectItem>
-                    <SelectItem value="opencode_go">OpenCode Go (GLM 5.3 Flash)</SelectItem>
+                    <SelectItem value="opencode_go">OpenCode Go</SelectItem>
                     <SelectItem value="openai">OpenAI</SelectItem>
                     <SelectItem value="anthropic">Anthropic</SelectItem>
                   </SelectContent>
@@ -369,7 +401,16 @@ export function AiProvidersPanel() {
               </div>
               <div className="space-y-2">
                 <Label>Modelo Principal</Label>
-                <Input value={model} onChange={(e) => setModel(e.target.value)} />
+                <ModelSelector
+                  provider={provider}
+                  value={model}
+                  onChange={setModel}
+                  models={catalogs[provider]?.models ?? []}
+                  source={catalogs[provider]?.source}
+                  loading={catalogLoading}
+                  refreshing={catalogRefreshing}
+                  onRefresh={() => void loadCatalog(true)}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Timeout Máximo (segundos)</Label>
@@ -411,7 +452,9 @@ export function AiProvidersPanel() {
                     if (!v) return;
                     setSecondaryProvider(v);
                     if (v !== 'none') {
-                      setSecondaryModel(DEFAULT_MODELS[v as AiProvider]);
+                      const p = v as AiProvider;
+                      const list = catalogs[p]?.models ?? [];
+                      setSecondaryModel(list[0]?.id ?? DEFAULT_MODELS[p]);
                     }
                   }}
                 >
@@ -421,7 +464,7 @@ export function AiProvidersPanel() {
                   <SelectContent>
                     <SelectItem value="none">Nenhum</SelectItem>
                     <SelectItem value="deepseek">DeepSeek (API Oficial)</SelectItem>
-                    <SelectItem value="opencode_go">OpenCode Go (GLM 5.3 Flash)</SelectItem>
+                    <SelectItem value="opencode_go">OpenCode Go</SelectItem>
                     <SelectItem value="openai">OpenAI</SelectItem>
                     <SelectItem value="anthropic">Anthropic</SelectItem>
                   </SelectContent>
@@ -429,11 +472,24 @@ export function AiProvidersPanel() {
               </div>
               <div className="space-y-2">
                 <Label>Modelo Secundário</Label>
-                <Input
+                <ModelSelector
+                  provider={secondaryProvider === 'none' ? 'none' : (secondaryProvider as AiProvider)}
                   value={secondaryModel}
+                  onChange={setSecondaryModel}
+                  models={
+                    secondaryProvider === 'none'
+                      ? []
+                      : catalogs[secondaryProvider as AiProvider]?.models ?? []
+                  }
+                  source={
+                    secondaryProvider === 'none'
+                      ? undefined
+                      : catalogs[secondaryProvider as AiProvider]?.source
+                  }
+                  loading={catalogLoading}
+                  refreshing={catalogRefreshing}
                   disabled={secondaryProvider === 'none'}
-                  placeholder="Ex: deepseek-flash"
-                  onChange={(e) => setSecondaryModel(e.target.value)}
+                  onRefresh={() => void loadCatalog(true)}
                 />
               </div>
               <div className="space-y-2">

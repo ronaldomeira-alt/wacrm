@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   Bot,
@@ -35,7 +35,9 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ResponseStyleInstructionsEditor } from './response-style-instructions-editor';
-import type { AiDecision, AiUsage } from '@/lib/ai/types';
+import { ModelSelector } from './model-selector';
+import type { ProviderCatalogResult } from '@/lib/ai/model-catalog';
+import type { AiDecision, AiProvider, AiUsage } from '@/lib/ai/types';
 
 // Base UI's Select reserves the empty string for "no selection" internally,
 // so "no property" needs its own sentinel value instead of ''.
@@ -75,11 +77,16 @@ interface TurnDiagnostic {
   fallbackUsed?: boolean;
 }
 
-const TEST_TARGET_OPTIONS = [
-  { value: 'production', label: 'Padrão de Produção', provider: null, model: null },
-  { value: 'deepseek:deepseek-flash', label: 'DeepSeek V4.1 Flash', provider: 'deepseek', model: 'deepseek-flash' },
-  { value: 'opencode_go:glm-5.3-flash', label: 'GLM 5.3 Flash (OpenCode Go)', provider: 'opencode_go', model: 'glm-5.3-flash' },
-] as const;
+const PLAYGROUND_PROVIDER_OPTIONS: Array<{
+  value: 'production' | AiProvider;
+  label: string;
+}> = [
+  { value: 'production', label: 'Padrão de Produção' },
+  { value: 'opencode_go', label: 'OpenCode Go' },
+  { value: 'deepseek', label: 'DeepSeek (API Oficial)' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+];
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -132,7 +139,11 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
   const [properties, setProperties] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>('');
   const [simulatedHours, setSimulatedHours] = useState<'real_time' | 'business_hours' | 'off_hours'>('business_hours');
-  const [testTarget, setTestTarget] = useState<string>('production');
+  const [overrideProvider, setOverrideProvider] = useState<'production' | AiProvider>('production');
+  const [overrideModel, setOverrideModel] = useState<string>('glm-5.3-flash');
+  const [catalogs, setCatalogs] = useState<Partial<Record<AiProvider, ProviderCatalogResult>>>({});
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [selectedTurnForInspect, setSelectedTurnForInspect] = useState<Turn | null>(null);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
 
@@ -142,8 +153,33 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Load properties on mount
+  const loadCatalog = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) setCatalogRefreshing(true);
+    else setCatalogLoading(true);
+    try {
+      const res = await fetch(`/api/ai/models${forceRefresh ? '?refresh=1' : ''}`, {
+        cache: 'no-store',
+      });
+      const json = (await res.json().catch(() => null)) as {
+        providers?: Partial<Record<AiProvider, ProviderCatalogResult>>;
+      } | null;
+      if (res.ok && json?.providers) {
+        setCatalogs(json.providers);
+        if (forceRefresh) {
+          toast.success('Catálogo de modelos atualizado.');
+        }
+      }
+    } catch {
+      if (forceRefresh) toast.error('Falha ao atualizar o catálogo de modelos.');
+    } finally {
+      setCatalogLoading(false);
+      setCatalogRefreshing(false);
+    }
+  }, []);
+
+  // Load properties and model catalog on mount
   useEffect(() => {
+    void loadCatalog(false);
     fetch('/api/ai/properties')
       .then((res) => res.json())
       .then((data) => {
@@ -260,7 +296,6 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
         }
       }
 
-      const chosenTarget = TEST_TARGET_OPTIONS.find((o) => o.value === testTarget);
       const res = await fetch('/api/ai/playground', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -269,10 +304,10 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
           simulated_hours: simulatedHours,
           simulated_lead: null,
           messages: apiMessages,
-          ...(chosenTarget?.provider
+          ...(overrideProvider !== 'production'
             ? {
-                overrideProvider: chosenTarget.provider,
-                overrideModel: chosenTarget.model,
+                overrideProvider,
+                overrideModel: overrideModel || undefined,
               }
             : {}),
         }),
@@ -437,34 +472,60 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
               </SelectContent>
             </Select>
 
-            {/* 3. Independent Test Model Selector */}
+            {/* 3. Independent Test Provider & Model Selector */}
             <Select
-              value={testTarget}
-              onValueChange={(val) => val && setTestTarget(val)}
+              value={overrideProvider}
+              onValueChange={(val) => {
+                if (!val) return;
+                const next = val as 'production' | AiProvider;
+                setOverrideProvider(next);
+                if (next !== 'production') {
+                  const list = catalogs[next]?.models ?? [];
+                  if (list.length > 0) {
+                    setOverrideModel(list[0].id);
+                  }
+                }
+              }}
             >
-              <SelectTrigger className="h-auto min-w-[200px] sm:min-w-[215px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto">
+              <SelectTrigger className="h-auto min-w-[185px] sm:min-w-[195px] max-w-full items-center justify-start gap-2.5 rounded-xl border border-border/70 bg-background/60 py-1.5 pr-3 pl-2 text-left shadow-none hover:bg-background/80 focus-visible:ring-1 focus-visible:ring-ring data-[size=default]:h-auto">
                 <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
                   <Bot className="!size-4 !m-0 p-0 block shrink-0" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] leading-none font-medium tracking-wide text-muted-foreground uppercase">
-                    Modelo (Isolado)
+                    Provedor (Isolado)
                   </p>
                   <SelectValue className="mt-1 block truncate text-xs font-semibold leading-none text-foreground">
                     <span>
-                      {TEST_TARGET_OPTIONS.find((o) => o.value === testTarget)?.label ?? 'Padrão de Produção'}
+                      {PLAYGROUND_PROVIDER_OPTIONS.find((o) => o.value === overrideProvider)?.label ?? 'Padrão de Produção'}
                     </span>
                   </SelectValue>
                 </div>
               </SelectTrigger>
-              <SelectContent className="w-(--anchor-width) min-w-[230px]">
-                {TEST_TARGET_OPTIONS.map((opt) => (
+              <SelectContent className="w-(--anchor-width) min-w-[210px]">
+                {PLAYGROUND_PROVIDER_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
                     {opt.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+
+            {overrideProvider !== 'production' && (
+              <div className="min-w-[230px] flex-1 sm:max-w-[300px]">
+                <ModelSelector
+                  compact
+                  provider={overrideProvider}
+                  value={overrideModel}
+                  onChange={setOverrideModel}
+                  models={catalogs[overrideProvider]?.models ?? []}
+                  source={catalogs[overrideProvider]?.source}
+                  loading={catalogLoading}
+                  refreshing={catalogRefreshing}
+                  onRefresh={() => void loadCatalog(true)}
+                />
+              </div>
+            )}
           </div>
 
           {/* Nova Conversa */}
