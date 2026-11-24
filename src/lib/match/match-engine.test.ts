@@ -827,4 +827,241 @@ describe('Auditoria Resolutiva — Modalidade Comercial (Venda vs Locação) e O
     expect(evaluateMatch(buyerProfile, rentProperty).eligible).toBe(false);
     expect(evaluateMatch(rentProfile, rentProperty).eligible).toBe(false);
   });
+
+  it('11. Etapa 2 — Cliente que entrou por anúncio de studio (R$ 270 mil), mas na conversa informou que procura apartamento de 2 quartos', () => {
+    const profile = buildProfileFromData(
+      {
+        id: 'lead-studio-to-2q',
+        account_id: 'acc-1',
+        name: 'Cliente Transição 2Q',
+        phone: '5583991112222',
+        ai_score: 8,
+        paused_at: null,
+        archived_at: null,
+      },
+      {
+        summary: {
+          purpose: ['Moradia'],
+          property_type: ['Studio'],
+          location: ['Bessa'],
+          price_max: 270000,
+          notes: 'Entrou pelo anúncio de studio de 270 mil, mas explicou que procura um apartamento de 2 quartos no Bessa.',
+        },
+      },
+      [
+        {
+          source: 'ctwa_ad',
+          originally_from_ctwa: true,
+          tags: { id: 't-st', name: 'Studio', category: 'Tipo de imóvel' },
+        },
+      ],
+      {
+        ctwa_referral: {
+          source_id: 'ad-studio-270',
+          headline: 'Studios no Bessa a partir de R$ 270 mil',
+        },
+      }
+    );
+
+    // Prevalência da conversa sobre o anúncio de origem:
+    expect(profile.bedrooms).toContain(2);
+    expect(profile.bedroomsStrict).toBe(true);
+    expect(profile.propertyTypes).toContain('Apartamento');
+    expect(profile.propertyTypes.map((t) => t.toLowerCase())).not.toContain('studio');
+    expect(profile.budgetIsFlexibleFromAd).toBe(true);
+    expect(profile.priceFlexMax).toBeGreaterThanOrEqual(500000);
+
+    // Studio de R$ 270 mil do anúncio é ELIMINADO para esse cliente
+    const studio270 = createMockProperty({
+      propertyId: 'prop-studio-270',
+      title: 'Studio Compacto Bessa',
+      propertyType: 'studio',
+      neighborhood: 'Bessa',
+      priceMin: 270000,
+      priceMax: 270000,
+      bedroomsMin: 1,
+      bedroomsMax: 1,
+      areaMin: 22,
+      areaMax: 22,
+    });
+    expect(evaluateMatch(profile, studio270).eligible).toBe(false);
+
+    // Apartamento real de 2 quartos (52 m², R$ 410 mil) é ELEGÍVEL e recomendado com alta compatibilidade
+    const apto2Quartos = createMockProperty({
+      propertyId: 'prop-apto-2q',
+      title: 'Residencial Bessa Family',
+      propertyType: 'apartamento',
+      neighborhood: 'Bessa',
+      priceMin: 410000,
+      priceMax: 430000,
+      bedroomsMin: 2,
+      bedroomsMax: 2,
+      areaMin: 52,
+      areaMax: 56,
+    });
+    const evalApto = evaluateMatch(profile, apto2Quartos);
+    expect(evalApto.eligible).toBe(true);
+    expect(evalApto.matchScore).toBeGreaterThanOrEqual(85);
+  });
+
+  it('12. Etapa 2 — Caso real Vilela (plantas maiores de 50 a 75 m²): elimina unidades de 19, 20 e 22 m² e impede que preço de unidade de 21,6 m² represente planta de 63 m²', () => {
+    const vilelaProfile = buildProfileFromData(
+      {
+        id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+        account_id: 'acc-1',
+        name: 'Vilela',
+        phone: '558491234625',
+        ai_score: 7,
+        paused_at: null,
+        archived_at: null,
+      },
+      {
+        summary: {
+          purpose: ['Moradia', 'Investimento'],
+          property_type: ['flat'],
+          location: ['Bessa'],
+          price_min: 350000,
+          notes:
+            'Interesse inicial no Mahal Resort no Bessa para moradia e investimento. Solicitou valores e avalia possibilidade de unir unidades para formar plantas de 50 ou 75 m².',
+        },
+      },
+      [],
+      {
+        ctwa_referral: {
+          source_id: '120252018175280493',
+          headline: 'Rooftop com vista pro mar no Bessa',
+        },
+      }
+    );
+
+    expect(vilelaProfile.prefersLargerPlans).toBe(true);
+    expect(vilelaProfile.areaMin).toBe(50);
+    expect(vilelaProfile.areaMax).toBe(75);
+    expect(vilelaProfile.propertyTypes).toContain('Apartamento');
+    expect(vilelaProfile.propertyTypes.map((t) => t.toLowerCase())).not.toContain('flat');
+
+    // 1. Unidade de 18,94 m² (Studios e apartamentos de 1 quarto no Bessa) -> ELIMINADA (nunca 92%)
+    const unit19m = createMockProperty({
+      propertyId: 'prop-19m',
+      title: 'Studios e apartamentos de 1 quarto no Bessa',
+      propertyType: 'apartamento',
+      neighborhood: 'Bessa',
+      priceMin: 355000,
+      priceMax: 355000,
+      bedroomsMin: 1,
+      bedroomsMax: 1,
+      areaMin: 18.94,
+      areaMax: 18.94,
+    });
+    expect(evaluateMatch(vilelaProfile, unit19m).eligible).toBe(false);
+
+    // 2. Unidade de 19,85 m² (Park H2orizon, 0 quartos) -> ELIMINADA
+    const unit20m = createMockProperty({
+      propertyId: 'prop-20m',
+      title: 'Park H2orizon',
+      propertyType: 'apartamento',
+      neighborhood: 'Bessa',
+      priceMin: 263900,
+      priceMax: 263900,
+      bedroomsMin: 0,
+      bedroomsMax: 0,
+      areaMin: 19.85,
+      areaMax: 19.85,
+    });
+    expect(evaluateMatch(vilelaProfile, unit20m).eligible).toBe(false);
+
+    // 3. Empreendimento misto (orulo-84567: 21,6 m² a 63,3 m², mas preço único R$ 299.012 referente à unidade de 21,6 m²) -> ELIMINADO (Seção 6)
+    const mixed22to63m = createMockProperty({
+      propertyId: 'prop-mixed-22m',
+      title: 'Apartamento no Bessa (orulo-84567)',
+      propertyType: 'apartamento',
+      neighborhood: 'Bessa',
+      priceMin: 299012.71,
+      priceMax: 299012.71,
+      bedroomsMin: 1,
+      bedroomsMax: 2,
+      areaMin: 21.6,
+      areaMax: 63.3,
+    });
+    const evalMixed = evaluateMatch(vilelaProfile, mixed22to63m);
+    expect(evalMixed.eligible).toBe(false);
+    expect(evalMixed.eliminatedReason).toContain('21.6 m²');
+
+    // 4. Apartamento real com planta de 54,7 m² e 2 quartos no Bessa -> ELEGÍVEL com alta compatibilidade
+    const apto55m = createMockProperty({
+      propertyId: 'prop-55m',
+      title: 'Apartamento no Bessa 55m²',
+      propertyType: 'apartamento',
+      neighborhood: 'Bessa',
+      priceMin: 519000,
+      priceMax: 548000,
+      bedroomsMin: 2,
+      bedroomsMax: 3,
+      areaMin: 54.7,
+      areaMax: 105.6,
+    });
+    const eval55m = evaluateMatch(vilelaProfile, apto55m);
+    expect(eval55m.eligible).toBe(true);
+    expect(eval55m.matchScore).toBeGreaterThanOrEqual(88);
+  });
+
+  it('13. Etapa 2 — Limite financeiro inegociável vs. trava anti-compensação estrutural (<= 59%)', () => {
+    // 1. Limite financeiro inegociável elimina imóveis acima do teto mesmo que o cliente busque 2 quartos
+    const strictBudgetProfile = buildProfileFromData(
+      {
+        id: 'lead-strict-budget',
+        account_id: 'acc-1',
+        name: 'Cliente Teto Estrito',
+        phone: '5583993334444',
+        ai_score: 7,
+        paused_at: null,
+        archived_at: null,
+      },
+      {
+        summary: {
+          purpose: ['Compra'],
+          property_type: ['Apartamento'],
+          bedrooms: [2],
+          location: ['Bessa'],
+          price_max: 350000,
+          notes: 'Procura 2 quartos no Bessa, mas deixou claro que seu limite máximo é R$ 350 mil e não posso passar de R$ 350 mil.',
+        },
+      },
+      [],
+      null
+    );
+    expect(strictBudgetProfile.priceStrictMax).toBe(true);
+    expect(strictBudgetProfile.budgetIsFlexibleFromAd).toBe(false);
+
+    const overCeilingProp = createMockProperty({
+      priceMin: 390000,
+      priceMax: 390000,
+      bedroomsMin: 2,
+      bedroomsMax: 2,
+      areaMin: 55,
+      areaMax: 55,
+    });
+    expect(evaluateMatch(strictBudgetProfile, overCeilingProp).eligible).toBe(false);
+
+    // 2. Trava anti-compensação estrutural: imóvel com preço ótimo e localização exata, mas tipologia/quartos divergentes
+    // nunca ultrapassa 59%
+    const nonStrictProfile = createMockProfile({
+      propertyTypes: ['Casa'],
+      propertyTypeStrict: false,
+      bedrooms: [3],
+      bedroomsStrict: false,
+      locations: ['Bessa'],
+      priceMax: 500000,
+    });
+    const mismatchedTypeAndBeds = createMockProperty({
+      propertyType: 'apartamento',
+      neighborhood: 'Bessa',
+      priceMin: 420000,
+      priceMax: 420000,
+      bedroomsMin: 2,
+      bedroomsMax: 2,
+    });
+    const evalMismatch = evaluateMatch(nonStrictProfile, mismatchedTypeAndBeds);
+    expect(evalMismatch.matchScore).toBeLessThanOrEqual(59);
+  });
 });

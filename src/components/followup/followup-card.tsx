@@ -29,6 +29,7 @@ import { FOLLOWUP_UPDATED_EVENT } from '@/components/dashboard/followup-recommen
 import { scoreConfidenceBand } from '@/lib/ai/lead-analysis-config';
 import {
   evaluateFollowupSessionWindow,
+  formatNaturalElapsedContactPtBr,
   type EnrichedFollowupItem,
 } from '@/lib/followup/engine';
 import type { AiSuggestionStatus } from '@/types';
@@ -88,15 +89,19 @@ function formatTimestampPtBr(isoDate?: string | null): {
   };
 }
 
-function formatElapsedWithoutContact(hours: number | null, neverContacted: boolean): string {
-  if (neverContacted || hours === null) {
+function formatElapsedWithoutContact(
+  hours: number | null,
+  neverContacted: boolean,
+  lastContactAt?: string | null
+): string {
+  if (neverContacted || (hours === null && !lastContactAt)) {
     return 'Nunca contatado';
   }
-  if (hours < 24) {
-    return `Há ${Math.max(1, hours)}h sem contato`;
-  }
-  const days = Math.round(hours / 24);
-  return `Há ${days} ${days === 1 ? 'dia' : 'dias'} sem contato`;
+  return formatNaturalElapsedContactPtBr({
+    hours,
+    lastContactAt,
+    neverContacted,
+  });
 }
 
 export function FollowupCard({
@@ -134,7 +139,11 @@ export function FollowupCard({
 
   const effectiveHours =
     item.hoursSinceLastCustomerMessage ?? item.hoursSinceLastCommunication;
-  const elapsedLabel = formatElapsedWithoutContact(effectiveHours, item.neverContacted);
+  const elapsedLabel = formatElapsedWithoutContact(
+    effectiveHours,
+    item.neverContacted,
+    primaryCustomerIso
+  );
 
   const liveWindow =
     item.sessionWindow ??

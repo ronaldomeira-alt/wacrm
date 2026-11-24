@@ -57,6 +57,9 @@ export function evaluateMatch(
   if (profile.isShortStayOnly) {
     return eliminated('Cliente busca exclusivamente hospedagem/temporada — incompatível com estoque comum', breakdown);
   }
+  if (profile.isSellerOrOutOfArea) {
+    return eliminated('Contato não é comprador ativo na praça atendida (captação ou fora do estado)', breakdown);
+  }
 
   const profOp = normalizeString(profile.operation || '');
   const propOp = normalizeString(property.operation || '');
@@ -75,8 +78,9 @@ export function evaluateMatch(
     return eliminated('Intenção comercial de compra ainda não confirmada para o cliente', breakdown);
   }
 
-  // 1.2 Tipologia: incompatibilidade absoluta natural de mercado
+  // 1.2 Restrições explícitas de tipologia e incompatibilidade estrutural de formato
   const propTypeNorm = normalizeString(property.propertyType || '');
+  const propTitleNormEarly = normalizeString(property.title || '');
   const isLand = ['terreno', 'lote', 'loteamento', 'area'].some(
     (t) => propTypeNorm.includes(t) || t.includes(propTypeNorm)
   );
@@ -84,6 +88,26 @@ export function evaluateMatch(
     (t) => propTypeNorm.includes(t) || t.includes(propTypeNorm)
   );
   const isResidential = !isLand && !isCommercial;
+
+  if (profile.excludedPropertyTypes && profile.excludedPropertyTypes.length > 0) {
+    for (const excluded of profile.excludedPropertyTypes) {
+      const exNorm = normalizeString(excluded);
+      const matchesExcluded =
+        propTypeNorm.includes(exNorm) ||
+        (exNorm === 'studio' &&
+          (propTypeNorm.includes('studio') ||
+            propTypeNorm.includes('estudio') ||
+            /\b(studios?|estudios?)\b/.test(propTitleNormEarly))) ||
+        (exNorm === 'flat' &&
+          (propTypeNorm.includes('flat') || /\bflats?\b/.test(propTitleNormEarly)));
+      if (matchesExcluded) {
+        return eliminated(
+          `Cliente rejeitou explicitamente a tipologia ${excluded} e o imóvel é ${property.propertyType} (${property.title})`,
+          breakdown
+        );
+      }
+    }
+  }
 
   if (profile.propertyTypes.length > 0) {
     const acceptedTypes = profile.propertyTypes.map(normalizeString);
@@ -206,8 +230,17 @@ export function evaluateMatch(
   }
 
   // 1.6 Quartos: incompatibilidade eliminatória e descarte de discrepâncias graves
-  if (isResidential && profile.bedrooms.length > 0) {
+  const propMinAreaVal =
+    property.areaMin != null && Number(property.areaMin) > 0 ? Number(property.areaMin) : null;
+  const propMaxAreaVal =
+    property.areaMax != null && Number(property.areaMax) > 0
+      ? Number(property.areaMax)
+      : propMinAreaVal;
+
+  const hasPropBedroomInfo = property.bedroomsMin != null || property.bedroomsMax != null;
+  if (isResidential && profile.bedrooms.length > 0 && hasPropBedroomInfo) {
     const minRequiredBedrooms = Math.min(...profile.bedrooms);
+    const propMinBedrooms = property.bedroomsMin ?? property.bedroomsMax ?? 0;
     const propMaxBedrooms = property.bedroomsMax ?? property.bedroomsMin ?? 0;
 
     if (profile.bedroomsStrict && propMaxBedrooms < minRequiredBedrooms) {
@@ -225,10 +258,80 @@ export function evaluateMatch(
       );
     }
 
-    // Se o cliente busca 2+ quartos, estúdios sem quarto privativo (0 quartos) são descartados
-    if (minRequiredBedrooms >= 2 && propMaxBedrooms === 0) {
+    // Se o cliente busca 2+ quartos, estúdios/flats de 0 ou 1 quarto são descartados
+    if (minRequiredBedrooms >= 2 && propMaxBedrooms < 2) {
       return eliminated(
-        `Cliente busca ${minRequiredBedrooms} quartos e imóvel é estúdio/flat sem quarto privativo`,
+        `Cliente busca ${minRequiredBedrooms} quartos e imóvel possui no máximo ${propMaxBedrooms} quarto(s)`,
+        breakdown
+      );
+    }
+
+    // Se o cliente busca 2+ quartos, mas o imóvel tem planta inicial de 0/1 quarto (< 38 m²) com preço único da unidade menor:
+    // não usar preço de studio de 19–22 m² para representar apartamento de 2 quartos (Seção 6)
+    if (
+      minRequiredBedrooms >= 2 &&
+      propMinBedrooms <= 1 &&
+      propMinAreaVal !== null &&
+      propMinAreaVal < 38 &&
+      property.priceMin > 0 &&
+      property.priceMin === property.priceMax
+    ) {
+      return eliminated(
+        `Imóvel misto cujo preço cadastrado (R$ ${property.priceMin.toLocaleString('pt-BR')}) refere-se à unidade compacta de ${propMinAreaVal} m², sem valor confirmado para a planta de ${minRequiredBedrooms} quartos`,
+        breakdown
+      );
+    }
+  }
+
+  // 1.6b Metragem, necessidade de espaço e compatibilidade por planta/unidade (Seções 4 e 6)
+  const targetAreaMin =
+    profile.areaMin != null && profile.areaMin > 0
+      ? profile.areaMin
+      : profile.prefersLargerPlans
+        ? 48
+        : null;
+
+  if (isResidential && targetAreaMin !== null) {
+    // Se o imóvel não informa nenhuma metragem quando o cliente exige planta maior, não é possível confirmar a planta
+    if (propMaxAreaVal === null || propMaxAreaVal <= 0) {
+      return eliminated(
+        `Cliente busca planta maior (a partir de ~${targetAreaMin} m²) e o cadastro do imóvel não possui metragem confirmada`,
+        breakdown
+      );
+    }
+
+    const minAcceptableArea = profile.areaStrict ? targetAreaMin : targetAreaMin * 0.92;
+    if (propMaxAreaVal < minAcceptableArea) {
+      return eliminated(
+        `Cliente busca plantas maiores (~${targetAreaMin} m²+) e o imóvel oferece no máximo ${propMaxAreaVal} m²`,
+        breakdown
+      );
+    }
+
+    // Regra de ouro de planta vs. preço (Seção 6):
+    // Quando o cliente busca plantas maiores, não recomendar empreendimentos cuja menor unidade (areaMin)
+    // esteja abaixo da metragem buscada (< targetAreaMin * 0.95) quando houver apenas um preço único cadastrado
+    // (pois esse preço único refere-se à unidade menor, e não à planta maior!).
+    if (
+      propMinAreaVal !== null &&
+      propMinAreaVal < targetAreaMin * 0.95 &&
+      property.priceMin > 0 &&
+      property.priceMin === property.priceMax
+    ) {
+      return eliminated(
+        `O preço cadastrado (R$ ${property.priceMin.toLocaleString('pt-BR')}) corresponde à unidade menor de ${propMinAreaVal} m², sem valor confirmado para a planta de ${targetAreaMin} m²+`,
+        breakdown
+      );
+    }
+
+    // Se o cliente busca plantas maiores (>= 45 m²), descartar tipologias estritamente de flat/studio compacto
+    if (
+      targetAreaMin >= 45 &&
+      (propTypeNorm === 'flat' || propTypeNorm === 'studio' || /\b(studios?|flats?)\b/.test(propTitleNormEarly)) &&
+      (propMinAreaVal === null || propMinAreaVal < 42)
+    ) {
+      return eliminated(
+        `Cliente busca plantas maiores (~${targetAreaMin} m²+) e o imóvel é um ${property.propertyType} compacto`,
         breakdown
       );
     }
@@ -249,24 +352,28 @@ export function evaluateMatch(
     }
   }
 
-  // 1.8 Preço e Orçamento (com interseção de faixas e tolerância de 10%)
+  // 1.8 Preço e Orçamento (distinguindo limite inegociável de orçamento flexível de anúncio — Seção 5)
   const entryPrice = property.priceMin > 0 ? property.priceMin : property.priceMax;
   if (profile.priceMax !== null && profile.priceMax > 0 && entryPrice > 0) {
     const clientBudget = profile.priceMax;
-    // Se o cliente definiu teto absoluto
+    // Se o cliente definiu teto absoluto inegociável
     if (profile.priceStrictMax) {
       if (entryPrice > clientBudget) {
         return eliminated(
-          `Preço de entrada (R$ ${entryPrice.toLocaleString('pt-BR')}) excede o limite financeiro absoluto de R$ ${clientBudget.toLocaleString('pt-BR')}`,
+          `Preço de entrada (R$ ${entryPrice.toLocaleString('pt-BR')}) excede o limite financeiro inegociável de R$ ${clientBudget.toLocaleString('pt-BR')}`,
           breakdown
         );
       }
     } else {
-      // Tolerância normal de até +10%
-      const toleranceMax = clientBudget * 1.1;
-      if (entryPrice > toleranceMax) {
+      // Se o orçamento inicial veio de anúncio barato mas o cliente busca planta maior (budgetIsFlexibleFromAd),
+      // utiliza priceFlexMax antes de eliminar; caso contrário usa tolerância padrão de +10%.
+      const effectiveCeiling =
+        profile.budgetIsFlexibleFromAd && profile.priceFlexMax && profile.priceFlexMax > clientBudget
+          ? profile.priceFlexMax
+          : clientBudget * 1.1;
+      if (entryPrice > effectiveCeiling) {
         return eliminated(
-          `Preço de entrada (R$ ${entryPrice.toLocaleString('pt-BR')}) excede a tolerância máxima (+10%) de R$ ${toleranceMax.toLocaleString('pt-BR')}`,
+          `Preço de entrada (R$ ${entryPrice.toLocaleString('pt-BR')}) excede a faixa máxima de R$ ${effectiveCeiling.toLocaleString('pt-BR')}`,
           breakdown
         );
       }
@@ -306,10 +413,16 @@ export function evaluateMatch(
   } else {
     const clientBudget = profile.priceMax;
     if (entryPrice <= clientBudget) {
-      // 100% de aderência financeira: abaixo ou igual ao orçamento é ótimo
       breakdown.price = Math.round(weightPrice * 10) / 10;
       breakdown.reasons.push(
         `Preço dentro do orçamento do cliente (R$ ${entryPrice.toLocaleString('pt-BR')} <= R$ ${clientBudget.toLocaleString('pt-BR')})`
+      );
+    } else if (profile.budgetIsFlexibleFromAd && profile.priceFlexMax && entryPrice <= profile.priceFlexMax) {
+      // Cliente veio de anúncio mais barato, mas busca planta maior: mantém boa pontuação estrutural indicando a diferença
+      breakdown.price = Math.round(weightPrice * 0.82 * 10) / 10;
+      const diff = entryPrice - clientBudget;
+      breakdown.reasons.push(
+        `Planta maior compatível (valor R$ ${diff.toLocaleString('pt-BR')} acima da referência inicial do anúncio)`
       );
     } else {
       // Entre clientBudget e clientBudget * 1.1: perde pontos progressivamente
@@ -364,26 +477,37 @@ export function evaluateMatch(
   }
 
   // 3.3 Tipologia (Base 15%)
+  let hasStructuralMismatch = false;
   if (profile.propertyTypes.length === 0) {
     breakdown.propertyType = Math.round(weightType * 0.8 * 10) / 10;
   } else {
     const acceptedTypes = profile.propertyTypes.map(normalizeString);
     const isCompactProperty =
-      (property.bedroomsMin != null && property.bedroomsMin <= 1) ||
+      (property.bedroomsMin != null && property.bedroomsMin <= 1 && (propMaxAreaVal === null || propMaxAreaVal <= 40)) ||
       propTitleNorm.includes('flat') ||
       propTitleNorm.includes('studio') ||
       propTitleNorm.includes('loft') ||
       propTitleNorm.includes('compacto');
 
     const matchedType = acceptedTypes.find((t) => {
+      // Se o cliente busca 'apartamento' com 2+ quartos ou plantas maiores (>= 45m²),
+      // um studio/flat compacto NÃO bate como 'apartamento'
+      if (
+        t === 'apartamento' &&
+        (targetAreaMin !== null && targetAreaMin >= 45 || profile.bedrooms.some((b) => b >= 2)) &&
+        isCompactProperty
+      ) {
+        return false;
+      }
       if (propTypeNorm.includes(t) || t.includes(propTypeNorm) || propTitleNorm.includes(t)) {
         return true;
       }
-      // Equivalência de mercado: Flats/Studios cadastrados como 'apartamento' compacto
+      // Equivalência de mercado: Flats/Studios cadastrados como 'apartamento' compacto (apenas quando o cliente não busca planta maior)
       if (
         ['flat', 'studio', 'loft', 'kitnet'].includes(t) &&
         propTypeNorm.includes('apartamento') &&
-        isCompactProperty
+        isCompactProperty &&
+        !profile.prefersLargerPlans
       ) {
         return true;
       }
@@ -394,18 +518,30 @@ export function evaluateMatch(
       breakdown.propertyType = Math.round(weightType * 10) / 10;
       breakdown.reasons.push(`Tipologia compatível: ${property.propertyType}`);
     } else {
-      // Tipologia diferente, mas não estrita
+      hasStructuralMismatch = true;
       breakdown.propertyType = Math.round(weightType * 0.3 * 10) / 10;
-      breakdown.penalties.push(`Tipologia ${property.propertyType} diverge da preferência inicial`);
+      breakdown.penalties.push(`Tipologia ${property.propertyType} diverge da preferência do cliente`);
     }
   }
 
   // 3.4 Quartos / Configuração (Base 15%)
   if (isApplicableBedrooms) {
     if (profile.bedrooms.length === 0) {
+      // Se o cliente busca plantas maiores (>= 45 m²), imóveis com 0 quartos (studios) perdem pontos e sofrem trava estrutural
+      if (targetAreaMin !== null && targetAreaMin >= 45 && property.bedroomsMax === 0) {
+        hasStructuralMismatch = true;
+        breakdown.bedrooms = 0;
+        breakdown.penalties.push('Unidade sem quarto privativo (0 quartos) incompatível com busca por planta maior');
+      } else if (targetAreaMin !== null && targetAreaMin >= 45 && (property.bedroomsMin ?? 0) >= 2) {
+        breakdown.bedrooms = Math.round(weightBedrooms * 10) / 10;
+        breakdown.reasons.push(`Configuração de ${property.bedroomsMin} quartos adequada para planta maior`);
+      } else {
+        breakdown.bedrooms = Math.round(weightBedrooms * 0.8 * 10) / 10;
+      }
+    } else if (!hasPropBedroomInfo) {
       breakdown.bedrooms = Math.round(weightBedrooms * 0.8 * 10) / 10;
     } else {
-      const propMinBed = property.bedroomsMin ?? 1;
+      const propMinBed = property.bedroomsMin ?? property.bedroomsMax ?? 1;
       const propMaxBed = property.bedroomsMax ?? propMinBed;
       const hasIntersection = profile.bedrooms.some((b) => b >= propMinBed && b <= propMaxBed);
 
@@ -413,11 +549,11 @@ export function evaluateMatch(
         breakdown.bedrooms = Math.round(weightBedrooms * 10) / 10;
         breakdown.reasons.push(`Configuração de quartos compatível (${propMinBed === propMaxBed ? propMinBed : `${propMinBed} a ${propMaxBed}`} quartos)`);
       } else {
-        // Sem interseção, mas não era requisito eliminatório
+        hasStructuralMismatch = true;
         const closestDiff = Math.min(...profile.bedrooms.map((b) => Math.min(Math.abs(b - propMinBed), Math.abs(b - propMaxBed))));
-        const factor = closestDiff === 1 ? 0.5 : 0.2;
+        const factor = closestDiff === 1 ? 0.4 : 0.1;
         breakdown.bedrooms = Math.round(weightBedrooms * factor * 10) / 10;
-        breakdown.penalties.push(`Quantidade de quartos diferente da preferência informada`);
+        breakdown.penalties.push(`Quantidade de quartos diferente da necessidade do cliente`);
       }
     }
   }
@@ -443,9 +579,23 @@ export function evaluateMatch(
     }
   }
 
-  // 3.7 Metragem (Base 5%)
+  // 3.7 Metragem e Espaço (Base 5%)
   if (isApplicableArea) {
-    breakdown.area = Math.round(weightArea * 10) / 10;
+    if (targetAreaMin !== null && propMinAreaVal !== null) {
+      if (propMinAreaVal >= targetAreaMin) {
+        breakdown.area = Math.round(weightArea * 10) / 10;
+        breakdown.reasons.push(`Metragem compatível (${Math.round(propMinAreaVal)} m²)`);
+      } else if (propMaxAreaVal !== null && propMaxAreaVal >= targetAreaMin) {
+        breakdown.area = Math.round(weightArea * 0.8 * 10) / 10;
+        breakdown.reasons.push(`Possui plantas de até ${Math.round(propMaxAreaVal)} m²`);
+      } else {
+        hasStructuralMismatch = true;
+        breakdown.area = 0;
+        breakdown.penalties.push(`Metragem abaixo da necessidade de espaço (~${targetAreaMin} m²)`);
+      }
+    } else {
+      breakdown.area = Math.round(weightArea * 10) / 10;
+    }
   }
 
   // Soma bruta de compatibilidade
@@ -459,6 +609,16 @@ export function evaluateMatch(
     breakdown.area;
 
   rawScore = Math.min(100, Math.max(0, Math.round(rawScore)));
+
+  // TRAVA ANTI-COMPENSAÇÃO ESTRUTURAL (Seção 4):
+  // Pontuação elevada em preço ou localização nunca pode compensar incompatibilidade estrutural
+  // de tipologia, quartos ou metragem.
+  if (hasStructuralMismatch && rawScore > 59) {
+    rawScore = 59;
+    breakdown.penalties.push(
+      'Pontuação limitada a 59% por incompatibilidade estrutural (tipologia, quartos ou metragem)'
+    );
+  }
 
   // REGRA DE LOCALIZAÇÃO (FASE 7):
   // Se o imóvel estiver em bairro que o cliente nunca mencionou,

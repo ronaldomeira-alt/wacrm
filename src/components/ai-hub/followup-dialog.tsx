@@ -42,6 +42,7 @@ import {
   buildMultiPropertyFreeFollowupMessage,
   evaluateFollowupSessionWindow,
   extractPropertyUrlSlug,
+  formatNaturalElapsedContactPtBr,
   type CompatiblePropertySummary,
   type FollowupSessionWindowInfo,
 } from '@/lib/followup/engine';
@@ -160,6 +161,8 @@ export function FollowupDialog({
   onResolved,
   compatibleProperties: initialCompatibleProperties,
   stageName: overrideStageName,
+  hoursSinceLastCommunication,
+  neverContacted,
   interestProperty,
   reason: overrideReason,
   lastCustomerMessageAt,
@@ -337,6 +340,7 @@ export function FollowupDialog({
               bedroomsMin: prop.bedroomsMin != null ? Number(prop.bedroomsMin) : null,
               bedroomsMax: prop.bedroomsMax != null ? Number(prop.bedroomsMax) : null,
               areaMin: prop.areaMin != null ? Number(prop.areaMin) : null,
+              areaMax: prop.areaMax != null ? Number(prop.areaMax) : null,
               deliveryStatus: prop.deliveryStatus ? String(prop.deliveryStatus) : null,
               coverUrl,
               publicUrl: resolveClientPublicPropertyUrl({
@@ -760,9 +764,37 @@ export function FollowupDialog({
     }
   }, [freeText]);
 
+  const effectiveCustAtForElapsed =
+    lastCustomerMessageAt !== undefined
+      ? lastCustomerMessageAt
+      : (payload.last_customer_message_at ?? null);
+  const effectiveHoursForElapsed =
+    typeof hoursSinceLastCommunication === 'number'
+      ? hoursSinceLastCommunication
+      : typeof payload.hours_since_contact === 'number'
+        ? payload.hours_since_contact
+        : null;
+  const naturalLastContactLabel = neverContacted
+    ? 'Nunca contatado'
+    : effectiveCustAtForElapsed || effectiveHoursForElapsed !== null
+      ? formatNaturalElapsedContactPtBr({
+          hours: effectiveHoursForElapsed,
+          lastContactAt: effectiveCustAtForElapsed,
+          neverContacted,
+          nowMs: nowTick,
+        })
+      : null;
+
+  const gridColsClass =
+    compatibleProperties.length <= 1
+      ? 'grid-cols-1'
+      : compatibleProperties.length === 2
+        ? 'grid-cols-1 md:grid-cols-2'
+        : 'grid-cols-1 md:grid-cols-3';
+
   const renderPropertyCards = () => (
-    <div data-testid="followup-dialog-compatible-properties" className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
+    <div data-testid="followup-dialog-compatible-properties" className="space-y-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
           <Sparkles className="size-3.5 text-primary shrink-0" />
           Imóveis selecionados para recomendar
@@ -784,7 +816,10 @@ export function FollowupDialog({
           Nenhum imóvel de venda compatível com link público válido disponível no momento.
         </div>
       ) : (
-        <div className="space-y-2">
+        <div
+          data-testid="followup-properties-grid"
+          className={`grid ${gridColsClass} gap-3`}
+        >
           {compatibleProperties.map((prop) => {
             const isSelected = selectedPropertyIds.includes(prop.propertyId);
             const typeLabel = formatPropertyTypePtBr(prop.propertyType);
@@ -795,6 +830,18 @@ export function FollowupDialog({
                 : prop.bedroomsMin
                   ? `${prop.bedroomsMin} ${prop.bedroomsMin === 1 ? 'quarto' : 'quartos'}`
                   : null;
+            const areaMinVal =
+              prop.areaMin != null && prop.areaMin > 0 ? Math.round(prop.areaMin) : null;
+            const areaMaxVal =
+              prop.areaMax != null && prop.areaMax > 0 ? Math.round(prop.areaMax) : null;
+            const areaLabel =
+              areaMinVal && areaMaxVal && areaMaxVal > areaMinVal
+                ? `${areaMinVal} a ${areaMaxVal} m²`
+                : areaMinVal
+                  ? `${areaMinVal} m²`
+                  : areaMaxVal
+                    ? `${areaMaxVal} m²`
+                    : null;
 
             return (
               <div
@@ -809,63 +856,100 @@ export function FollowupDialog({
                     handleToggleProperty(prop);
                   }
                 }}
-                className={`flex items-center justify-between gap-2.5 rounded-xl border p-2.5 text-xs transition-colors cursor-pointer ${
+                className={`flex flex-col justify-between gap-2.5 rounded-xl border p-3 text-xs transition-all cursor-pointer min-h-[112px] ${
                   isSelected
-                    ? 'border-primary bg-primary/10 ring-1 ring-primary/25'
+                    ? 'border-primary bg-primary/10 ring-1 ring-primary/25 shadow-xs'
                     : 'border-border/60 bg-background/50 hover:border-border'
                 }`}
               >
-                <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <span className="shrink-0 text-primary" aria-hidden>
-                    {isWindowOpen ? (
-                      isSelected ? (
-                        <CheckSquare className="size-4" />
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                    <span className="shrink-0 text-primary mt-0.5" aria-hidden>
+                      {isWindowOpen ? (
+                        isSelected ? (
+                          <CheckSquare className="size-4" />
+                        ) : (
+                          <Square className="size-4 text-muted-foreground" />
+                        )
+                      ) : isSelected ? (
+                        <CircleDot className="size-4" />
                       ) : (
-                        <Square className="size-4 text-muted-foreground" />
-                      )
-                    ) : isSelected ? (
-                      <CircleDot className="size-4" />
-                    ) : (
-                      <Circle className="size-4 text-muted-foreground" />
-                    )}
-                  </span>
+                        <Circle className="size-4 text-muted-foreground" />
+                      )}
+                    </span>
 
-                  <PropertyThumbnail coverUrl={prop.coverUrl} title={prop.title} />
+                    <PropertyThumbnail coverUrl={prop.coverUrl} title={prop.title} />
 
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="font-semibold text-foreground truncate" title={prop.title}>
-                        {prop.title}
-                      </span>
-                      {prop.matchScore > 0 && (
-                        <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400 shrink-0">
-                          {prop.matchScore}%
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-start justify-between gap-1.5">
+                        <span
+                          className="font-semibold text-foreground leading-snug line-clamp-2"
+                          title={prop.title}
+                        >
+                          {prop.title}
                         </span>
+                      </div>
+
+                      {prop.neighborhood && (
+                        <p className="text-[11px] text-muted-foreground truncate">
+                          {[prop.neighborhood, typeLabel].filter(Boolean).join(' • ')}
+                        </p>
                       )}
                     </div>
-
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      {[prop.neighborhood, typeLabel, bedroomsLabel].filter(Boolean).join(' • ')}
-                    </p>
-
-                    {priceLabel && (
-                      <p className="text-[11px] font-semibold text-foreground/90">{priceLabel}</p>
-                    )}
                   </div>
+
+                  {prop.publicUrl && (
+                    <a
+                      href={prop.publicUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex h-9 w-9 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
+                      title="Visualizar imóvel"
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  )}
                 </div>
 
-                {prop.publicUrl && (
-                  <a
-                    href={prop.publicUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted"
-                    title="Visualizar imóvel"
-                  >
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                )}
+                {/* Metragem, Quartos, Valor e Compatibilidade */}
+                <div className="flex flex-col gap-1.5 pt-2 border-t border-border/40">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {areaLabel && (
+                      <span
+                        data-testid="followup-property-area-badge"
+                        className="rounded-md bg-muted/70 border border-border/60 px-1.5 py-0.5 text-[10px] font-semibold text-foreground"
+                      >
+                        {areaLabel}
+                      </span>
+                    )}
+                    {bedroomsLabel && (
+                      <span
+                        data-testid="followup-property-bedrooms-badge"
+                        className="rounded-md bg-muted/70 border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-foreground/90"
+                      >
+                        {bedroomsLabel}
+                      </span>
+                    )}
+                    {prop.matchScore > 0 && (
+                      <span
+                        data-testid="followup-property-score-badge"
+                        className="ml-auto rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-400 shrink-0"
+                      >
+                        {prop.matchScore}% compatível
+                      </span>
+                    )}
+                  </div>
+
+                  {priceLabel && (
+                    <p
+                      data-testid="followup-property-price"
+                      className="text-xs font-bold text-foreground"
+                    >
+                      {priceLabel}
+                    </p>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -876,7 +960,10 @@ export function FollowupDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
+      <DialogContent
+        data-testid="followup-dialog-content"
+        className="w-[calc(100vw-1rem)] max-w-full sm:max-w-2xl md:max-w-3xl lg:max-w-4xl max-h-[90dvh] overflow-y-auto overflow-x-hidden p-4 sm:p-6 pb-[max(1rem,env(safe-area-inset-bottom))]"
+      >
         {/* 1. Identificação */}
         <DialogHeader className="space-y-1.5 text-left">
           <DialogTitle className="text-base sm:text-lg font-bold text-foreground">
@@ -896,7 +983,19 @@ export function FollowupDialog({
                 <strong className="text-foreground font-medium">{interestProperty}</strong>
               </span>
             )}
-            {!stageName && !interestProperty && <span>Oportunidade de Follow-up</span>}
+            {naturalLastContactLabel && (
+              <span
+                data-testid="followup-dialog-last-contact"
+                className="inline-flex items-center gap-1"
+              >
+                <Clock className="size-3 text-primary" />
+                Último contato:{' '}
+                <strong className="text-foreground font-medium">{naturalLastContactLabel}</strong>
+              </span>
+            )}
+            {!stageName && !interestProperty && !naturalLastContactLabel && (
+              <span>Oportunidade de Follow-up</span>
+            )}
           </DialogDescription>
         </DialogHeader>
 

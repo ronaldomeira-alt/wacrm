@@ -87,6 +87,15 @@ export interface LeadSearchProfile {
   preferredFeatures: string[];     // ['piscina', 'varanda gourmet']
   
   isShortStayOnly: boolean;        // Se busca exclusivamente aluguel por temporada
+
+  // Metragem, necessidade de espaço e restrições unificadas (Etapa 2)
+  areaMin?: number | null;         // Metragem mínima buscada ou de referência para plantas maiores
+  areaMax?: number | null;         // Metragem máxima de referência quando aplicável
+  areaStrict?: boolean;            // true = exigência expressa de metragem mínima
+  prefersLargerPlans?: boolean;    // true = cliente busca/avalia plantas maiores que studios/flats compactos
+  excludedPropertyTypes?: string[]; // Tipologias explicitamente rejeitadas (ex.: ['flat', 'studio'])
+  budgetIsFlexibleFromAd?: boolean; // true = valor inicial veio de anúncio compacto mas cliente busca planta maior
+  isSellerOrOutOfArea?: boolean;   // true = proprietário vendendo imóvel próprio ou busca em outro estado
   
   // Proveniência de cada dimensão
   provenance: {

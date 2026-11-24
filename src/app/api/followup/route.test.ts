@@ -462,4 +462,199 @@ describe('GET /api/followup — Inteligência Comercial, Regra de Ouro (Vendas),
     expect(body.counts.pending).toBe(1);
     expect(body.items).toHaveLength(1);
   });
+
+  it('Etapa 2 — Caso real Vilela: elimina unidades incompatíveis de 19, 20 e 22 m², recomenda plantas maiores (50+ m²) no Bessa e unifica o motivo comercial', async () => {
+    const h86Ago = new Date(Date.now() - 86 * 60 * 60 * 1000).toISOString();
+
+    const mockDb = buildMockSupabase({
+      suggestions: [
+        {
+          id: 'd7fd1473-add7-4f35-af72-1daebafa3183',
+          account_id: 'acc-1',
+          contact_id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+          conversation_id: '5af1b0a1-69eb-4494-a726-f8c920418c9a',
+          category: 'followup',
+          title: 'Retomar contato com Vilela',
+          status: 'pending',
+          created_at: h86Ago,
+          payload: { score: 85, stage_name: 'Qualificação', hours_since_contact: 86 },
+          contact: {
+            id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+            name: 'Vilela',
+            phone: '558491234625',
+            ai_score: 7,
+            has_purchased: false,
+          },
+        },
+      ],
+      conversations: [
+        {
+          id: '5af1b0a1-69eb-4494-a726-f8c920418c9a',
+          account_id: 'acc-1',
+          contact_id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+          last_message_at: h86Ago,
+          ctwa_referral: {
+            source_id: '120252018175280493',
+            headline: 'Rooftop com vista pro mar no Bessa',
+          },
+        },
+      ],
+      messages: [
+        {
+          conversation_id: '5af1b0a1-69eb-4494-a726-f8c920418c9a',
+          sender_type: 'customer',
+          content_type: 'text',
+          content_text: 'Gostaria de saber os valores',
+          created_at: h86Ago,
+        },
+      ],
+      adMappings: [
+        {
+          account_id: 'acc-1',
+          ad_source_id: '120252018175280493',
+          ad_name: 'Mahal IMG2',
+          property_id: 'prop-mahal',
+          properties: { name: 'Mahal Resort' },
+        },
+      ],
+      intelligence: [
+        {
+          contact_id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+          summary: {
+            purpose: ['Moradia', 'Investimento'],
+            property_type: ['flat'],
+            location: ['Bessa'],
+            price_min: 350000,
+            notes:
+              'Lead iniciou contato interessado no Mahal Resort no Bessa para moradia e investimento. Solicitou valores e avalia plantas maiores (50 ou 75 m²).',
+          },
+        },
+      ],
+      matches: [
+        // Matches antigos incompatíveis de 19, 20 e 22 m² que antes tinham 92%
+        {
+          id: 'm-19m',
+          account_id: 'acc-1',
+          lead_id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+          property_id: 'p-19m',
+          match_score: 92,
+          commercial_priority: 90,
+          match_status: 'novo',
+          suppressed: false,
+          score_breakdown: {},
+        },
+        {
+          id: 'm-20m',
+          account_id: 'acc-1',
+          lead_id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+          property_id: 'p-20m',
+          match_score: 92,
+          commercial_priority: 89,
+          match_status: 'novo',
+          suppressed: false,
+          score_breakdown: {},
+        },
+        {
+          id: 'm-22m-mixed',
+          account_id: 'acc-1',
+          lead_id: '87265a11-946f-41a5-bf9b-5ea23600ce07',
+          property_id: 'p-22m-mixed',
+          match_score: 92,
+          commercial_priority: 88,
+          match_status: 'novo',
+          suppressed: false,
+          score_breakdown: {},
+        },
+      ],
+      projections: [
+        {
+          property_id: 'p-19m',
+          account_id: 'acc-1',
+          status: 'ativo',
+          operation: 'venda',
+          title: 'Studios e apartamentos de 1 quarto no Bessa',
+          property_type: 'apartamento',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 355000,
+          price_max: 355000,
+          bedrooms_min: 1,
+          bedrooms_max: 1,
+          area_min: 18.94,
+          area_max: 18.94,
+          public_url: 'https://ronaldomeira.com.br/imovel/orulo-19m',
+        },
+        {
+          property_id: 'p-20m',
+          account_id: 'acc-1',
+          status: 'ativo',
+          operation: 'venda',
+          title: 'Park H2orizon',
+          property_type: 'apartamento',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 263900,
+          price_max: 263900,
+          bedrooms_min: 0,
+          bedrooms_max: 0,
+          area_min: 19.85,
+          area_max: 19.85,
+          public_url: 'https://ronaldomeira.com.br/imovel/orulo-20m',
+        },
+        {
+          property_id: 'p-22m-mixed',
+          account_id: 'acc-1',
+          status: 'ativo',
+          operation: 'venda',
+          title: 'Apartamento Misto 22m a 63m com preço único de 22m',
+          property_type: 'apartamento',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 299012,
+          price_max: 299012,
+          bedrooms_min: 1,
+          bedrooms_max: 2,
+          area_min: 21.6,
+          area_max: 63.3,
+          public_url: 'https://ronaldomeira.com.br/imovel/orulo-84567',
+        },
+        {
+          property_id: 'p-55m-real',
+          account_id: 'acc-1',
+          status: 'ativo',
+          operation: 'venda',
+          title: 'Apartamento no Bessa 55m²',
+          property_type: 'apartamento',
+          neighborhood: 'Bessa',
+          city: 'João Pessoa',
+          price_min: 519000,
+          price_max: 548000,
+          bedrooms_min: 2,
+          bedrooms_max: 3,
+          area_min: 54.7,
+          area_max: 105.6,
+          public_url: 'https://ronaldomeira.com.br/imovel/orulo-55m',
+        },
+      ],
+    });
+
+    mockGetCurrentAccount.mockResolvedValue({ supabase: mockDb, accountId: 'acc-1' });
+    const res = await GET(new Request('http://localhost/api/followup?status=pending&date_filter=all'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.items).toHaveLength(1);
+    const item = body.items[0];
+    // Empreendimento identificado como Mahal Resort, nunca "Rooftop com vista pro mar no Bessa"
+    expect(item.interestProperty).toBe('Mahal Resort');
+    expect(item.interestProperty).not.toContain('Rooftop');
+    // Unidades de 19, 20 e 22 m² foram eliminadas e substituídas pelo apartamento real de 54,7 m²
+    expect(item.compatibleProperties).toHaveLength(1);
+    expect(item.compatibleProperties[0].propertyId).toBe('p-55m-real');
+    expect(item.compatibleProperties[0].areaMin).toBeGreaterThanOrEqual(50);
+    // Motivo comercial unificado
+    expect(item.reason).toContain('Vilela');
+    expect(item.reason).toContain('Mahal Resort');
+    expect(item.reason).toContain('50 a 75 m²');
+  });
 });

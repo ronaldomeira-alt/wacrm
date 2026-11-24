@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useLocale, useTranslations } from 'next-intl';
-import { formatDistanceToNow } from 'date-fns';
+import { useTranslations } from 'next-intl';
 import { Building2, CalendarCheck2, ChevronRight, Clock, RefreshCw } from 'lucide-react';
-import { getDateFnsLocale } from '@/lib/date-fns-locale';
 import { createClient } from '@/lib/supabase/client';
-import type { EnrichedFollowupItem } from '@/lib/followup/engine';
+import {
+  formatNaturalElapsedContactPtBr,
+  type EnrichedFollowupItem,
+} from '@/lib/followup/engine';
 import { FollowupDialog } from '@/components/ai-hub/followup-dialog';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from './skeleton';
@@ -30,8 +31,6 @@ function getAgeToneClass(hoursSince: number | null): string {
 
 export function FollowupRecommendationsCard() {
   const t = useTranslations('Dashboard.followupRecommendations');
-  const appLocale = useLocale();
-  const dateFnsLocale = getDateFnsLocale(appLocale);
 
   const [items, setItems] = useState<EnrichedFollowupItem[]>([]);
   const [totalPending, setTotalPending] = useState(0);
@@ -185,12 +184,11 @@ export function FollowupRecommendationsCard() {
                 item.hoursSinceLastCustomerMessage ?? item.hoursSinceLastCommunication ?? null;
               const refDate =
                 item.lastCustomerMessageAt || item.lastCommunicationAt || item.suggestionCreatedAt;
-              const timeLabel = refDate
-                ? formatDistanceToNow(new Date(refDate), {
-                    addSuffix: true,
-                    locale: dateFnsLocale,
-                  })
-                : '';
+              const timeLabel = formatNaturalElapsedContactPtBr({
+                hours: hoursSince,
+                lastContactAt: refDate,
+                neverContacted: item.neverContacted,
+              });
 
               return (
                 <button

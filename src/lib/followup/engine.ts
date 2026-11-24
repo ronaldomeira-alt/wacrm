@@ -73,6 +73,7 @@ export interface CompatiblePropertySummary {
   bedroomsMin?: number | null;
   bedroomsMax?: number | null;
   areaMin?: number | null;
+  areaMax?: number | null;
   deliveryStatus?: string | null;
   coverUrl?: string | null;
   publicUrl?: string | null;
@@ -166,11 +167,12 @@ export interface RawConversationMessageRow {
   sender_type?: string | null;
   content_type?: string | null;
   content_text?: string | null;
+  transcript_text?: string | null;
   media_url?: string | null;
   template_name?: string | null;
   created_at?: string | null;
   private?: boolean | null;
-  event?: string | null;
+  event?: boolean | string | null;
 }
 
 export interface ConversationMessageStats {
@@ -206,7 +208,13 @@ export function isRealCommunicationMessage(msg: RawConversationMessageRow): bool
     return false;
   }
 
-  const text = typeof msg.content_text === 'string' ? msg.content_text.trim() : '';
+  const rawText =
+    typeof msg.content_text === 'string' && msg.content_text.trim()
+      ? msg.content_text.trim()
+      : typeof msg.transcript_text === 'string'
+        ? msg.transcript_text.trim()
+        : '';
+  const text = rawText;
   const hasMedia = Boolean(typeof msg.media_url === 'string' && msg.media_url.trim());
   const hasTemplate = Boolean(typeof msg.template_name === 'string' && msg.template_name.trim());
 
@@ -262,7 +270,12 @@ export function summarizeConversationMessages(
     const sender = String(msg.sender_type || '').trim().toLowerCase();
     const ts = new Date(msg.created_at as string).getTime();
     const iso = new Date(ts).toISOString();
-    const text = typeof msg.content_text === 'string' ? msg.content_text.trim() : '';
+    const text =
+      typeof msg.content_text === 'string' && msg.content_text.trim()
+        ? msg.content_text.trim()
+        : typeof msg.transcript_text === 'string'
+          ? msg.transcript_text.trim()
+          : '';
 
     if (sender === 'customer') {
       customerMessageCount += 1;
@@ -521,6 +534,74 @@ function formatRemainingDurationPtBr(remainingMs: number): string {
     return mins > 0 && hours < 6 ? `${hours}h ${mins}min restantes` : `${hours}h restantes`;
   }
   return `${totalMinutes}min restantes`;
+}
+
+/**
+ * Formata o tempo decorrido desde o último contato de forma natural (Seção 8):
+ * - Menos de 24 horas: em minutos ou horas ("Há 45 minutos", "Há 2 horas").
+ * - 24 horas ou mais: em dias completos ("Há 1 dia", "Há 3 dias", "Há 12 dias").
+ * NUNCA exibe valores em horas acumuladas acima de 23h como "há 86 horas".
+ */
+export function formatNaturalElapsedContactPtBr(
+  input:
+    | {
+        hours?: number | null;
+        lastContactAt?: string | null;
+        neverContacted?: boolean;
+        nowMs?: number;
+      }
+    | number
+    | null
+    | undefined
+): string {
+  if (input === null || input === undefined) {
+    return 'Sem mensagem registrada';
+  }
+
+  if (typeof input === 'object') {
+    if (input.neverContacted) {
+      return 'Sem mensagem registrada';
+    }
+    if (input.lastContactAt) {
+      const contactMs = new Date(input.lastContactAt).getTime();
+      const nowMs = input.nowMs ?? Date.now();
+      if (Number.isFinite(contactMs) && contactMs > 0) {
+        const elapsedMs = Math.max(0, nowMs - contactMs);
+        const totalMinutes = Math.max(1, Math.floor(elapsedMs / (60 * 1000)));
+        const totalHours = Math.floor(totalMinutes / 60);
+        if (totalHours < 1) {
+          return totalMinutes === 1 ? 'Há 1 minuto' : `Há ${totalMinutes} minutos`;
+        }
+        if (totalHours < 24) {
+          return totalHours === 1 ? 'Há 1 hora' : `Há ${totalHours} horas`;
+        }
+        const days = Math.max(1, Math.floor(totalHours / 24));
+        return days === 1 ? 'Há 1 dia' : `Há ${days} dias`;
+      }
+    }
+    return formatNaturalElapsedContactPtBr(input.hours);
+  }
+
+  if (typeof input !== 'number' || !Number.isFinite(input) || input < 0) {
+    return 'Sem mensagem registrada';
+  }
+
+  if (input === 0) {
+    return 'Há menos de 1 hora';
+  }
+
+  if (input < 1) {
+    const mins = Math.max(1, Math.round(input * 60));
+    return mins === 1 ? 'Há 1 minuto' : `Há ${mins} minutos`;
+  }
+
+  if (input < 24) {
+    const h = Math.max(1, Math.floor(input));
+    return h === 1 ? 'Há 1 hora' : `Há ${h} horas`;
+  }
+
+  const days = Math.max(1, Math.floor(input / 24));
+  return days === 1 ? 'Há 1 dia' : `Há ${days} dias`;
 }
 
 /**
@@ -813,7 +894,7 @@ const CONTRADICTORY_NEVER_CONTACTED_RE =
   /\b(nunca\s+contatad[oa]|sem\s+(?:nenhuma\s+)?tentativa\s+de\s+contato|sem\s+primeiro\s+contato|nunca\s+recebeu\s+(?:uma\s+)?primeira\s+abordagem)\b/i;
 
 const GENERIC_BUREAUCRATIC_REASON_RE =
-  /\b(em\s+op[çc][õo]es\s+do\s+portf[óo]lio|oportunidade\s+comercial\s+identificada\s+para\s+acompanhamento|o\s+cliente\s+demonstrou\s+interesse|o\s+cliente\s+entrou\s+em\s+contato|retomar\s+contato\s+oferecendo|ap[óo]s\s+receber\s+as\s+informa[çc][õo]es\s+enviadas\s+no\s+atendimento)\b/i;
+  /\b(em\s+op[çc][õo]es\s+do\s+portf[óo]lio|oportunidade\s+comercial\s+identificada\s+para\s+acompanhamento|o\s+cliente\s+demonstrou\s+interesse|o\s+cliente\s+entrou\s+em\s+contato|retomar\s+contato\s+oferecendo|ap[óo]s\s+receber\s+as\s+informa[çc][õo]es\s+enviadas\s+no\s+atendimento|lead\s+demonstrou\s+interesse\s+inicial|pr[óo]ximo\s+passo\s+pendente|necessidade\s+principal\s+identificada|aus[êe]ncia\s+de\s+registro\s+de\s+desinteresse)\b/i;
 
 const DISCARDED_STAGE_NAMES_RE =
   /\b(perdid[oa]|descartad[oa]|ganh[oa]|fechad[oa]|vendid[oa]|loca[çc][aã]o|aluguel|sem\s+interesse|inativ[oa]|arquivad[oa]|cancelad[oa])\b/i;
@@ -999,7 +1080,10 @@ export interface FollowupEligibilityResult {
  * - Exige pelo menos 1 imóvel compatível de venda disponível com link válido para fila executável.
  */
 export function evaluateFollowupCommercialEligibility(args: {
-  profile: Pick<LeadSearchProfile, 'operation' | 'isShortStayOnly' | 'isArchived' | 'isPaused'> | null;
+  profile: Pick<
+    LeadSearchProfile,
+    'operation' | 'isShortStayOnly' | 'isArchived' | 'isPaused' | 'isSellerOrOutOfArea'
+  > | null;
   hasPurchased?: boolean;
   stageName?: string | null;
   lastCustomerText?: string | null;
@@ -1048,6 +1132,9 @@ export function evaluateFollowupCommercialEligibility(args: {
     reasons.push('rental_only');
   } else if (operation !== 'venda') {
     reasons.push('operation_unknown');
+  }
+  if (profile?.isSellerOrOutOfArea) {
+    reasons.push('seller_or_out_of_area');
   }
 
   if (isHistoricalView) {
@@ -1169,8 +1256,34 @@ export function buildPersonalizedCommercialReason(args: {
   const types = (profile?.propertyTypes ?? []).filter(Boolean);
   const bedrooms = (profile?.bedrooms ?? []).filter((b) => Number.isFinite(b) && b > 0);
   const locations = (profile?.locations ?? []).filter(Boolean);
+  const purposes = (profile?.purpose ?? []).filter(Boolean).map((p) => p.toLowerCase());
   const budgetText = formatBudgetShortPtBr(profile?.priceMin, profile?.priceMax);
   const excludedLabels = (args.excludedTypeLabels ?? []).filter(Boolean);
+  const prefersLargerPlans = Boolean(profile?.prefersLargerPlans);
+  const areaMin = typeof profile?.areaMin === 'number' && profile.areaMin > 0 ? Math.round(profile.areaMin) : null;
+  const areaMax = typeof profile?.areaMax === 'number' && profile.areaMax > 0 ? Math.round(profile.areaMax) : null;
+
+  let areaClause = '';
+  if (prefersLargerPlans) {
+    if (areaMin && areaMax && areaMax > areaMin) {
+      areaClause = `plantas maiores (${areaMin} a ${areaMax} m²)`;
+    } else if (areaMin) {
+      areaClause = `plantas maiores (a partir de ${areaMin} m²)`;
+    } else {
+      areaClause = 'plantas maiores';
+    }
+  } else if (areaMin) {
+    areaClause = `a partir de ${areaMin} m²`;
+  }
+
+  let purposeClause = '';
+  if (purposes.includes('moradia') && purposes.includes('investimento')) {
+    purposeClause = 'para moradia e investimento';
+  } else if (purposes.includes('moradia')) {
+    purposeClause = 'para moradia';
+  } else if (purposes.includes('investimento')) {
+    purposeClause = 'para investimento';
+  }
 
   const searchParts: string[] = [];
   if (types.length > 0) {
@@ -1184,9 +1297,19 @@ export function buildPersonalizedCommercialReason(args: {
         : `${bedrooms.slice(0, 2).join(' ou ')} quartos`;
     searchParts.push(searchParts.length > 0 ? `de ${bedStr}` : `imóvel de ${bedStr}`);
   }
+  if (areaClause) {
+    if (prefersLargerPlans) {
+      searchParts.push(searchParts.length > 0 ? `com ${areaClause}` : areaClause);
+    } else {
+      searchParts.push(`(${areaClause})`);
+    }
+  }
   if (locations.length > 0) {
     const loc = locations.slice(0, 2).join(' ou ');
     searchParts.push(`em ${loc}`);
+  }
+  if (purposeClause) {
+    searchParts.push(purposeClause);
   }
 
   const searchPhrase = searchParts.join(' ');
@@ -1202,11 +1325,20 @@ export function buildPersonalizedCommercialReason(args: {
       : /\b(visita|conhecer|agendar)\b/.test(custLower)
         ? ' e demonstrou interesse em conhecer o imóvel'
         : ' e pediu mais detalhes sobre o empreendimento';
-    sentences.push(`${firstName} chegou pelo anúncio do ${args.interestProperty}${detailClause}.`);
-    if (searchPhrase) {
+
+    if (prefersLargerPlans) {
+      const locSuffix = locations.length > 0 ? ` em ${locations.slice(0, 2).join(' ou ')}` : '';
+      const purpSuffix = purposeClause ? ` ${purposeClause}` : '';
       sentences.push(
-        `Busca ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
+        `${firstName} chegou pelo anúncio do ${args.interestProperty}${purpSuffix}${detailClause}. Na conversa, surgiu o interesse em avaliar ${areaClause}${locSuffix}${restrictionClause}.`
       );
+    } else {
+      sentences.push(`${firstName} chegou pelo anúncio do ${args.interestProperty}${detailClause}.`);
+      if (searchPhrase) {
+        sentences.push(
+          `Busca ${searchPhrase}${budgetText ? `, ${budgetText}` : ''}${restrictionClause}.`
+        );
+      }
     }
   } else if (searchPhrase) {
     const stageLower = (args.stageName || '').trim().toLowerCase();
@@ -1226,23 +1358,36 @@ export function buildPersonalizedCommercialReason(args: {
   }
 
   // 2. Orçamento desconhecido (informar naturalmente sem inventar)
-  if (!budgetText && !args.hasPendingCommitment) {
+  if (!budgetText && !args.hasPendingCommitment && !prefersLargerPlans) {
     sentences.push('Ainda não informou o orçamento.');
   }
 
-  // 3. Compromisso pendente real ou estado da conversa
+  // 3. Compromisso pendente real ou estado da conversa + opções selecionadas integrando a abordagem
+  const propCount = Math.min(FOLLOWUP_MAX_RECOMMENDED_PROPERTIES, args.compatiblePropertiesCount ?? 0);
+
   if (args.hasPendingCommitment) {
     sentences.push('Você ficou de enviar opções e ainda não encontramos registro desse envio.');
+    if (propCount > 0) {
+      sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} para cumprir esse retorno.`);
+    }
   } else if (args.opportunityType === 'first_contact') {
-    sentences.push('Ainda aguarda o primeiro retorno comercial.');
+    if (propCount > 0) {
+      sentences.push(`Ainda aguarda o primeiro retorno comercial — selecionei ${formatCountWordsPtBr(propCount)} para iniciar o atendimento.`);
+    } else {
+      sentences.push('Ainda aguarda o primeiro retorno comercial.');
+    }
   } else if (args.contactState === 'awaiting_business_reply') {
-    sentences.push('Enviou a última mensagem e está aguardando resposta.');
-  }
-
-  // 4. Opções selecionadas (SOMENTE quando realmente disponíveis)
-  const propCount = Math.min(FOLLOWUP_MAX_RECOMMENDED_PROPERTIES, args.compatiblePropertiesCount ?? 0);
-  if (propCount > 0) {
-    sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} para enviar.`);
+    if (propCount > 0) {
+      sentences.push(`Enviou a última mensagem e aguarda retorno — selecionei ${formatCountWordsPtBr(propCount)} para responder.`);
+    } else {
+      sentences.push('Enviou a última mensagem e está aguardando resposta.');
+    }
+  } else if (propCount > 0) {
+    if (prefersLargerPlans) {
+      sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} com o espaço que ele procura para retomar o contato.`);
+    } else {
+      sentences.push(`Selecionei ${formatCountWordsPtBr(propCount)} alinhadas a esse perfil para retomar o contato.`);
+    }
   }
 
   return sentences.join(' ');

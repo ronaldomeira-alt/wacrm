@@ -295,4 +295,43 @@ describe('FollowupCard — Estrutura Visual, Indicadores e Ações (Seções 4, 
     );
     expect(htmlExpired).toContain('Template necessário');
   });
+
+  it('Etapa 2 — exibe último contato em dias completos (ex.: 86h -> "Há 3 dias", nunca "há 86 horas") e valida layout responsivo Desktop (+50% largura, cards lado a lado) e PWA iPhone', () => {
+    const html86h = renderToStaticMarkup(
+      React.createElement(FollowupCard, {
+        item: makeItem({
+          lastCustomerMessageAt: undefined,
+          lastCommunicationAt: null,
+          hoursSinceLastCommunication: 86,
+          hoursSinceLastCustomerMessage: 86,
+          neverContacted: false,
+        }),
+        onUpdateStatus: vi.fn(),
+      })
+    );
+    expect(html86h).toContain('Há 3 dias');
+    expect(html86h).not.toContain('86h');
+    expect(html86h).not.toContain('86 horas');
+
+    const dialogSource = readFileSync(
+      join(process.cwd(), 'src/components/ai-hub/followup-dialog.tsx'),
+      'utf8'
+    );
+
+    // Desktop +50% largura (sm:max-w-2xl md:max-w-3xl lg:max-w-4xl) e PWA iPhone sem overflow horizontal + safe area
+    expect(dialogSource).toContain('sm:max-w-2xl md:max-w-3xl lg:max-w-4xl');
+    expect(dialogSource).toContain('w-[calc(100vw-1rem)] max-w-full');
+    expect(dialogSource).toContain('overflow-x-hidden');
+    expect(dialogSource).toContain('env(safe-area-inset-bottom)');
+
+    // Cards de imóveis lado a lado no desktop e empilhados na PWA iPhone, exibindo metragem (m²), quartos, valor e % compatível
+    expect(dialogSource).toContain('grid-cols-1 md:grid-cols-3');
+    expect(dialogSource).toContain('grid-cols-1 md:grid-cols-2');
+    expect(dialogSource).toContain('data-testid="followup-property-area-badge"');
+    expect(dialogSource).toContain('data-testid="followup-property-bedrooms-badge"');
+    expect(dialogSource).toContain('data-testid="followup-property-score-badge"');
+    expect(dialogSource).toContain('data-testid="followup-dialog-last-contact"');
+    expect(dialogSource).not.toContain('Necessidade principal');
+    expect(dialogSource).not.toContain('Sugestão de abordagem');
+  });
 });

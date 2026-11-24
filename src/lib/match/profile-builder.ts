@@ -446,12 +446,12 @@ export function buildProfileFromData(
     operation = 'indefinido';
   }
 
-  // 8. Requisitos obrigatórios vs Preferências
+  // 8. Requisitos obrigatórios vs Preferências, Metragem, Plantas Maiores e Restrições Explícitas
   const reqObj = (rawSummary.requirements as Record<string, unknown>) || {};
-  const propertyTypeStrict = reqObj.property_type_strict === true;
-  const locationStrict = reqObj.location_strict === true;
-  const priceStrictMax = reqObj.price_strict_max === true;
-  const bedroomsStrict = reqObj.bedrooms_strict === true;
+  let propertyTypeStrict = reqObj.property_type_strict === true;
+  let locationStrict = reqObj.location_strict === true;
+  let priceStrictMax = reqObj.price_strict_max === true;
+  let bedroomsStrict = reqObj.bedrooms_strict === true;
   const deliveryStrict = reqObj.delivery_strict === true;
 
   const requiredFeatures = Array.isArray(reqObj.required_features)
@@ -461,6 +461,209 @@ export function buildProfileFromData(
   const preferredFeatures = Array.isArray(rawSummary.features)
     ? (rawSummary.features as string[]).filter((f) => !requiredFeatures.includes(f))
     : [];
+
+  const allContextNorm = normalizeString(
+    [
+      notesText,
+      stageSignalText,
+      intentText,
+      profileArrText,
+      ...requiredFeatures,
+      ...preferredFeatures,
+      JSON.stringify(reqObj),
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
+
+  // 8.1 Detecção de proprietário vendedor (captação) ou busca redirecionada para outro estado (ES/RJ/etc.)
+  const isPropertySeller =
+    /\b(nao\s+e\s+comprador|proprietario\s+vendedor|venda\s+de\s+imovel\s+proprio|vender\s+o\s+(?:meu\s+|seu\s+)?(?:imovel|flat|apartamento|casa)|procura\s+a\s+imobiliaria\s+para\s+vender|captacao\/venda)\b/.test(
+      allContextNorm
+    ) ||
+    allPurposes.some(
+      (p) => p.includes('venda de imovel proprio') || p.includes('vender imovel')
+    );
+
+  const isRedirectedOutOfState =
+    /\b(sem\s+aderencia\s+geografica|espirito\s+santo\s+e\s+rio\s+de\s+janeiro|redirecionou\s+a\s+busca\s+para\s+(?:es|rj|sp|mg)|precisa\s+ser\s+em\s+locais\s+mais\s+proximos\s+de\s+minas)\b/.test(
+      allContextNorm
+    );
+
+  const isSellerOrOutOfArea = isPropertySeller || isRedirectedOutOfState;
+  if (isSellerOrOutOfArea) {
+    operation = 'indefinido';
+  }
+
+  // 8.2 Restrições explícitas de tipologia ("não quer flat nem estúdio", "sem studio", etc.)
+  const excludedSet = new Set<string>();
+  const negationRe =
+    /(?:nao\s+(?:quer\w*|gost\w*|aceit\w*|tem\s+interesse\s+em|desej\w*|pode\s+ser)|sem|dispensa|rejeita|exceto|evita|menos|nem)\s+[^.;!\n]{0,60}/g;
+  const typePatterns: Array<{ key: string; re: RegExp }> = [
+    { key: 'flat', re: /\bflats?\b/ },
+    { key: 'studio', re: /\b(?:studios?|estudios?)\b/ },
+    { key: 'apartamento', re: /\b(?:apartamentos?|aptos?)\b/ },
+    { key: 'casa', re: /\bcasas?\b/ },
+    { key: 'cobertura', re: /\bcoberturas?\b/ },
+    { key: 'terreno', re: /\b(?:terrenos?|lotes?)\b/ },
+    { key: 'comercial', re: /\b(?:salas?\s+comerciais?|comercial)\b/ },
+  ];
+  let negMatch: RegExpExecArray | null;
+  while ((negMatch = negationRe.exec(allContextNorm)) !== null) {
+    const clause = negMatch[0];
+    for (const tp of typePatterns) {
+      if (tp.re.test(clause)) {
+        excludedSet.add(tp.key);
+      }
+    }
+  }
+  const excludedPropertyTypes = Array.from(excludedSet);
+
+  // Remove tipologias explicitamente rejeitadas da lista de tipologias aceitas
+  if (excludedPropertyTypes.length > 0) {
+    for (let i = propertyTypes.length - 1; i >= 0; i--) {
+      const normT = normalizeString(propertyTypes[i]);
+      if (
+        excludedPropertyTypes.some(
+          (ex) =>
+            normT.includes(ex) ||
+            (ex === 'studio' && (normT.includes('studio') || normT.includes('estudio')))
+        )
+      ) {
+        propertyTypes.splice(i, 1);
+      }
+    }
+  }
+
+  // 8.3 Extração de metragem e preferência por plantas maiores ("plantas maiores", "50 ou 75 m²", "80m² +/-")
+  let areaMin: number | null =
+    typeof rawSummary.area_min === 'number' && rawSummary.area_min > 0
+      ? rawSummary.area_min
+      : typeof reqObj.area_min === 'number' && (reqObj.area_min as number) > 0
+        ? (reqObj.area_min as number)
+        : null;
+  let areaMax: number | null =
+    typeof rawSummary.area_max === 'number' && rawSummary.area_max > 0
+      ? rawSummary.area_max
+      : null;
+  let areaStrict = reqObj.area_strict === true;
+
+  const mentionsLargerPlans =
+    /\b(plantas?\s+maiores|mais\s+espaco|maior\s+metragem|unir\s+unidades|uniao\s+de\s+(?:unidades|flats)|apartamento\s+maior|imovel\s+maior|acha\s+(?:pequeno|compacto)|muito\s+pequeno)\b/.test(
+      allContextNorm
+    );
+
+  // Extrai metragens explícitas associadas a "a partir de X m²", "no mínimo X m²", "plantas de X e Y m²", "Xm² +/-"
+  const strictAreaMatch = allContextNorm.match(
+    /\b(?:a\s+partir\s+de|no\s+minimo|minimo\s+de|acima\s+de|pelo\s+menos)\s+(\d{2,3})\s*m(?:2|²|\b)/
+  );
+  if (strictAreaMatch) {
+    const parsed = parseInt(strictAreaMatch[1], 10);
+    if (parsed >= 30 && parsed <= 500) {
+      areaMin = areaMin !== null ? Math.max(areaMin, parsed) : parsed;
+      areaStrict = true;
+    }
+  }
+
+  const rangeAreaMatch = allContextNorm.match(
+    /\b(?:plantas?\s+(?:maiores\s*)?(?:de|\()?\s*|formar\s+plantas?\s+de\s+|entre\s+)(\d{2,3})\s*(?:ou|e|a)\s*(\d{2,3})\s*m(?:2|²|\b)/
+  );
+  if (rangeAreaMatch) {
+    const a1 = parseInt(rangeAreaMatch[1], 10);
+    const a2 = parseInt(rangeAreaMatch[2], 10);
+    const low = Math.min(a1, a2);
+    const high = Math.max(a1, a2);
+    if (low >= 35 && low <= 500) {
+      areaMin = areaMin ?? low;
+      areaMax = areaMax ?? high;
+    }
+  }
+
+  const approxAreaMatch = allContextNorm.match(/\b(\d{2,3})\s*m(?:2|²)\s*(?:\+\/-|aprox|em\s+media)?/);
+  if (areaMin === null && approxAreaMatch) {
+    const val = parseInt(approxAreaMatch[1], 10);
+    // Só define areaMin se for uma metragem de busca de espaço (>= 45m²), não a descrição de um flat de 22/25m²
+    if (val >= 45 && val <= 400) {
+      areaMin = Math.round(val * 0.85);
+    }
+  }
+
+  const prefersLargerPlans =
+    mentionsLargerPlans || (areaMin !== null && areaMin >= 45);
+
+  if (prefersLargerPlans && areaMin === null) {
+    areaMin = 48; // Referência comercial para superar studios/flats compactos de 18–35 m²
+  }
+
+  // 8.4 Prevalência da conversa sobre o anúncio de origem (Seção 3):
+  // Se o cliente entrou por um anúncio de studio/flat, mas na conversa declarou que procura 2+ quartos ou plantas maiores (>= 45 m²),
+  // o perfil deve atualizar a quantidade de quartos e buscar 'Apartamento', sem ficar preso ao studio/flat do anúncio!
+  const explicitMultiBedRe =
+    /(?:busca|procura|quer|precisa\s+de|prefere|interesse\s+em|apartamento\s+de|apto\s+de|imovel\s+de)\s+(?:um\s+)?(?:apartamento\s+de\s+|apto\s+de\s+)?([2-5])\s*(?:ou\s*([2-5])\s*)?(?:quartos|qts|dormitorios)/g;
+  const fromConversationBedrooms: number[] = [];
+  let bedMatch: RegExpExecArray | null;
+  while ((bedMatch = explicitMultiBedRe.exec(allContextNorm)) !== null) {
+    const b1 = parseInt(bedMatch[1], 10);
+    if (b1 >= 2 && !fromConversationBedrooms.includes(b1)) fromConversationBedrooms.push(b1);
+    if (bedMatch[2]) {
+      const b2 = parseInt(bedMatch[2], 10);
+      if (b2 >= 2 && !fromConversationBedrooms.includes(b2)) fromConversationBedrooms.push(b2);
+    }
+  }
+  if (fromConversationBedrooms.length > 0 && !bedrooms.some((b) => b >= 2)) {
+    bedrooms.splice(0, bedrooms.length, ...fromConversationBedrooms);
+  }
+
+  const wantsMultiBedroom = bedrooms.some((b) => b >= 2);
+  if (wantsMultiBedroom || prefersLargerPlans) {
+    for (let i = propertyTypes.length - 1; i >= 0; i--) {
+      const normT = normalizeString(propertyTypes[i]);
+      if (normT.includes('studio') || normT.includes('estudio') || normT.includes('flat')) {
+        propertyTypes.splice(i, 1);
+      }
+    }
+    if (!propertyTypes.some((t) => normalizeString(t).includes('apartamento'))) {
+      propertyTypes.unshift('Apartamento');
+    }
+    if (wantsMultiBedroom) {
+      bedroomsStrict = true;
+    }
+  }
+
+  if (excludedPropertyTypes.length > 0 && propertyTypes.length > 0) {
+    propertyTypeStrict = true;
+  }
+
+  // Detecção textual de limite financeiro inegociável vs. orçamento flexível vindo de anúncio barato (Seção 5)
+  const hasExplicitStrictBudgetText =
+    /\b(?:limite\s+(?:maximo|absoluto|financeiro)|teto\s+(?:maximo|de)|nao\s+posso\s+passar\s+de|orcamento\s+maximo|no\s+maximo\s+r\$|abaixo\s+de\s+r\$\s*\d|ate\s+r\$\s*\d+\s*mil\s+no\s+maximo)\b/.test(
+      allContextNorm
+    );
+  if (hasExplicitStrictBudgetText) {
+    priceStrictMax = true;
+  }
+
+  let budgetIsFlexibleFromAd = false;
+  let effectivePriceFlexMax = priceFlexMax;
+  if (
+    !priceStrictMax &&
+    priceMax !== null &&
+    priceMax > 0 &&
+    priceMax <= 360000 &&
+    (wantsMultiBedroom || prefersLargerPlans)
+  ) {
+    // O valor inicial (ex.: R$ 270k–350k) veio do anúncio de studio, mas o cliente busca apartamento maior (2+ quartos / 50+ m²)
+    budgetIsFlexibleFromAd = true;
+    effectivePriceFlexMax = Math.max(effectivePriceFlexMax ?? 0, priceMax * 1.9, 650000);
+  }
+
+  if (
+    /\b(?:somente\s+no\s+bairro|apenas\s+no\s+|so\s+no\s+bessa|so\s+em\s+manaira|so\s+em\s+cabo\s+branco|nao\s+abre\s+mao\s+do\s+bairro)\b/.test(
+      allContextNorm
+    )
+  ) {
+    locationStrict = true;
+  }
 
   // Especificidade de localização
   let locationSpecificity: 'city' | 'region' | 'neighborhood' = 'neighborhood';
@@ -490,7 +693,7 @@ export function buildProfileFromData(
     priceMin,
     priceMax,
     priceStrictMax,
-    priceFlexMax,
+    priceFlexMax: effectivePriceFlexMax,
     bedrooms,
     bedroomsStrict,
     deliveryStatus,
@@ -498,10 +701,17 @@ export function buildProfileFromData(
     requiredFeatures,
     preferredFeatures,
     isShortStayOnly,
+    areaMin,
+    areaMax,
+    areaStrict,
+    prefersLargerPlans,
+    excludedPropertyTypes,
+    budgetIsFlexibleFromAd,
+    isSellerOrOutOfArea,
     provenance: {
       operation: resolveProvenance('Finalidade', hasCtwa),
       purpose: resolveProvenance('Finalidade', hasCtwa),
-      propertyTypes: resolveProvenance('Tipo de imóvel', hasCtwa),
+      propertyTypes: wantsMultiBedroom || prefersLargerPlans ? 'conversation' : resolveProvenance('Tipo de imóvel', hasCtwa),
       locations: resolveProvenance('Bairro', hasCtwa),
       price: resolveProvenance('Faixa de valor', hasCtwa),
       bedrooms: resolveProvenance('Quartos', hasCtwa),

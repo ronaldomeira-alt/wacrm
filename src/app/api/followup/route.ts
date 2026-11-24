@@ -11,9 +11,10 @@ import {
   type ContactRow,
   type TagWithJoin,
 } from '@/lib/match/profile-builder';
+import { evaluateMatch } from '@/lib/match/engine';
 import { calculateProfileMaturity } from '@/lib/match/maturity';
 import { resolveValidatedPublicPropertyUrl } from '@/lib/match/smart-send';
-import type { LeadSearchProfile } from '@/lib/match/types';
+import type { DeliveryStatus, LeadSearchProfile, PropertyProjection } from '@/lib/match/types';
 import {
   FOLLOWUP_MAX_RECOMMENDED_PROPERTIES,
   calculateFollowupCommercialPriority,
@@ -83,6 +84,41 @@ function resolveCompatiblePropertyPublicUrl(prop: {
   const fallbackPageId = explicitUrl ? null : coverInventoryId || codeOrId;
   const resolved = resolveValidatedPublicPropertyUrl(explicitUrl, fallbackPageId);
   return resolved.url;
+}
+
+function toPropertyProjection(
+  prop: Record<string, unknown>,
+  accountId: string
+): PropertyProjection {
+  const rawDelivery = String(prop.delivery_status || 'pronto').trim().toLowerCase();
+  const deliveryStatus: DeliveryStatus =
+    rawDelivery === 'planta' || rawDelivery === 'em_construcao'
+      ? (rawDelivery as DeliveryStatus)
+      : 'pronto';
+  return {
+    propertyId: String(prop.property_id || ''),
+    accountId: String(prop.account_id || accountId),
+    status: 'ativo',
+    operation: String(prop.operation || 'venda').toLowerCase() === 'locacao' ? 'locacao' : 'venda',
+    title: String(prop.title || 'Imóvel compatível'),
+    code: prop.code ? String(prop.code) : null,
+    propertyType: String(prop.property_type || 'apartamento'),
+    neighborhood: String(prop.neighborhood || ''),
+    city: String(prop.city || 'João Pessoa'),
+    priceMin: Number(prop.price_min || 0),
+    priceMax: Number(prop.price_max || prop.price_min || 0),
+    bedroomsMin: prop.bedrooms_min != null ? Number(prop.bedrooms_min) : null,
+    bedroomsMax: prop.bedrooms_max != null ? Number(prop.bedrooms_max) : null,
+    areaMin: prop.area_min != null ? Number(prop.area_min) : null,
+    areaMax: prop.area_max != null ? Number(prop.area_max) : null,
+    deliveryStatus,
+    deliveryDeadline: prop.delivery_deadline ? String(prop.delivery_deadline) : null,
+    features: Array.isArray(prop.features)
+      ? (prop.features as unknown[]).map((f) => String(f))
+      : [],
+    coverUrl: prop.cover_url ? String(prop.cover_url) : null,
+    publicUrl: prop.public_url ? String(prop.public_url) : null,
+  };
 }
 
 export async function GET(request: Request) {
@@ -163,7 +199,9 @@ export async function GET(request: Request) {
           .eq('account_id', accountId),
         supabase
           .from('property_match_projections')
-          .select('property_id, title, status, operation')
+          .select(
+            'property_id, account_id, status, operation, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, area_min, area_max, delivery_status, delivery_deadline, features, cover_url, public_url'
+          )
           .eq('account_id', accountId)
           .eq('status', 'ativo'),
         Promise.resolve(
@@ -371,7 +409,7 @@ export async function GET(request: Request) {
             supabase
               .from('messages')
               .select(
-                'conversation_id, sender_type, content_type, content_text, media_url, template_name, created_at, private, event'
+                'conversation_id, sender_type, content_type, content_text, transcript_text, media_url, template_name, created_at'
               )
               .in('conversation_id', chunk)
               .order('created_at', { ascending: false })
@@ -398,9 +436,13 @@ export async function GET(request: Request) {
         for (const [cid, list] of grouped.entries()) {
           msgStatsByConversationMap.set(cid, summarizeConversationMessages(list));
           const customerTexts = list
-            .filter((m) => String(m.sender_type || '').toLowerCase() === 'customer' && m.content_text)
+            .filter(
+              (m) =>
+                String(m.sender_type || '').toLowerCase() === 'customer' &&
+                (m.content_text || m.transcript_text)
+            )
             .slice(0, 12)
-            .map((m) => String(m.content_text || '').trim())
+            .map((m) => String(m.content_text || m.transcript_text || '').trim())
             .filter(Boolean)
             .join(' ');
           if (customerTexts) {
@@ -529,17 +571,24 @@ export async function GET(request: Request) {
       }),
     ]);
 
-    // 5. Carrega projeções de imóveis ATIVOS e EXCLUSIVAMENTE DE VENDA para os matches encontrados
+    // 5. Carrega projeções de imóveis ATIVOS e EXCLUSIVAMENTE DE VENDA
+    const projectionsMap = new Map<string, Record<string, unknown>>();
+    for (const p of (propertiesRes.data || []) as Array<Record<string, unknown>>) {
+      const op = String(p.operation || '').trim().toLowerCase();
+      if (op !== 'venda') continue;
+      const pid = String(p.property_id || '');
+      if (pid) projectionsMap.set(pid, p);
+    }
+
     const allMatchedPropIds = Array.from(
       new Set(
         Array.from(rawMatchesByLead.values())
           .flat()
           .map((m) => String(m.property_id || ''))
-          .filter(Boolean)
+          .filter((pid) => Boolean(pid) && !projectionsMap.has(pid))
       )
     );
 
-    const projectionsMap = new Map<string, Record<string, unknown>>();
     if (allMatchedPropIds.length > 0) {
       const propChunks: string[][] = [];
       for (let i = 0; i < allMatchedPropIds.length; i += BATCH_IDS) {
@@ -550,7 +599,7 @@ export async function GET(request: Request) {
           supabase
             .from('property_match_projections')
             .select(
-              'property_id, status, operation, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, area_min, delivery_status, cover_url, public_url'
+              'property_id, account_id, status, operation, title, code, property_type, neighborhood, city, price_min, price_max, bedrooms_min, bedrooms_max, area_min, area_max, delivery_status, delivery_deadline, features, cover_url, public_url'
             )
             .eq('account_id', accountId)
             .eq('status', 'ativo')
@@ -628,9 +677,21 @@ export async function GET(request: Request) {
           paused_at: (rawContact.paused_at as string | null) ?? null,
           archived_at: (rawContact.archived_at as string | null) ?? null,
         };
+        const mergedSummary: Record<string, unknown> | null =
+          summary || recentCustomerTexts
+            ? {
+                ...(summary || {}),
+                notes: [
+                  typeof summary?.notes === 'string' ? summary.notes.trim() : '',
+                  recentCustomerTexts,
+                ]
+                  .filter(Boolean)
+                  .join(' | '),
+              }
+            : null;
         profile = buildProfileFromData(
           contactForProfile,
-          summary ? { summary } : null,
+          mergedSummary ? { summary: mergedSummary } : null,
           contactTags,
           conv
             ? {
@@ -747,11 +808,14 @@ export async function GET(request: Request) {
         lastCustomerText: msgStats?.lastCustomerText ?? convLastMessageText,
       });
 
-      // Imóveis compatíveis de VENDA com link público válido e respeitando restrições explícitas (Seção 8)
+      // Imóveis compatíveis de VENDA com link público válido, reavaliados contra o perfil estruturado unificado (Seções 3, 4, 5 e 6)
       const sharedSet = sharedPropertyKeysByLead.get(contactId) ?? new Set<string>();
       const leadRawMatches = rawMatchesByLead.get(contactId) || [];
       const compatibleList: CompatiblePropertySummary[] = [];
       const seenPropIds = new Set<string>();
+      const allExcludedTypes = Array.from(
+        new Set([...(profile?.excludedPropertyTypes ?? []), ...restrictions.excludedTypes])
+      );
 
       for (const m of leadRawMatches) {
         const propId = String(m.property_id || '');
@@ -769,23 +833,40 @@ export async function GET(request: Request) {
         if (
           propertyViolatesExplicitRestrictions(
             { propertyType: propType, title: propTitle },
-            restrictions.excludedTypes
+            allExcludedTypes
           )
         ) {
           continue;
         }
 
-        // Cada imóvel recomendado precisa de um link público válido e compartilhável
-        const resolvedPublicUrl = resolveCompatiblePropertyPublicUrl(prop);
-        if (!resolvedPublicUrl) continue;
-
+        // Reavaliação estrutural ao vivo (elimina studios/unidades de 19–22m² quando o cliente busca plantas maiores ou 2+ quartos)
+        let effectiveMatchScore = Math.round(Number(m.match_score || 0));
+        const effectivePriority = Number(m.commercial_priority || 0);
         const breakdown =
           m.score_breakdown && typeof m.score_breakdown === 'object'
             ? (m.score_breakdown as Record<string, unknown>)
             : {};
-        const reasons = Array.isArray(breakdown.reasons)
+        let effectiveReasons = Array.isArray(breakdown.reasons)
           ? (breakdown.reasons as unknown[]).map((r) => String(r)).filter(Boolean)
           : [];
+
+        if (profile) {
+          const liveEval = evaluateMatch(profile, toPropertyProjection(prop, accountId));
+          if (!liveEval.eligible || liveEval.matchScore < 70) {
+            continue;
+          }
+          effectiveMatchScore = liveEval.matchScore;
+          const liveReasons = liveEval.scoreBreakdown?.reasons ?? [];
+          if (liveReasons.length > 0 && effectiveReasons.length === 0) {
+            effectiveReasons = liveReasons;
+          } else if (profile.prefersLargerPlans || profile.budgetIsFlexibleFromAd) {
+            effectiveReasons = liveReasons;
+          }
+        }
+
+        // Cada imóvel recomendado precisa de um link público válido e compartilhável
+        const resolvedPublicUrl = resolveCompatiblePropertyPublicUrl(prop);
+        if (!resolvedPublicUrl) continue;
 
         seenPropIds.add(propId);
         compatibleList.push({
@@ -802,15 +883,72 @@ export async function GET(request: Request) {
           bedroomsMin: prop.bedrooms_min != null ? Number(prop.bedrooms_min) : null,
           bedroomsMax: prop.bedrooms_max != null ? Number(prop.bedrooms_max) : null,
           areaMin: prop.area_min != null ? Number(prop.area_min) : null,
+          areaMax: prop.area_max != null ? Number(prop.area_max) : null,
           deliveryStatus: prop.delivery_status ? String(prop.delivery_status) : null,
           coverUrl: prop.cover_url ? String(prop.cover_url) : null,
           publicUrl: resolvedPublicUrl,
-          matchScore: Math.round(Number(m.match_score || 0)),
-          commercialPriority: Number(m.commercial_priority || 0),
+          matchScore: effectiveMatchScore,
+          commercialPriority: effectivePriority,
           matchStatus: String(m.match_status || 'novo'),
-          reasons,
+          reasons: effectiveReasons,
           alreadyShared: sharedSet.has(propId) || String(m.match_status || '') === 'enviado',
         });
+      }
+
+      // Se os matches pré-gravados eram de perfil antigo (ex.: studios de 19–22m² eliminados porque o cliente
+      // declarou busca por plantas maiores ou 2+ quartos), avalia as projeções ativas de venda em tempo real
+      if (
+        compatibleList.length < FOLLOWUP_MAX_RECOMMENDED_PROPERTIES &&
+        profile &&
+        profile.operation === 'venda' &&
+        !profile.isShortStayOnly &&
+        !profile.isSellerOrOutOfArea &&
+        (leadRawMatches.length > 0 || profile.prefersLargerPlans || profile.bedrooms.length > 0)
+      ) {
+        for (const [propId, prop] of projectionsMap.entries()) {
+          if (seenPropIds.has(propId)) continue;
+          const propTitle = String(prop.title || 'Imóvel compatível');
+          const propType = prop.property_type ? String(prop.property_type) : null;
+          if (
+            propertyViolatesExplicitRestrictions(
+              { propertyType: propType, title: propTitle },
+              allExcludedTypes
+            )
+          ) {
+            continue;
+          }
+          const resolvedPublicUrl = resolveCompatiblePropertyPublicUrl(prop);
+          if (!resolvedPublicUrl) continue;
+
+          const liveEval = evaluateMatch(profile, toPropertyProjection(prop, accountId));
+          if (!liveEval.eligible || liveEval.matchScore < 70) continue;
+
+          seenPropIds.add(propId);
+          compatibleList.push({
+            matchId: `live-${contactId}-${propId}`,
+            propertyId: propId,
+            title: propTitle,
+            code: prop.code ? String(prop.code) : null,
+            neighborhood: String(prop.neighborhood || ''),
+            city: String(prop.city || 'João Pessoa'),
+            operation: 'venda',
+            propertyType: propType,
+            priceMin: Number(prop.price_min || 0),
+            priceMax: Number(prop.price_max || 0),
+            bedroomsMin: prop.bedrooms_min != null ? Number(prop.bedrooms_min) : null,
+            bedroomsMax: prop.bedrooms_max != null ? Number(prop.bedrooms_max) : null,
+            areaMin: prop.area_min != null ? Number(prop.area_min) : null,
+            areaMax: prop.area_max != null ? Number(prop.area_max) : null,
+            deliveryStatus: prop.delivery_status ? String(prop.delivery_status) : null,
+            coverUrl: prop.cover_url ? String(prop.cover_url) : null,
+            publicUrl: resolvedPublicUrl,
+            matchScore: liveEval.matchScore,
+            commercialPriority: liveEval.matchScore,
+            matchStatus: 'novo',
+            reasons: liveEval.scoreBreakdown?.reasons ?? [],
+            alreadyShared: sharedSet.has(propId),
+          });
+        }
       }
 
       // Prioriza opções ainda não apresentadas quando houver empate próximo de compatibilidade

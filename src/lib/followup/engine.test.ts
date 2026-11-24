@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildObjectiveFollowupRecommendation,
+  buildPersonalizedCommercialReason,
   calculateFollowupCommercialPriority,
   classifyFollowupTimingAndType,
   compareFollowupItems,
@@ -8,6 +9,7 @@ import {
   extractInterestProperty,
   extractLeadPrimaryNeed,
   filterFollowupItems,
+  formatNaturalElapsedContactPtBr,
   matchesFollowupDateFilter,
   reconcileFollowupReasonAndApproach,
   resolveFollowupDateFilterRange,
@@ -631,5 +633,88 @@ describe('Combinação de Filtros e Grande Volume de Registros (Seções 8, 10 e
       now,
     });
     expect(allDates.map((i) => i.suggestion.id)).toEqual(['match-all', 'old-date']);
+  });
+});
+
+describe('Etapa 2 — Formatação Natural de Tempo, Transcrição de Áudio e Contexto Comercial Unificado (Seções 2, 3, 8 e 9)', () => {
+  it('formata o tempo decorrido desde o último contato em minutos/horas (< 24h) e em dias completos (>= 24h, ex.: 86h -> "Há 3 dias")', () => {
+    const nowMs = new Date('2026-11-23T15:00:00.000Z').getTime();
+
+    // Menos de 1 hora (45 minutos)
+    expect(
+      formatNaturalElapsedContactPtBr({
+        lastContactAt: new Date(nowMs - 45 * 60 * 1000).toISOString(),
+        nowMs,
+      })
+    ).toBe('Há 45 minutos');
+
+    // Menos de 24 horas (2 horas)
+    expect(formatNaturalElapsedContactPtBr(2)).toBe('Há 2 horas');
+    expect(formatNaturalElapsedContactPtBr(1)).toBe('Há 1 hora');
+
+    // 24 horas ou mais -> dias completos (nunca "há 86 horas")
+    expect(formatNaturalElapsedContactPtBr(24)).toBe('Há 1 dia');
+    expect(formatNaturalElapsedContactPtBr(86)).toBe('Há 3 dias');
+    expect(formatNaturalElapsedContactPtBr(86)).not.toContain('86');
+    expect(formatNaturalElapsedContactPtBr(288)).toBe('Há 12 dias');
+  });
+
+  it('considera transcrição de áudio (transcript_text) tanto de clientes quanto de corretores no histórico real', () => {
+    const stats = summarizeConversationMessages([
+      {
+        conversation_id: 'conv-vilela',
+        sender_type: 'customer',
+        content_type: 'text',
+        content_text: 'Gostaria de saber os valores',
+        created_at: '2026-11-18T23:45:36.000Z',
+      },
+      {
+        conversation_id: 'conv-vilela',
+        sender_type: 'agent',
+        content_type: 'audio',
+        content_text: null,
+        transcript_text: 'Bom dia Vilela! Temos unidades a partir de R$ 350 mil no Mahal Resort.',
+        media_url: 'https://cdn.example.com/audio.ogg',
+        created_at: '2026-11-19T11:06:16.000Z',
+      },
+    ]);
+
+    expect(stats.customerMessageCount).toBe(1);
+    expect(stats.businessMessageCount).toBe(1);
+    expect(stats.agentMessageCount).toBe(1);
+    expect(stats.lastBusinessText).toContain('unidades a partir de R$ 350 mil');
+  });
+
+  it('constrói motivo comercial unificado natural para o caso Vilela (plantas maiores de 50 a 75 m² no Bessa) incorporando a abordagem sem jargão burocrático', () => {
+    const reason = buildPersonalizedCommercialReason({
+      contactName: 'Vilela',
+      stageName: 'Qualificação',
+      interestProperty: 'Mahal Resort',
+      isCtwaOrigin: true,
+      lastCustomerText: 'Gostaria de saber os valores',
+      compatiblePropertiesCount: 3,
+      opportunityType: 'resumption',
+      contactState: 'resumption',
+      profile: {
+        operation: 'venda',
+        purpose: ['Moradia', 'Investimento'],
+        propertyTypes: ['Apartamento'],
+        locations: ['Bessa'],
+        prefersLargerPlans: true,
+        areaMin: 50,
+        areaMax: 75,
+        priceMin: 350000,
+      },
+    });
+
+    expect(reason).toContain('Vilela');
+    expect(reason).toContain('Mahal Resort');
+    expect(reason).toContain('50 a 75 m²');
+    expect(reason).toContain('Bessa');
+    expect(reason).toContain('três opções compatíveis com o espaço que ele procura');
+    expect(reason).not.toMatch(/Lead demonstrou interesse inicial/i);
+    expect(reason).not.toMatch(/Próximo passo pendente/i);
+    expect(reason).not.toMatch(/Necessidade principal identificada/i);
+    expect(reason).not.toMatch(/Ausência de registro de desinteresse/i);
   });
 });
