@@ -1,6 +1,7 @@
 import { AiError, type ProviderResult } from '../types'
 import { MAX_OUTPUT_TOKENS } from '../defaults'
 import {
+  buildRequestSignal,
   mergeConsecutive,
   normalizeUsage,
   providerHttpError,
@@ -10,7 +11,7 @@ import {
 
 const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions'
 const JSON_RETRY_ENFORCEMENT =
-  '[INSTRUÇÃO ESTRUTURAL DE SISTEMA: Responda EXCLUSIVAMENTE com um objeto JSON válido contendo as chaves response_text, transfer_required, boundary_type, reason, context_summary, suggested_next_action e send_media, iniciando com { e terminando com }, sem blocos markdown e sem texto fora do JSON.]'
+  '[INSTRUÇÃO ESTRUTURAL DE SISTEMA: Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente o esquema pedido no prompt do sistema, iniciando com { e terminando com }, sem blocos markdown e sem texto fora do JSON.]'
 
 interface DeepSeekResponse {
   choices?: {
@@ -39,7 +40,7 @@ interface DeepSeekResponse {
  * Parses prompt caching statistics (prompt_cache_hit_tokens) and token usage.
  */
 export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResult> {
-  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired, maxOutputTokens } = args
+  const { apiKey, model, systemPrompt, messages, timeoutMs, signal, structuredOutputRequired, maxOutputTokens } = args
 
   if (!apiKey || !apiKey.trim()) {
     throw new AiError('DeepSeek API key is required.', {
@@ -48,6 +49,7 @@ export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResu
     })
   }
 
+  const deadline = Date.now() + timeoutMs
   const mergedMessages = mergeConsecutive(messages)
   const headers = {
     Authorization: `Bearer ${apiKey.trim()}`,
@@ -68,7 +70,7 @@ export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResu
         max_tokens: maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         ...(structuredOutputRequired ? { response_format: { type: 'json_object' } } : {}),
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: buildRequestSignal(timeoutMs, signal),
     })
   } catch (err) {
     throw toNetworkError(err)
@@ -84,7 +86,13 @@ export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResu
     ? (choice?.content ?? '')
     : (choice?.content || choice?.reasoning_content || '')
 
-  if (structuredOutputRequired && (!text || typeof text !== 'string' || !text.trim())) {
+  const remainingMs = deadline - Date.now()
+  if (
+    structuredOutputRequired &&
+    (!text || typeof text !== 'string' || !text.trim()) &&
+    !signal?.aborted &&
+    remainingMs > 2000
+  ) {
     console.warn(
       '[deepseek] Empty content with json_object response_format; retrying without response_format and with strict JSON enforcement.',
     )
@@ -109,7 +117,7 @@ export async function generateDeepSeek(args: ProviderArgs): Promise<ProviderResu
           ],
           max_tokens: maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: buildRequestSignal(remainingMs, signal),
       })
     } catch (err) {
       throw toNetworkError(err)

@@ -1,11 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { loadAiConfig } from './config'
+import { executeAiInference } from './provider-manager'
 import { logAiUsage } from './usage'
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
-import { aiRequestTimeoutMs } from './defaults'
 import { buildLearningScanSystemPrompt, buildLearningScanUserPrompt, type LearningScanMessage } from './learning-prompt'
 import { parseLearningScanResult, type LearningCandidate, type LearningConfidence } from './learning-types'
 import {
@@ -215,50 +212,37 @@ export async function generateLearningSuggestions(
 
   const systemPrompt = buildLearningScanSystemPrompt()
   const userPrompt = buildLearningScanUserPrompt({ messages: scanMessages, knownTitles })
-  const activeKey =
-    config.provider === 'deepseek'
-      ? (config.deepseekApiKey || config.apiKey)
-      : config.apiKey
-  const providerArgs = {
-    apiKey: activeKey,
-    model: config.model,
-    systemPrompt,
-    messages: [{ role: 'user' as const, content: userPrompt }],
-    timeoutMs: aiRequestTimeoutMs(),
-    // The learning scan can legitimately produce many candidates in one
-    // batch — the shared conversational MAX_OUTPUT_TOKENS (1024, sized for
-    // a short WhatsApp reply) was silently truncating this response
-    // mid-JSON on any batch with more than a handful of learnings,
-    // permanently stalling the cursor (every retry re-read the exact same
-    // over-limit batch and got cut off the same way). See defaults.ts.
-    maxOutputTokens: LEARNING_SCAN_MAX_OUTPUT_TOKENS,
-    // Also forces syntactically valid JSON (OpenAI json_object mode /
-    // Anthropic "{" prefill) instead of relying on the model to
-    // spontaneously avoid prose or markdown fences.
-    structuredOutputRequired: true,
-  }
 
   let candidates: LearningCandidate[] | null = null
   try {
-    const { text, usage } =
-      config.provider === 'openai'
-        ? await generateOpenAi(providerArgs)
-        : config.provider === 'deepseek'
-          ? await generateDeepSeek(providerArgs)
-          : await generateAnthropic(providerArgs)
+    const res = await executeAiInference({
+      config,
+      db,
+      accountId,
+      conversationId: null,
+      mode: 'learning',
+      systemPrompt,
+      messages: [{ role: 'user' as const, content: userPrompt }],
+      maxOutputTokens: LEARNING_SCAN_MAX_OUTPUT_TOKENS,
+      structuredOutputRequired: true,
+      logUsage: false,
+    })
     await logAiUsage(db, {
       accountId,
       conversationId: null,
       mode: 'learning',
-      provider: config.provider,
-      model: config.model,
-      usage,
+      provider: res.provider,
+      model: res.model,
+      usage: res.usage,
+      latencyMs: res.latencyMs,
+      fallbackUsed: res.fallbackUsed,
+      attemptNumber: res.attemptCount,
     })
-    candidates = parseLearningScanResult(text)
+    candidates = parseLearningScanResult(res.text)
     if (candidates === null) {
       console.warn(
         '[learning generate] model output was not valid JSON — advancing cursor anyway (idempotent backlog recovery), snippet:',
-        text.slice(0, 300),
+        res.text.slice(0, 300),
       )
     }
   } catch (err) {

@@ -1,10 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { AiConfig, AiUsage, ChatMessage } from '@/lib/ai/types';
 import { buildConversationContext } from '@/lib/ai/context';
-import { aiRequestTimeoutMs } from '@/lib/ai/defaults';
-import { generateOpenAi } from '@/lib/ai/providers/openai';
-import { generateAnthropic } from '@/lib/ai/providers/anthropic';
-import { generateDeepSeek } from '@/lib/ai/providers/deepseek';
+import { executeAiInference } from '@/lib/ai/provider-manager';
+import type { AiConfig, AiUsage, ChatMessage } from '@/lib/ai/types';
 import { extractVariableIndices } from '@/lib/whatsapp/template-validators';
 import {
   renderApprovedTemplatePreview,
@@ -459,26 +456,14 @@ async function callConfiguredProvider(
   systemPrompt: string,
   userPrompt: string
 ): Promise<{ text: string; usage: AiUsage | null }> {
-  const activeKey =
-    config.provider === 'deepseek'
-      ? config.deepseekApiKey || config.apiKey
-      : config.apiKey;
-
-  const providerArgs = {
-    apiKey: activeKey,
-    model: config.model,
+  const result = await executeAiInference({
+    config,
+    mode: 'smart_send',
     systemPrompt,
     messages: [{ role: 'user' as const, content: userPrompt }],
-    timeoutMs: aiRequestTimeoutMs(),
-  };
-
-  if (config.provider === 'openai') {
-    return generateOpenAi(providerArgs);
-  }
-  if (config.provider === 'deepseek') {
-    return generateDeepSeek(providerArgs);
-  }
-  return generateAnthropic(providerArgs);
+    logUsage: false,
+  });
+  return { text: result.text, usage: result.usage };
 }
 
 /**

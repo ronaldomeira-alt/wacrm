@@ -1,6 +1,7 @@
 import { AiError, type ChatMessage, type ProviderResult } from '../types'
 import { MAX_OUTPUT_TOKENS } from '../defaults'
 import {
+  buildRequestSignal,
   mergeConsecutive,
   normalizeUsage,
   providerHttpError,
@@ -40,7 +41,7 @@ function normalizeForAnthropic(messages: ChatMessage[]): ChatMessage[] {
  * in `generateReply`).
  */
 export async function generateAnthropic(args: ProviderArgs): Promise<ProviderResult> {
-  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired, maxOutputTokens } = args
+  const { apiKey, model, systemPrompt, messages, timeoutMs, signal, structuredOutputRequired, maxOutputTokens } = args
 
   // Anthropic has no `response_format` switch — the standard way to force
   // valid JSON is an assistant-turn prefill: seed the reply with "{" so the
@@ -67,7 +68,7 @@ export async function generateAnthropic(args: ProviderArgs): Promise<ProviderRes
         max_tokens: maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         messages: apiMessages,
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: buildRequestSignal(timeoutMs, signal),
     })
   } catch (err) {
     throw toNetworkError(err)

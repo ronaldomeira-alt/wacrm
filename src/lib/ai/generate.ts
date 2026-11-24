@@ -1,14 +1,13 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
-  AiError,
   type AiConfig,
   type AiUsage,
   type ChatMessage,
   type GenerateResult,
 } from './types'
-import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults'
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
+import { HANDOFF_SENTINEL } from './defaults'
+import { executeAiInference } from './provider-manager'
+import type { AiUsageMode } from './usage'
 
 export interface GenerateArgs {
   config: AiConfig
@@ -16,52 +15,31 @@ export interface GenerateArgs {
   systemPrompt: string
   /** Recent conversation turns, oldest first. */
   messages: ChatMessage[]
+  db?: SupabaseClient | null
+  accountId?: string | null
+  conversationId?: string | null
+  mode?: AiUsageMode
+  bypassCircuitBreaker?: boolean
+  logUsage?: boolean
 }
 
 /**
- * Generate the next reply from the account's configured provider.
- * Dispatches to the right adapter, then parses the handoff sentinel out
- * of the raw text. Throws `AiError` on any provider/network failure.
+ * Generate the next reply from the account's configured provider (with
+ * automatic fallback when enabled). Dispatches via `executeAiInference`,
+ * then parses the handoff sentinel out of the raw text.
  */
 export async function generateReply(args: GenerateArgs): Promise<GenerateResult> {
-  const { config, systemPrompt, messages } = args
-  const timeoutMs = aiRequestTimeoutMs()
-  const providerArgs = {
-    apiKey: config.apiKey,
-    model: config.model,
-    systemPrompt,
-    messages,
-    timeoutMs,
-  }
-
-  let result: { text: string; usage: AiUsage | null }
-  switch (config.provider) {
-    case 'openai':
-      result = await generateOpenAi(providerArgs)
-      break
-    case 'anthropic':
-      result = await generateAnthropic(providerArgs)
-      break
-    case 'deepseek': {
-      const apiKey = config.deepseekApiKey || config.apiKey
-      if (!apiKey) {
-        throw new AiError('DeepSeek API key is not configured.', {
-          code: 'missing_key',
-          status: 400,
-        })
-      }
-      result = await generateDeepSeek({
-        ...providerArgs,
-        apiKey,
-      })
-      break
-    }
-    default:
-      throw new AiError(`Unsupported AI provider: ${config.provider}`, {
-        code: 'unsupported_provider',
-        status: 400,
-      })
-  }
+  const result = await executeAiInference({
+    config: args.config,
+    db: args.db,
+    accountId: args.accountId,
+    conversationId: args.conversationId,
+    mode: args.mode ?? 'draft',
+    systemPrompt: args.systemPrompt,
+    messages: args.messages,
+    bypassCircuitBreaker: args.bypassCircuitBreaker,
+    logUsage: args.logUsage ?? false,
+  })
 
   return parseGeneration(result.text, result.usage)
 }

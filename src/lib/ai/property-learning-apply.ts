@@ -1,10 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
+import { executeAiInference } from './provider-manager'
 import { replacePropertySubjectiveKnowledge } from './knowledge'
-import { aiRequestTimeoutMs } from './defaults'
 import {
   clearPropertyLearningEvidence,
   compactForMatch,
@@ -177,23 +174,13 @@ export async function fusePropertySubjectiveKnowledge(
   prevKnowledge: string | null,
   newInfo: string,
 ): Promise<string> {
-  const activeKey =
-    config.provider === 'deepseek'
-      ? (config.deepseekApiKey || config.apiKey)
-      : config.apiKey
-  const providerArgs = {
-    apiKey: activeKey,
-    model: config.model,
+  const { text } = await executeAiInference({
+    config,
+    mode: 'learning',
     systemPrompt: FUSION_SYSTEM_PROMPT,
     messages: [{ role: 'user' as const, content: buildFusionUserPrompt(prevKnowledge, newInfo) }],
-    timeoutMs: aiRequestTimeoutMs(),
-  }
-  const { text } =
-    config.provider === 'openai'
-      ? await generateOpenAi(providerArgs)
-      : config.provider === 'deepseek'
-        ? await generateDeepSeek(providerArgs)
-        : await generateAnthropic(providerArgs)
+    logUsage: false,
+  })
   const fused = text.trim()
   return fused || newInfo
 }

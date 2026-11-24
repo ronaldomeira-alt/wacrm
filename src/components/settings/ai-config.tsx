@@ -42,12 +42,14 @@ const PROVIDER_LABEL: Record<AiProvider, string> = {
   openai: 'OpenAI',
   deepseek: 'DeepSeek',
   anthropic: 'Anthropic (Claude)',
+  opencode_go: 'OpenCode Go (GLM)',
 };
 
 const KEY_PLACEHOLDER: Record<AiProvider, string> = {
   openai: 'sk-...',
   deepseek: 'sk-...',
   anthropic: 'sk-ant-...',
+  opencode_go: 'oc-...',
 };
 
 interface ModelOption {
@@ -67,6 +69,9 @@ const SUGGESTED_MODELS: Record<AiProvider, ModelOption[]> = {
   anthropic: [
     { id: 'claude-3-5-haiku-latest', label: 'claude-3-5-haiku-latest' },
     { id: 'claude-3-5-sonnet-latest', label: 'claude-3-5-sonnet-latest' },
+  ],
+  opencode_go: [
+    { id: 'glm-5.3-flash', label: 'GLM 5.3 Flash' },
   ],
 };
 

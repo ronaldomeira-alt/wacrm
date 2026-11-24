@@ -1,141 +1,189 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { daysAgoStart, lastNDayKeys, localDayKey } from '@/lib/dashboard/date-utils'
-import { AI_USAGE_MODES, type AiUsageMode } from '@/lib/ai/usage'
+import { supabaseAdmin } from '@/lib/ai/admin-client'
+import { loadAiConfig } from '@/lib/ai/config'
+import { fetchOpenCodeGoQuota } from '@/lib/ai/opencode-quota'
+import { AI_USAGE_MODES } from '@/lib/ai/usage'
 
-// Rows are aggregated in-process over a bounded window. An active
-// account writes a handful of rows per conversation, so 30 days sits
-// comfortably under this cap; we surface `truncated` when it doesn't so
-// the UI can say "showing a partial window" rather than under-reporting
-// silently.
-const MAX_ROWS = 10_000
-const DEFAULT_WINDOW_DAYS = 30
+export const dynamic = 'force-dynamic'
 
-interface UsageRow {
-  created_at: string
-  mode: AiUsageMode
-  provider: string
-  model: string
-  prompt_tokens: number
-  completion_tokens: number
-  total_tokens: number
+type DatePreset = 'today' | '3d' | '7d' | '15d' | '30d' | 'month' | 'custom'
+
+function saoPauloStartOfDay(date: Date): Date {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const y = parts.find((p) => p.type === 'year')?.value ?? '2026'
+  const m = parts.find((p) => p.type === 'month')?.value ?? '01'
+  const d = parts.find((p) => p.type === 'day')?.value ?? '01'
+  return new Date(`${y}-${m}-${d}T00:00:00-03:00`)
+}
+
+function resolveDateRange(url: URL): {
+  preset: DatePreset
+  startAt: Date
+  endAt: Date
+  days: number
+} {
+  const presetParam = (url.searchParams.get('preset') || '') as DatePreset
+  const legacyDays = Number(url.searchParams.get('days'))
+  const now = new Date()
+  const todayStart = saoPauloStartOfDay(now)
+
+  if (presetParam === 'custom') {
+    const startRaw = url.searchParams.get('startDate')
+    const endRaw = url.searchParams.get('endDate')
+    const startParsed = startRaw ? new Date(`${startRaw}T00:00:00-03:00`) : null
+    const endParsed = endRaw ? new Date(`${endRaw}T23:59:59.999-03:00`) : null
+    if (
+      startParsed &&
+      endParsed &&
+      !Number.isNaN(startParsed.getTime()) &&
+      !Number.isNaN(endParsed.getTime()) &&
+      startParsed <= endParsed
+    ) {
+      const days = Math.max(
+        1,
+        Math.ceil((endParsed.getTime() - startParsed.getTime()) / 86_400_000),
+      )
+      return { preset: 'custom', startAt: startParsed, endAt: endParsed, days }
+    }
+  }
+
+  if (presetParam === 'today') {
+    return { preset: 'today', startAt: todayStart, endAt: now, days: 1 }
+  }
+  if (presetParam === 'month') {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+    }).formatToParts(now)
+    const y = parts.find((p) => p.type === 'year')?.value ?? '2026'
+    const m = parts.find((p) => p.type === 'month')?.value ?? '01'
+    const monthStart = new Date(`${y}-${m}-01T00:00:00-03:00`)
+    const days = Math.max(
+      1,
+      Math.ceil((now.getTime() - monthStart.getTime()) / 86_400_000),
+    )
+    return { preset: 'month', startAt: monthStart, endAt: now, days }
+  }
+
+  const presetDaysMap: Record<string, number> = {
+    '3d': 3,
+    '7d': 7,
+    '15d': 15,
+    '30d': 30,
+  }
+  const days =
+    presetDaysMap[presetParam] ??
+    (Number.isFinite(legacyDays) && legacyDays >= 1
+      ? Math.min(365, Math.floor(legacyDays))
+      : 30)
+
+  const startAt = new Date(todayStart.getTime() - (days - 1) * 86_400_000)
+  const effectivePreset: DatePreset =
+    presetParam in presetDaysMap
+      ? presetParam
+      : days === 3
+        ? '3d'
+        : days === 7
+          ? '7d'
+          : days === 15
+            ? '15d'
+            : '30d'
+
+  return { preset: effectivePreset, startAt, endAt: now, days }
 }
 
 /**
- * GET /api/ai/usage?days=30  (admin+)
+ * GET /api/ai/usage  (admin+)
  *
- * Token-spend summary for the account's BYO key over the last `days`
- * (1–90, default 30): totals, per-mode + per-model breakdowns, and a
- * zero-filled daily series for charting. Admin-only, mirroring the
- * `ai_usage_log` SELECT policy — spend is billing-class.
+ * Uses PostgreSQL aggregation RPC `get_ai_usage_summary` to aggregate
+ * over arbitrary row counts (1k, 10k, 20k+) without PostgREST's 1,000-row cap.
  */
 export async function GET(request: Request) {
   try {
-    const { supabase, accountId } = await requireRole('admin')
-
+    const { accountId } = await requireRole('admin')
+    const adminDb = supabaseAdmin()
     const url = new URL(request.url)
-    const rawDays = Number(url.searchParams.get('days'))
-    // Guard `>= 1`, not just `isFinite`: a missing/blank param is
-    // Number(null)/Number('') === 0, which is finite — without the lower
-    // bound the default would never apply and the window would collapse
-    // to a single day.
-    const days =
-      Number.isFinite(rawDays) && rawDays >= 1
-        ? Math.min(90, Math.floor(rawDays))
-        : DEFAULT_WINDOW_DAYS
 
-    // Align the query cutoff to the START of the oldest local day we'll
-    // chart (not a rolling `now - N*24h` instant). Otherwise rows in the
-    // oldest partial day would be counted in the totals but fall outside
-    // every daily bucket, so the chart's bars wouldn't sum to the
-    // headline total. Local-day boundaries match every other dashboard
-    // chart (see lib/dashboard/date-utils).
-    const since = daysAgoStart(days - 1)
+    const { preset, startAt, endAt, days } = resolveDateRange(url)
+    const provider = url.searchParams.get('provider') || null
+    const model = url.searchParams.get('model') || null
+    const mode = url.searchParams.get('mode') || null
 
-    const { data, error } = await supabase
-      .from('ai_usage_log')
-      .select(
-        'created_at, mode, provider, model, prompt_tokens, completion_tokens, total_tokens',
-      )
-      .eq('account_id', accountId)
-      .gte('created_at', since.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(MAX_ROWS + 1)
+    const { data, error } = await adminDb.rpc('get_ai_usage_summary', {
+      p_account_id: accountId,
+      p_start_at: startAt.toISOString(),
+      p_end_at: endAt.toISOString(),
+      p_provider: provider,
+      p_model: model,
+      p_mode: mode,
+    })
 
     if (error) {
-      console.error('[ai/usage GET] fetch error:', error)
+      console.error('[ai/usage GET] RPC error:', error)
       return NextResponse.json(
-        { error: 'Failed to load usage' },
+        { error: 'Falha ao carregar consumo de IA.' },
         { status: 500 },
       )
     }
 
-    const all = (data ?? []) as UsageRow[]
-    const truncated = all.length > MAX_ROWS
-    const rows = truncated ? all.slice(0, MAX_ROWS) : all
-
-    // Totals.
-    let promptTokens = 0
-    let completionTokens = 0
-    let totalTokens = 0
-
-    // Per-mode + per-model tallies. Built from the single source of truth
-    // (AI_USAGE_MODES) so a mode added to the DB CHECK constraint later
-    // can't silently outrun this object again.
-    const byMode: Record<AiUsageMode, { calls: number; tokens: number }> =
-      Object.fromEntries(
-        AI_USAGE_MODES.map((m) => [m, { calls: 0, tokens: 0 }]),
-      ) as Record<AiUsageMode, { calls: number; tokens: number }>
-    const modelMap = new Map<
-      string,
-      { model: string; provider: string; calls: number; tokens: number }
-    >()
-
-    // Zero-filled daily buckets so the chart shows quiet days as gaps,
-    // not missing points. Local-day keys, oldest → newest — the same
-    // helper every other dashboard chart uses, so day boundaries agree.
-    const daily = new Map<string, { date: string; tokens: number; calls: number }>()
-    for (const key of lastNDayKeys(days)) {
-      daily.set(key, { date: key, tokens: 0, calls: 0 })
+    const summary = (data ?? {}) as {
+      totals?: Record<string, unknown>
+      by_provider?: unknown[]
+      by_mode?: unknown[]
+      by_model?: unknown[]
+      daily?: unknown[]
     }
 
-    for (const r of rows) {
-      promptTokens += r.prompt_tokens
-      completionTokens += r.completion_tokens
-      totalTokens += r.total_tokens
-
-      byMode[r.mode].calls += 1
-      byMode[r.mode].tokens += r.total_tokens
-
-      const mk = `${r.provider}:${r.model}`
-      const m =
-        modelMap.get(mk) ??
-        { model: r.model, provider: r.provider, calls: 0, tokens: 0 }
-      m.calls += 1
-      m.tokens += r.total_tokens
-      modelMap.set(mk, m)
-
-      const bucket = daily.get(localDayKey(r.created_at))
-      if (bucket) {
-        bucket.tokens += r.total_tokens
-        bucket.calls += 1
-      }
-    }
-
-    const byModel = [...modelMap.values()].sort((a, b) => b.tokens - a.tokens)
+    // Fetch OpenCode Go global subscription quota when configured (separate from WACRM logs)
+    const config = await loadAiConfig(adminDb, accountId, {
+      requireActive: false,
+    }).catch(() => null)
+    const opencodeQuota = config?.opencodeGoApiKey
+      ? await fetchOpenCodeGoQuota(config.opencodeGoApiKey)
+      : null
 
     return NextResponse.json({
+      preset,
       window_days: days,
-      truncated,
-      totals: {
-        calls: rows.length,
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: totalTokens,
+      start_at: startAt.toISOString(),
+      end_at: endAt.toISOString(),
+      truncated: false,
+      modes: AI_USAGE_MODES,
+      totals: summary.totals ?? {
+        attempts: 0,
+        completed_calls: 0,
+        failed_calls: 0,
+        fallback_calls: 0,
+        confirmed_calls: 0,
+        estimated_calls: 0,
+        unknown_calls: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        cached_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 0,
+        cost_usd: 0,
+        cost_brl: 0,
+        avg_latency_ms: null,
       },
-      by_mode: byMode,
-      by_model: byModel,
-      daily: [...daily.values()],
+      by_provider: summary.by_provider ?? [],
+      by_mode: summary.by_mode ?? [],
+      by_model: summary.by_model ?? [],
+      daily: summary.daily ?? [],
+      opencode_subscription: opencodeQuota
+        ? {
+            quota: opencodeQuota,
+            wacrmReservePct: config?.opencodeWacrmReservePct ?? 15,
+            globalPreventivePct: config?.opencodeGlobalPreventivePct ?? 75,
+          }
+        : null,
     })
   } catch (err) {
     return toErrorResponse(err)

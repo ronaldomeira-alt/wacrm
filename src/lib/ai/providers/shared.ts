@@ -10,6 +10,8 @@ export interface ProviderArgs {
   systemPrompt: string
   messages: ChatMessage[]
   timeoutMs: number
+  /** Optional external AbortSignal (e.g., global budget or parent cancellation). */
+  signal?: AbortSignal
   /** When true, the provider must be constrained to return valid JSON
    *  (the structured handoff-decision format) rather than free text. */
   structuredOutputRequired?: boolean
@@ -17,6 +19,13 @@ export interface ProviderArgs {
    *  response shape (e.g. the learning scan's candidate array) that can
    *  legitimately need more room than a short conversational reply. */
   maxOutputTokens?: number
+}
+
+/** Combine an optional parent AbortSignal with a per-request timeoutMs. */
+export function buildRequestSignal(timeoutMs: number, parentSignal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  if (!parentSignal) return timeoutSignal
+  return AbortSignal.any([parentSignal, timeoutSignal])
 }
 
 /**
@@ -31,6 +40,7 @@ export function normalizeUsage(raw: {
   completion?: unknown
   total?: unknown
   cached?: unknown
+  reasoning?: unknown
 }): AiUsage | null {
   const num = (v: unknown): number =>
     typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
@@ -38,6 +48,7 @@ export function normalizeUsage(raw: {
   const completionTokens = num(raw.completion)
   const total = num(raw.total)
   const cachedTokens = num(raw.cached)
+  const reasoningTokens = num(raw.reasoning)
   const totalTokens = total > 0 ? total : promptTokens + completionTokens
   if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) {
     return null
@@ -47,13 +58,14 @@ export function normalizeUsage(raw: {
     completionTokens,
     totalTokens,
     ...(cachedTokens > 0 ? { cachedTokens } : {}),
+    ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
   }
 }
 
 /** Map a fetch rejection (timeout / DNS / offline) to a typed AiError. */
 export function toNetworkError(err: unknown): AiError {
-  if (err instanceof DOMException && err.name === 'TimeoutError') {
-    return new AiError('The AI provider took too long to respond.', {
+  if (err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+    return new AiError('The AI provider took too long to respond or was aborted.', {
       code: 'timeout',
       status: 504,
     })
@@ -73,34 +85,55 @@ export async function providerHttpError(
 ): Promise<AiError> {
   let detail = ''
   try {
-    const body = (await res.json()) as { error?: { message?: string } | string }
+    const body = (await res.json()) as { error?: { message?: string } | string; message?: string }
     detail =
       typeof body?.error === 'string'
         ? body.error
-        : (body?.error?.message ?? '')
+        : (body?.error?.message ?? body?.message ?? '')
   } catch {
     // Non-JSON error body — fall back to the status line.
   }
 
   const { status } = res
-  const code =
-    status === 401 || status === 403
-      ? 'invalid_key'
-      : status === 429
-        ? 'rate_limited'
-        : 'provider_error'
+  const lower = detail.toLowerCase()
+  let code: string = 'provider_error'
+  if (status === 401 || status === 403) {
+    code = 'invalid_key'
+  } else if (
+    status === 402 ||
+    lower.includes('insufficient') ||
+    lower.includes('balance') ||
+    lower.includes('credit')
+  ) {
+    code = 'insufficient_balance'
+  } else if (status === 429) {
+    code =
+      lower.includes('quota') || lower.includes('monthly') || lower.includes('weekly') || lower.includes('exhausted')
+        ? 'quota_exhausted'
+        : 'rate_limited'
+  } else if (
+    status === 400 &&
+    (lower.includes('context_length') || lower.includes('maximum context') || lower.includes('too many tokens'))
+  ) {
+    code = 'context_length_exceeded'
+  } else if (status === 400 || status === 422) {
+    code = 'invalid_request'
+  }
+
   const base =
     code === 'invalid_key'
       ? `${provider} rejected the API key`
-      : code === 'rate_limited'
-        ? `${provider} rate limit reached`
-        : `${provider} API error (${status})`
+      : code === 'insufficient_balance'
+        ? `${provider} insufficient balance`
+        : code === 'quota_exhausted'
+          ? `${provider} quota exhausted`
+          : code === 'rate_limited'
+            ? `${provider} rate limit reached`
+            : `${provider} API error (${status})`
 
   return new AiError(detail ? `${base}: ${detail}` : base, {
     code,
-    // Surface an auth failure as 401 so the settings "Test key" button
-    // can show "invalid key"; everything else is an upstream 502.
-    status: code === 'invalid_key' ? 401 : 502,
+    status: code === 'invalid_key' ? 401 : status === 400 || status === 422 ? 400 : 502,
   })
 }
 

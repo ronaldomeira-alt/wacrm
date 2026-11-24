@@ -329,6 +329,7 @@ export async function sendTextMessage(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`, { url, body })
@@ -400,6 +401,7 @@ export async function sendMediaMessage(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)
@@ -518,6 +520,7 @@ export async function sendTemplateMessage(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)
@@ -980,6 +983,7 @@ export async function sendInteractiveButtons(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)
@@ -1112,6 +1116,7 @@ export async function sendInteractiveList(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)

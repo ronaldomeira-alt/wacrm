@@ -2,13 +2,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
+import { executeAiInference } from './provider-manager'
 import { logAiUsage } from './usage'
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
-import { aiRequestTimeoutMs } from './defaults'
 import { effectiveMessageText } from './message-text'
-import type { AiProvider, AiUsage, ChatMessage } from './types'
+import type { AiConfig, AiProvider, AiUsage, ChatMessage } from './types'
 import {
   buildLeadAnalysisSystemPrompt,
   buildLeadAnalysisUserPrompt,
@@ -314,9 +311,10 @@ async function applyStageSuggestion(args: ApplyLeadAnalysisArgs): Promise<void> 
 // ============================================================
 
 interface ExtractArgs {
-  provider: AiProvider
-  apiKey: string
-  model: string
+  config: AiConfig
+  db: SupabaseClient
+  accountId: string
+  conversationId: string
   contactName: string
   previousSummary: LeadSummary | null
   existingTagsByCategory: Record<string, string[]>
@@ -328,7 +326,15 @@ interface ExtractArgs {
 
 async function extractLeadIntelligence(
   args: ExtractArgs,
-): Promise<{ result: LeadAnalysisResult | null; usage: AiUsage | null }> {
+): Promise<{
+  result: LeadAnalysisResult | null
+  usage: AiUsage | null
+  provider: AiProvider
+  model: string
+  latencyMs: number
+  fallbackUsed: boolean
+  attemptCount: number
+}> {
   const systemPrompt = buildLeadAnalysisSystemPrompt()
   const userPrompt = buildLeadAnalysisUserPrompt({
     contactName: args.contactName,
@@ -340,22 +346,26 @@ async function extractLeadIntelligence(
     currentScore: args.currentScore,
   })
 
-  const providerArgs = {
-    apiKey: args.apiKey,
-    model: args.model,
+  const res = await executeAiInference({
+    config: args.config,
+    db: args.db,
+    accountId: args.accountId,
+    conversationId: args.conversationId,
+    mode: 'lead_analysis',
     systemPrompt,
     messages: [{ role: 'user' as const, content: userPrompt }],
-    timeoutMs: aiRequestTimeoutMs(),
+    logUsage: false,
+  })
+
+  return {
+    result: parseLeadAnalysisResult(res.text),
+    usage: res.usage,
+    provider: res.provider,
+    model: res.model,
+    latencyMs: res.latencyMs,
+    fallbackUsed: res.fallbackUsed,
+    attemptCount: res.attemptCount,
   }
-
-  const { text, usage } =
-    args.provider === 'openai'
-      ? await generateOpenAi(providerArgs)
-      : args.provider === 'deepseek'
-        ? await generateDeepSeek(providerArgs)
-        : await generateAnthropic(providerArgs)
-
-  return { result: parseLeadAnalysisResult(text), usage }
 }
 
 // ============================================================
@@ -501,16 +511,13 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
       currentStageName = stages.find((s) => s.id === dealRow.stage_id)?.name ?? null
     }
 
-    let extraction: { result: LeadAnalysisResult | null; usage: AiUsage | null }
+    let extraction: Awaited<ReturnType<typeof extractLeadIntelligence>>
     try {
-      const activeKey =
-        config.provider === 'deepseek'
-          ? (config.deepseekApiKey || config.apiKey)
-          : config.apiKey
       extraction = await extractLeadIntelligence({
-        provider: config.provider,
-        apiKey: activeKey,
-        model: config.model,
+        config,
+        db,
+        accountId,
+        conversationId,
         contactName,
         previousSummary,
         existingTagsByCategory,
@@ -528,9 +535,12 @@ export async function dispatchInboundToLeadAnalysis(args: DispatchArgs): Promise
       accountId,
       conversationId,
       mode: 'lead_analysis',
-      provider: config.provider,
-      model: config.model,
+      provider: extraction.provider,
+      model: extraction.model,
       usage: extraction.usage,
+      latencyMs: extraction.latencyMs,
+      fallbackUsed: extraction.fallbackUsed,
+      attemptNumber: extraction.attemptCount,
     })
 
     if (!extraction.result) {

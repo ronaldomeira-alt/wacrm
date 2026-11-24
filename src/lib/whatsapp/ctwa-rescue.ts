@@ -23,11 +23,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadAiConfig } from '@/lib/ai/config'
+import { executeAiInference } from '@/lib/ai/provider-manager'
 import { logAiUsage } from '@/lib/ai/usage'
-import { generateOpenAi } from '@/lib/ai/providers/openai'
-import { generateAnthropic } from '@/lib/ai/providers/anthropic'
-import { generateDeepSeek } from '@/lib/ai/providers/deepseek'
-import { aiRequestTimeoutMs } from '@/lib/ai/defaults'
 import type { AiConfig, AiUsage } from '@/lib/ai/types'
 import { engineSendText } from '@/lib/flows/meta-send'
 
@@ -105,26 +102,16 @@ async function generateRescueMessage(args: {
   customerMessage: string
   contactName: string
 }): Promise<{ text: string; usage: AiUsage | null }> {
-  const activeKey =
-    args.config.provider === 'deepseek'
-      ? (args.config.deepseekApiKey || args.config.apiKey)
-      : args.config.apiKey
-  const providerArgs = {
-    apiKey: activeKey,
-    model: args.config.model,
+  const result = await executeAiInference({
+    config: args.config,
+    mode: 'ctwa_rescue',
     systemPrompt: buildRescueSystemPrompt(),
     messages: [
       { role: 'user' as const, content: buildRescueUserPrompt(args) },
     ],
-    timeoutMs: aiRequestTimeoutMs(),
-  }
-  const { text, usage } =
-    args.config.provider === 'openai'
-      ? await generateOpenAi(providerArgs)
-      : args.config.provider === 'deepseek'
-        ? await generateDeepSeek(providerArgs)
-        : await generateAnthropic(providerArgs)
-  return { text: text.trim(), usage }
+    logUsage: false,
+  })
+  return { text: result.text.trim(), usage: result.usage }
 }
 
 // ============================================================

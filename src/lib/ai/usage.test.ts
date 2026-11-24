@@ -20,16 +20,20 @@ describe('logAiUsage', () => {
       usage: { promptTokens: 30, completionTokens: 6, totalTokens: 36 },
     })
     expect(from).toHaveBeenCalledWith('ai_usage_log')
-    expect(insert).toHaveBeenCalledWith({
-      account_id: 'acct-1',
-      conversation_id: 'conv-1',
-      mode: 'auto_reply',
-      provider: 'anthropic',
-      model: 'claude-x',
-      prompt_tokens: 30,
-      completion_tokens: 6,
-      total_tokens: 36,
-    })
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account_id: 'acct-1',
+        conversation_id: 'conv-1',
+        mode: 'auto_reply',
+        provider: 'anthropic',
+        model: 'claude-x',
+        prompt_tokens: 30,
+        completion_tokens: 6,
+        total_tokens: 36,
+        status: 'completed',
+        consumption_type: 'confirmed',
+      }),
+    )
   })
 
   it('is a no-op when the provider reported no usage', async () => {

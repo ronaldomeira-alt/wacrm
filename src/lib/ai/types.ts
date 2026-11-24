@@ -6,10 +6,34 @@
 // whether the account is on OpenAI or Anthropic.
 // ============================================================
 
-export type AiProvider = 'openai' | 'anthropic' | 'deepseek'
+export type AiProvider = 'openai' | 'anthropic' | 'deepseek' | 'opencode_go'
 
 export const DEEPSEEK_MODELS = ['deepseek-flash'] as const
 export type DeepSeekModel = (typeof DEEPSEEK_MODELS)[number]
+
+export const OPENCODE_GO_MODELS = ['glm-5.3-flash'] as const
+export type OpenCodeGoModel = (typeof OPENCODE_GO_MODELS)[number]
+
+export type CircuitBreakerState =
+  | 'operational'
+  | 'suspended'
+  | 'quota_exhausted'
+  | 'auth_failed'
+  | 'half_open'
+  | 'disabled'
+
+export type AiUsageMode =
+  | 'auto_reply'
+  | 'draft'
+  | 'lead_analysis'
+  | 'followup'
+  | 'learning'
+  | 'ctwa_rescue'
+  | 'template_fill'
+  | 'smart_send'
+  | 'playground'
+  | 'test'
+  | 'recovery'
 
 /**
  * Account AI setup, decrypted and ready to use. Produced by
@@ -21,6 +45,17 @@ export interface AiConfig {
   model: string
   apiKey: string
   deepseekApiKey?: string | null
+  opencodeGoApiKey?: string | null
+  fallbackEnabled?: boolean
+  secondaryProvider?: AiProvider | null
+  secondaryModel?: string | null
+  primaryTimeoutMs?: number
+  secondaryTimeoutMs?: number
+  opencodeWacrmReservePct?: number
+  opencodeGlobalPreventivePct?: number
+  opencodeMarginPct?: number
+  circuitFailureThreshold?: number
+  circuitCooldownSeconds?: number
   systemPrompt: string | null
   isActive: boolean
   autoReplyEnabled: boolean
@@ -109,6 +144,7 @@ export interface AiUsage {
   completionTokens: number
   totalTokens: number
   cachedTokens?: number
+  reasoningTokens?: number
 }
 
 /** Raw text + usage a provider adapter returns before handoff parsing. */

@@ -150,26 +150,30 @@ describe('AI Auto-Reply with Property Media Sending', () => {
     })
 
     expect(sendTextSpy).toHaveBeenCalledTimes(1)
-    expect(sendTextSpy).toHaveBeenCalledWith({
-      accountId: 'account-1',
-      userId: 'user-1',
-      conversationId: 'conv-1',
-      contactId: 'contact-1',
-      text: 'Aqui está a foto da nossa área de lazer e piscina!',
-      aiGenerated: true,
-    })
+    expect(sendTextSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 'account-1',
+        userId: 'user-1',
+        conversationId: 'conv-1',
+        contactId: 'contact-1',
+        text: 'Aqui está a foto da nossa área de lazer e piscina!',
+        aiGenerated: true,
+      }),
+    )
 
     expect(sendMediaSpy).toHaveBeenCalledTimes(1)
-    expect(sendMediaSpy).toHaveBeenCalledWith({
-      accountId: 'account-1',
-      userId: 'user-1',
-      conversationId: 'conv-1',
-      contactId: 'contact-1',
-      kind: 'image',
-      link: 'https://storage.supabase.co/property-media/account-1/piscina.jpg',
-      caption: undefined,
-      aiGenerated: true,
-    })
+    expect(sendMediaSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 'account-1',
+        userId: 'user-1',
+        conversationId: 'conv-1',
+        contactId: 'contact-1',
+        kind: 'image',
+        link: 'https://storage.supabase.co/property-media/account-1/piscina.jpg',
+        caption: undefined,
+        aiGenerated: true,
+      }),
+    )
 
     // Assert that text is sent BEFORE media in invocation order
     const textCallOrder = sendTextSpy.mock.invocationCallOrder[0]

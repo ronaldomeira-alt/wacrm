@@ -1,6 +1,7 @@
 import { AiError, type ProviderResult } from '../types'
 import { MAX_OUTPUT_TOKENS } from '../defaults'
 import {
+  buildRequestSignal,
   mergeConsecutive,
   normalizeUsage,
   providerHttpError,
@@ -25,7 +26,7 @@ interface OpenAiResponse {
  * in `generateReply`).
  */
 export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult> {
-  const { apiKey, model, systemPrompt, messages, timeoutMs, structuredOutputRequired, maxOutputTokens } = args
+  const { apiKey, model, systemPrompt, messages, timeoutMs, signal, structuredOutputRequired, maxOutputTokens } = args
 
   let res: Response
   try {
@@ -50,7 +51,7 @@ export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult
         // mode).
         ...(structuredOutputRequired ? { response_format: { type: 'json_object' } } : {}),
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: buildRequestSignal(timeoutMs, signal),
     })
   } catch (err) {
     throw toNetworkError(err)

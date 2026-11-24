@@ -2378,6 +2378,7 @@
       "description": "Configuração técnica da IA — provedor, modelo, chave de API, comportamento e base de conhecimento. As sugestões operacionais ficam na Central de IA.",
       "tabSetup": "Configuração",
       "tabPlayground": "Playground",
+      "tabProviders": "Provedores",
       "tabUsage": "Uso"
     },
     "aiConfig": {

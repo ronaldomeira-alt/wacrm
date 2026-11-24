@@ -2378,6 +2378,7 @@
       "description": "AI의 기술적 설정 — 공급자, 모델, API 키, 동작 방식, 지식 베이스. 운영 관련 제안은 AI 허브에서 확인할 수 있습니다.",
       "tabSetup": "설정",
       "tabPlayground": "플레이그라운드",
+      "tabProviders": "공급자",
       "tabUsage": "사용량"
     },
     "aiConfig": {

@@ -3,6 +3,10 @@ import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { executeConversationalTurn } from './conversation-engine'
 import { logAiUsage } from './usage'
+import { cancelPendingReplyRecovery, enqueueAiReplyRecovery } from './reply-queue'
+import { acquireConversationLeaseWithHeartbeat, type ConversationLease } from './lease-heartbeat'
+import { AiOutboundAmbiguousError, isUnknownSendOutcome, reserveOutboundIntent } from './outbound-idempotency'
+import type { AiProvider } from './types'
 import { engineSendMedia, engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { sendPushToAccount } from '@/lib/push/send'
@@ -119,40 +123,19 @@ export async function dispatchInboundToAiReply(
       }
     }
 
-    // 4. ATOMIC CONVERSATION LOCK ACQUISITION
-    // Ensures only 1 AI process actively generates and sends for this conversation at any given time.
+    // 4. ATOMIC CONVERSATION LEASE WITH HEARTBEAT & FENCING TOKEN
     const lockToken = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `lock-${Date.now()}-${Math.random()}`
-    let lockAcquired = false
-    let rpcAvailable = true
+    let lease: ConversationLease | null = null
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const { data: lockResult, error: lockErr } = await db.rpc('acquire_ai_conversation_lock', {
-          p_conversation_id: conversationId,
-          p_lock_token: lockToken,
-          p_ttl_seconds: 45,
-        })
-        if (lockErr) {
-          console.warn(`[ai auto-reply] acquire_ai_conversation_lock warning:`, lockErr.message)
-          rpcAvailable = false
-          break
-        }
-        if (lockResult === true) {
-          lockAcquired = true
-          break
-        }
-      } catch (err) {
-        console.warn(`[ai auto-reply] acquire_ai_conversation_lock exception:`, err)
-        rpcAvailable = false
-        break
-      }
+      lease = await acquireConversationLeaseWithHeartbeat(db, conversationId, lockToken)
+      if (lease) break
       if (attempt < 2) {
         await new Promise((r) => setTimeout(r, 1000))
       }
     }
 
-    // If lock couldn't be acquired because another runner is legitimately active, yield gracefully
-    if (rpcAvailable && !lockAcquired) {
+    if (!lease) {
       console.log(`[ai auto-reply] Conversation ${conversationId} is currently locked by another active run. Skipping.`)
       return
     }
@@ -243,6 +226,7 @@ export async function dispatchInboundToAiReply(
         propertyId: effectivePropertyId,
         messages,
         replyCount: conv.ai_reply_count ?? 0,
+        signal: lease.abortController.signal,
       })
 
       // 9. JUST-IN-TIME RACE CONDITION & RECENT MESSAGES CHECK
@@ -285,6 +269,7 @@ export async function dispatchInboundToAiReply(
           propertyId: effectivePropertyId,
           messages,
           replyCount: conv.ai_reply_count ?? 0,
+          signal: lease.abortController.signal,
         })
       }
 
@@ -316,12 +301,38 @@ export async function dispatchInboundToAiReply(
         accountId,
         conversationId,
         mode: 'auto_reply',
-        provider: config.provider,
-        model: config.model,
+        provider: (turnResult.provider as AiProvider | undefined) ?? config.provider,
+        model: turnResult.model ?? config.model,
         usage: turnResult.usage,
+        latencyMs: turnResult.latencyMs,
+        fallbackUsed: turnResult.fallbackUsed,
+        attemptNumber: turnResult.attemptCount,
       })
 
-      // 11. ATOMIC SLOT CLAIM
+      // 10.5 VERIFY FENCING TOKEN STILL OWNS LEASE BEFORE ANY SIDE EFFECT
+      if (!(await lease.verify())) {
+        console.warn(`[ai auto-reply] Lease/fencing token lost for conv ${conversationId} — aborting before send.`)
+        return
+      }
+
+      const turnIdempotencyBase = inboundMessageId
+        ? `inbound:${inboundMessageId}`
+        : `conv:${conversationId}:${executionStartTimestamp.slice(0, 16)}`
+
+      // 11. SEND TEXT & MEDIA TO META CLOUD API WITH IDEMPOTENCY RESERVATION
+      if (turnResult.responseText && turnResult.responseText.trim().length > 0) {
+        await engineSendText({
+          accountId,
+          userId: configOwnerUserId,
+          conversationId,
+          contactId,
+          text: turnResult.responseText,
+          aiGenerated: true,
+          idempotencyKey: `ai-text:${turnIdempotencyBase}`,
+        })
+      }
+
+      // 12. ATOMIC SLOT CLAIM AFTER TEXT SEND SUCCEEDED
       const { data: claimed, error: claimErr } = await db.rpc(
         'claim_ai_reply_slot',
         {
@@ -331,24 +342,14 @@ export async function dispatchInboundToAiReply(
       )
       if (claimErr || claimed !== true) {
         console.warn(`[ai auto-reply] Could not claim reply slot for conv ${conversationId}`)
-        return
       }
 
-      // 12. SEND TEXT & MEDIA TO META CLOUD API (TEXT ALWAYS FIRST, MEDIA SECOND)
-      if (turnResult.responseText && turnResult.responseText.trim().length > 0) {
-        await engineSendText({
-          accountId,
-          userId: configOwnerUserId,
-          conversationId,
-          contactId,
-          text: turnResult.responseText,
-          aiGenerated: true,
-        })
-      }
+      await cancelPendingReplyRecovery(db, conversationId, 'completed')
 
       const mediaItems = turnResult.validatedMediaToSend || []
       if (mediaItems.length > 0) {
         for (const mediaItem of mediaItems) {
+          if (!(await lease.verify())) break
           try {
             await engineSendMedia({
               accountId,
@@ -360,6 +361,7 @@ export async function dispatchInboundToAiReply(
               // Fotos enviadas pela Clara nunca levam legenda/nome, permitindo que o WhatsApp as agrupe naturalmente em álbum
               caption: undefined,
               aiGenerated: true,
+              idempotencyKey: `ai-media:${turnIdempotencyBase}:${mediaItem.mediaId}`,
             })
           } catch (mediaSendErr) {
             console.error(`[ai auto-reply] Failed to send media ${mediaItem.mediaId}:`, mediaSendErr)
@@ -369,6 +371,13 @@ export async function dispatchInboundToAiReply(
 
       // 13. POST-TURN HANDOFF HANDLING
       if (turnResult.handoff || turnResult.decision?.transfer_required) {
+        const handoffReservation = await reserveOutboundIntent(db, {
+          accountId,
+          conversationId,
+          idempotencyKey: `ai-handoff:${turnIdempotencyBase}`,
+          intentType: 'handoff',
+        })
+        if (handoffReservation.action === 'proceed') {
         const boundary = turnResult.decision?.boundary_type || 'commercial_decision'
         const reason = turnResult.decision?.reason || 'Fronteira atingida'
         const summary = turnResult.decision?.context_summary || 'Atendimento transferido'
@@ -413,6 +422,7 @@ export async function dispatchInboundToAiReply(
         }).catch((err) => {
           console.error('[ai auto-reply] push notification failed:', err)
         })
+        }
       } else {
         await db
           .from('conversations')
@@ -424,18 +434,37 @@ export async function dispatchInboundToAiReply(
         `[ai auto-reply] Turn completed successfully: conv=${conversationId}, textLen=${turnResult.responseText?.length || 0}, mediaCount=${mediaItems.length}, handoff=${turnResult.handoff}`,
       )
     } finally {
-      // 14. ALWAYS RELEASE CONVERSATION LOCK
-      try {
-        await db.rpc('release_ai_conversation_lock', {
-          p_conversation_id: conversationId,
-          p_lock_token: lockToken,
-        })
-      } catch (releaseErr) {
-        console.warn(`[ai auto-reply] Failed to release lock on conv ${conversationId}:`, releaseErr)
-      }
+      // 14. ALWAYS RELEASE CONVERSATION LEASE & HEARTBEAT
+      await lease.release()
     }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
+    const errCode =
+      typeof err === 'object' && err !== null && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
+        ? (err as { code: string }).code
+        : 'auto_reply_failed'
+    const errMsg = err instanceof Error ? err.message : String(err)
+
+    if (err instanceof AiOutboundAmbiguousError || isUnknownSendOutcome(err)) {
+      // Ambiguous Meta send outcome: do NOT blindly re-send; escalate to human supervision
+      await supabaseAdmin()
+        .from('conversations')
+        .update({
+          ai_transfer_status: 'pending_human',
+          ai_transfer_reason: 'Resultado ambíguo no envio ao WhatsApp (verificação humana)',
+          ai_handoff_summary: `[ATENÇÃO] O envio da resposta automática teve resultado ambíguo (${errMsg.slice(0, 250)}). Verifique se a mensagem foi entregue antes de reenviar.`,
+        })
+        .eq('id', conversationId)
+      return
+    }
+
+    await enqueueAiReplyRecovery(supabaseAdmin(), {
+      accountId,
+      conversationId,
+      inboundMessageId,
+      errorCode: errCode,
+      errorReason: errMsg,
+    })
   }
 }
 

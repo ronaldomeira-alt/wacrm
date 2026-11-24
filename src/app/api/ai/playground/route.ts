@@ -3,7 +3,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { loadAiConfig } from '@/lib/ai/config'
 import { executeConversationalTurn } from '@/lib/ai/conversation-engine'
-import { AiError, type ChatMessage } from '@/lib/ai/types'
+import { AiError, type AiProvider, type ChatMessage } from '@/lib/ai/types'
 
 // Keep the tested transcript bounded, mirroring the live context window.
 const MAX_TURNS = 20
@@ -147,6 +147,20 @@ export async function POST(request: Request) {
     })
     const latencyMs = Date.now() - startTime
 
+    const { supabaseAdmin } = await import('@/lib/ai/admin-client')
+    const { logAiUsage } = await import('@/lib/ai/usage')
+    await logAiUsage(supabaseAdmin(), {
+      accountId,
+      conversationId: null,
+      mode: 'playground',
+      provider: (turnResult.provider as AiProvider | undefined) ?? config.provider,
+      model: turnResult.model ?? config.model,
+      usage: turnResult.usage,
+      latencyMs,
+      fallbackUsed: turnResult.fallbackUsed,
+      attemptNumber: turnResult.attemptCount,
+    })
+
     return NextResponse.json({
       reply: turnResult.responseText || turnResult.decision?.response_text || '',
       handoff: turnResult.handoff,
@@ -161,8 +175,9 @@ export async function POST(request: Request) {
       systemPrompt: turnResult.systemPrompt,
       usage: turnResult.usage,
       latencyMs,
-      model: config.model,
-      provider: config.provider,
+      model: turnResult.model ?? config.model,
+      provider: turnResult.provider ?? config.provider,
+      fallbackUsed: turnResult.fallbackUsed ?? false,
     })
   } catch (err) {
     console.error('[ai/playground POST] error processing turn:', err)

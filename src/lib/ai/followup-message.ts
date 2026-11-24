@@ -1,10 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import type { AiConfig, AiUsage, ChatMessage } from './types'
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
-import { aiRequestTimeoutMs } from './defaults'
+import { executeAiInference } from './provider-manager'
 import { buildConversationContext } from './context'
 import { extractVariableIndices } from '@/lib/whatsapp/template-validators'
 import { validateApprovedTemplateSubmission } from '@/lib/whatsapp/session-window'
@@ -21,24 +18,14 @@ async function callProvider(
   systemPrompt: string,
   userPrompt: string,
 ): Promise<{ text: string; usage: AiUsage | null }> {
-  const activeKey =
-    config.provider === 'deepseek'
-      ? (config.deepseekApiKey || config.apiKey)
-      : config.apiKey
-  const providerArgs = {
-    apiKey: activeKey,
-    model: config.model,
+  const result = await executeAiInference({
+    config,
+    mode: 'followup',
     systemPrompt,
     messages: [{ role: 'user' as const, content: userPrompt }],
-    timeoutMs: aiRequestTimeoutMs(),
-  }
-  if (config.provider === 'openai') {
-    return generateOpenAi(providerArgs)
-  }
-  if (config.provider === 'deepseek') {
-    return generateDeepSeek(providerArgs)
-  }
-  return generateAnthropic(providerArgs)
+    logUsage: false,
+  })
+  return { text: result.text, usage: result.usage }
 }
 
 export interface FollowupSelectedPropertyContext {

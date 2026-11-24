@@ -3,11 +3,8 @@
 // provider adapters directly (providers/openai.ts / providers/anthropic.ts)
 // unmodified; no new provider/integration.
 
-import { generateOpenAi } from './providers/openai';
-import { generateAnthropic } from './providers/anthropic';
-import { generateDeepSeek } from './providers/deepseek';
-import { aiRequestTimeoutMs } from './defaults';
-import type { AiProvider, AiUsage } from './types';
+import { executeAiInference } from './provider-manager';
+import type { AiConfig, AiProvider, AiUsage } from './types';
 import {
   buildTemplateFillSystemPrompt,
   buildTemplateFillUserPrompt,
@@ -19,6 +16,7 @@ export interface GenerateTemplateFillArgs extends TemplateFillPromptArgs {
   provider: AiProvider;
   apiKey: string;
   model: string;
+  config?: AiConfig;
   /** The exact variable numbers the response must (only) contain. */
   expectedIndices: number[];
 }
@@ -29,20 +27,25 @@ export async function generateTemplateFill(
   const systemPrompt = buildTemplateFillSystemPrompt();
   const userPrompt = buildTemplateFillUserPrompt(args);
 
-  const providerArgs = {
-    apiKey: args.apiKey,
+  const fallbackConfig: AiConfig = args.config ?? {
+    provider: args.provider,
     model: args.model,
-    systemPrompt,
-    messages: [{ role: 'user' as const, content: userPrompt }],
-    timeoutMs: aiRequestTimeoutMs(),
+    apiKey: args.apiKey,
+    systemPrompt: null,
+    isActive: true,
+    autoReplyEnabled: false,
+    autoReplyMaxPerConversation: 0,
+    handoffAgentId: null,
+    embeddingsApiKey: null,
   };
 
-  const { text, usage } =
-    args.provider === 'openai'
-      ? await generateOpenAi(providerArgs)
-      : args.provider === 'deepseek'
-        ? await generateDeepSeek(providerArgs)
-        : await generateAnthropic(providerArgs);
+  const { text, usage } = await executeAiInference({
+    config: fallbackConfig,
+    mode: 'template_fill',
+    systemPrompt,
+    messages: [{ role: 'user' as const, content: userPrompt }],
+    logUsage: false,
+  });
 
   return { result: parseTemplateFillResult(text, args.expectedIndices), usage };
 }

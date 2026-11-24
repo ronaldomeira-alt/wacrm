@@ -10,9 +10,7 @@ import {
   type PropertyMediaSummary,
 } from './types';
 import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults';
-import { generateOpenAi } from './providers/openai';
-import { generateAnthropic } from './providers/anthropic';
-import { generateDeepSeek } from './providers/deepseek';
+import { executeAiInference } from './provider-manager';
 import { retrievePropertyKnowledge } from './knowledge';
 import { latestUserMessage } from './query';
 import { getLeadContext, type FormattedLeadContext } from './lead-context';
@@ -44,6 +42,7 @@ export interface ConversationalTurnArgs {
   simulatedLeadContext?: FormattedLeadContext | null;
   replyCount?: number;
   mode?: 'draft' | 'auto_reply';
+  signal?: AbortSignal;
 }
 
 export interface ConversationalTurnResult {
@@ -51,6 +50,11 @@ export interface ConversationalTurnResult {
   handoff: boolean;
   decision: AiDecision;
   usage: AiUsage | null;
+  provider?: string;
+  model?: string;
+  fallbackUsed?: boolean;
+  latencyMs?: number;
+  attemptCount?: number;
   retrievedKnowledgeCount: number;
   retrievedKnowledge: string[];
   systemPrompt: string;
@@ -1024,30 +1028,20 @@ export async function executeConversationalTurn(
     isMoreMedia,
   });
 
-  // 7. Invoke Provider
-  const timeoutMs = aiRequestTimeoutMs();
-  const activeKey =
-    config.provider === 'deepseek'
-      ? (config.deepseekApiKey || config.apiKey)
-      : config.apiKey;
-  const providerArgs = {
-    apiKey: activeKey,
-    model: config.model,
+  // 7. Invoke Provider via centralized Provider Manager (supports fallback, 45s timeout, circuit breaker)
+  const rawResult = await executeAiInference({
+    config,
+    db: args.db,
+    accountId: args.accountId,
+    conversationId: args.conversationId,
+    mode: args.mode === 'draft' ? 'draft' : 'auto_reply',
     systemPrompt,
     messages,
-    timeoutMs,
     structuredOutputRequired: true,
     maxOutputTokens: 2048,
-  };
-
-  let rawResult;
-  if (config.provider === 'openai') {
-    rawResult = await generateOpenAi(providerArgs);
-  } else if (config.provider === 'deepseek') {
-    rawResult = await generateDeepSeek(providerArgs);
-  } else {
-    rawResult = await generateAnthropic(providerArgs);
-  }
+    signal: args.signal,
+    logUsage: false, // auto-reply.ts logs completed turns; failed/fallback attempts are logged inside executeAiInference
+  });
 
   // 8. Parse Decision
   const decision = parseStructuredDecision(rawResult.text);
@@ -1282,6 +1276,11 @@ export async function executeConversationalTurn(
     handoff: decision.transfer_required,
     decision,
     usage: rawResult.usage,
+    provider: rawResult.provider,
+    model: rawResult.model,
+    fallbackUsed: rawResult.fallbackUsed,
+    latencyMs: rawResult.latencyMs,
+    attemptCount: rawResult.attemptCount,
     retrievedKnowledgeCount: knowledgeResult.allChunks.length,
     retrievedKnowledge: knowledgeResult.allChunks,
     systemPrompt,

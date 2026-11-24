@@ -2,16 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Sparkles, Settings2, BarChart3 } from 'lucide-react';
+import { Sparkles, Settings2, BarChart3, ShieldCheck } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { AiPlayground } from '@/components/agents/ai-playground';
+import { AiProvidersPanel } from '@/components/agents/ai-providers';
 import { AiUsageCard } from '@/components/agents/ai-usage';
 import { AiConfig } from '@/components/settings/ai-config';
 import { SettingsPanelHead } from '@/components/settings/settings-panel-head';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
 
-type Tab = 'playground' | 'setup' | 'usage';
+type Tab = 'playground' | 'setup' | 'providers' | 'usage';
 
 /**
  * Settings > AI Agents — the technical/config half of the AI story.
@@ -56,13 +57,18 @@ export function AiAgentsPanel() {
           onValueChange={(v) => setTab(v as Tab)}
           className="mt-6"
         >
-          <TabsList>
+          <TabsList className="flex-wrap">
             <TabsTrigger value="setup">
               <Settings2 className="mr-1.5 h-4 w-4" /> {t('tabSetup')}
             </TabsTrigger>
             <TabsTrigger value="playground">
               <Sparkles className="mr-1.5 h-4 w-4" /> {t('tabPlayground')}
             </TabsTrigger>
+            {canViewUsage && (
+              <TabsTrigger value="providers">
+                <ShieldCheck className="mr-1.5 h-4 w-4" /> {t('tabProviders')}
+              </TabsTrigger>
+            )}
             {canViewUsage && (
               <TabsTrigger value="usage">
                 <BarChart3 className="mr-1.5 h-4 w-4" /> {t('tabUsage')}
@@ -77,6 +83,12 @@ export function AiAgentsPanel() {
           <TabsContent value="playground" className="mt-4">
             <AiPlayground onGoToSetup={() => setTab('setup')} />
           </TabsContent>
+
+          {canViewUsage && (
+            <TabsContent value="providers" className="mt-4">
+              <AiProvidersPanel />
+            </TabsContent>
+          )}
 
           {canViewUsage && (
             <TabsContent value="usage" className="mt-4">

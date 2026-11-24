@@ -1,10 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadAiConfig } from './config'
+import { executeAiInference } from './provider-manager'
 import { logAiUsage } from './usage'
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
-import { aiRequestTimeoutMs } from './defaults'
 import { buildConversationContext } from './context'
 import { engineSendText } from '@/lib/flows/meta-send'
 import {
@@ -435,24 +432,16 @@ interface ConversationLookupRow {
   let usage: AiUsage | null = null
 
   try {
-    const activeKey =
-      config.provider === 'deepseek'
-        ? (config.deepseekApiKey || config.apiKey)
-        : config.apiKey
-    const providerArgs = {
-      apiKey: activeKey,
-      model: config.model,
+    const response = await executeAiInference({
+      config,
+      db,
+      accountId: conv.account_id,
+      conversationId,
+      mode: 'auto_reply',
       systemPrompt,
       messages: [{ role: 'user' as const, content: userPrompt }],
-      timeoutMs: aiRequestTimeoutMs(),
-    }
-
-    const response =
-      config.provider === 'openai'
-        ? await generateOpenAi(providerArgs)
-        : config.provider === 'deepseek'
-          ? await generateDeepSeek(providerArgs)
-          : await generateAnthropic(providerArgs)
+      logUsage: false,
+    })
 
     rawLlmOutput = response.text.trim()
     usage = response.usage

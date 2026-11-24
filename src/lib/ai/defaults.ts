@@ -14,6 +14,7 @@ export const AI_PROVIDER_DEFAULT_MODEL: Record<AiProvider, string> = {
   openai: 'gpt-5.4-mini',
   deepseek: 'deepseek-flash',
   anthropic: 'claude-haiku-4-5-20251001',
+  opencode_go: 'glm-5.3-flash',
 }
 
 /**
@@ -27,7 +28,7 @@ export const HANDOFF_SENTINEL = '[[HANDOFF]]'
  *  bounds token spend on the caller's own key. */
 export const MAX_OUTPUT_TOKENS = 1024
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+const DEFAULT_REQUEST_TIMEOUT_MS = 45_000
 const DEFAULT_CONTEXT_MESSAGE_LIMIT = 20
 
 /** Per-call provider timeout. Override with `AI_REQUEST_TIMEOUT_MS`. */

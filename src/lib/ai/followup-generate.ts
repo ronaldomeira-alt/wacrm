@@ -1,11 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import { loadAiConfig } from './config'
+import { executeAiInference } from './provider-manager'
 import { logAiUsage } from './usage'
-import { generateOpenAi } from './providers/openai'
-import { generateAnthropic } from './providers/anthropic'
-import { generateDeepSeek } from './providers/deepseek'
-import { aiRequestTimeoutMs } from './defaults'
 import {
   buildFollowupScoreSystemPrompt,
   buildFollowupScoreUserPrompt,
@@ -302,34 +299,30 @@ export async function generateFollowupSuggestions(
       lastBusinessText: msgStats?.lastBusinessText,
     })
 
-    const activeKey =
-      config.provider === 'deepseek'
-        ? (config.deepseekApiKey || config.apiKey)
-        : config.apiKey
-    const providerArgs = {
-      apiKey: activeKey,
-      model: config.model,
-      systemPrompt,
-      messages: [{ role: 'user' as const, content: userPrompt }],
-      timeoutMs: aiRequestTimeoutMs(),
-    }
-
     try {
-      const { text, usage } =
-        config.provider === 'openai'
-          ? await generateOpenAi(providerArgs)
-          : config.provider === 'deepseek'
-            ? await generateDeepSeek(providerArgs)
-            : await generateAnthropic(providerArgs)
+      const infResult = await executeAiInference({
+        config,
+        db,
+        accountId,
+        conversationId,
+        mode: 'followup',
+        systemPrompt,
+        messages: [{ role: 'user' as const, content: userPrompt }],
+        logUsage: false,
+      })
+      const { text, usage } = infResult
       scored++
 
       await logAiUsage(db, {
         accountId,
         conversationId,
         mode: 'followup',
-        provider: config.provider,
-        model: config.model,
+        provider: infResult.provider,
+        model: infResult.model,
         usage,
+        latencyMs: infResult.latencyMs,
+        fallbackUsed: infResult.fallbackUsed,
+        attemptNumber: infResult.attemptCount,
       })
 
       const result = parseFollowupScoreResult(text)

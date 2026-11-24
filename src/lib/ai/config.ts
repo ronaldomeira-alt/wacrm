@@ -7,6 +7,17 @@ interface AiConfigRow {
   model: string
   api_key: string
   deepseek_api_key?: string | null
+  opencode_go_api_key?: string | null
+  fallback_enabled?: boolean | null
+  secondary_provider?: AiProvider | null
+  secondary_model?: string | null
+  primary_timeout_ms?: number | null
+  secondary_timeout_ms?: number | null
+  opencode_wacrm_reserve_pct?: number | null
+  opencode_global_preventive_pct?: number | null
+  opencode_margin_pct?: number | null
+  circuit_failure_threshold?: number | null
+  circuit_cooldown_seconds?: number | null
   system_prompt: string | null
   is_active: boolean
   auto_reply_enabled: boolean
@@ -32,7 +43,7 @@ interface AiConfigRow {
 // via that route) while still reaching the AI itself (which reads via
 // loadAiConfig below). One list, used by both paths.
 export const CONFIG_COLUMNS =
-  'provider, model, api_key, deepseek_api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key, identity_name, tone_style, team_presentation, global_never_rules, response_style_instructions, business_hours_start, business_hours_end, business_days, off_hours_instructions, safety_message_limit'
+  'provider, model, api_key, deepseek_api_key, opencode_go_api_key, fallback_enabled, secondary_provider, secondary_model, primary_timeout_ms, secondary_timeout_ms, opencode_wacrm_reserve_pct, opencode_global_preventive_pct, opencode_margin_pct, circuit_failure_threshold, circuit_cooldown_seconds, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key, identity_name, tone_style, team_presentation, global_never_rules, response_style_instructions, business_hours_start, business_hours_end, business_days, off_hours_instructions, safety_message_limit'
 
 /**
  * Load and decrypt the account's AI config for *use* (draft or
@@ -65,7 +76,7 @@ export async function loadAiConfig(
   // agent before flipping the master switch on.
   if (requireActive && !row.is_active) return null
   // Defensive: treat a missing key as "not configured"
-  if (!row.api_key && !row.deepseek_api_key) return null
+  if (!row.api_key && !row.deepseek_api_key && !row.opencode_go_api_key) return null
 
   let deepseekApiKey: string | null = null
   if (row.deepseek_api_key) {
@@ -76,6 +87,18 @@ export async function loadAiConfig(
         `[ai config] deepseek key for account ${accountId} could not be decrypted — check ENCRYPTION_KEY.`,
       )
       deepseekApiKey = null
+    }
+  }
+
+  let opencodeGoApiKey: string | null = null
+  if (row.opencode_go_api_key) {
+    try {
+      opencodeGoApiKey = decrypt(row.opencode_go_api_key)
+    } catch {
+      console.error(
+        `[ai config] opencode_go key for account ${accountId} could not be decrypted — check ENCRYPTION_KEY.`,
+      )
+      opencodeGoApiKey = null
     }
   }
 
@@ -101,15 +124,26 @@ export async function loadAiConfig(
     try {
       apiKey = decrypt(row.api_key)
     } catch (err) {
-      if (row.provider !== 'deepseek') throw err
+      if (row.provider !== 'deepseek' && row.provider !== 'opencode_go') throw err
     }
   }
 
   return {
     provider: row.provider,
     model: row.model,
-    apiKey: apiKey || (deepseekApiKey ?? ''),
+    apiKey: apiKey || (row.provider === 'opencode_go' ? (opencodeGoApiKey ?? '') : (deepseekApiKey ?? '')),
     deepseekApiKey,
+    opencodeGoApiKey,
+    fallbackEnabled: row.fallback_enabled ?? false,
+    secondaryProvider: row.secondary_provider ?? null,
+    secondaryModel: row.secondary_model ?? null,
+    primaryTimeoutMs: row.primary_timeout_ms ?? 45_000,
+    secondaryTimeoutMs: row.secondary_timeout_ms ?? 45_000,
+    opencodeWacrmReservePct: Number(row.opencode_wacrm_reserve_pct ?? 15),
+    opencodeGlobalPreventivePct: Number(row.opencode_global_preventive_pct ?? 75),
+    opencodeMarginPct: Number(row.opencode_margin_pct ?? 25),
+    circuitFailureThreshold: row.circuit_failure_threshold ?? 3,
+    circuitCooldownSeconds: row.circuit_cooldown_seconds ?? 120,
     systemPrompt: row.system_prompt,
     isActive: row.is_active,
     autoReplyEnabled: row.auto_reply_enabled,

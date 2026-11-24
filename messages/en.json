@@ -2378,6 +2378,7 @@
       "description": "Technical setup for the AI — provider, model, API key, behavior, and knowledge base. Operational suggestions live in the Central de IA.",
       "tabSetup": "Setup",
       "tabPlayground": "Playground",
+      "tabProviders": "Providers",
       "tabUsage": "Usage"
     },
     "aiConfig": {

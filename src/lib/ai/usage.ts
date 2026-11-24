@@ -1,12 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { calculateInferenceCost, type ConsumptionType } from './pricing'
 import type { AiProvider, AiUsage } from './types'
 
 // Single source of truth for `ai_usage_log.mode` — mirrors the DB CHECK
-// constraint added across migrations 049/050/052/059/073. Any consumer
-// that needs to enumerate all modes (e.g. GET /api/ai/usage's per-mode
-// breakdown) should derive from this array instead of hardcoding a
-// shorter list, which previously drifted and threw a TypeError for any
-// row with a mode added after the initial five.
+// constraint added across migrations 049/050/052/059/073/20261124140000.
 export const AI_USAGE_MODES = [
   'auto_reply',
   'draft',
@@ -15,9 +12,14 @@ export const AI_USAGE_MODES = [
   'learning',
   'ctwa_rescue',
   'template_fill',
+  'smart_send',
+  'playground',
+  'test',
+  'recovery',
 ] as const
 
 export type AiUsageMode = (typeof AI_USAGE_MODES)[number]
+export type AiUsageStatus = 'completed' | 'failed' | 'timeout' | 'aborted'
 
 export interface LogAiUsageArgs {
   accountId: string
@@ -27,28 +29,29 @@ export interface LogAiUsageArgs {
   mode: AiUsageMode
   provider: AiProvider
   model: string
-  /** Provider usage; a no-op when null (nothing worth recording). */
+  /** Provider usage; null when unavailable or request failed. */
   usage: AiUsage | null
+  latencyMs?: number | null
+  status?: AiUsageStatus
+  errorCode?: string | null
+  errorReason?: string | null
+  fallbackUsed?: boolean
+  attemptNumber?: number
+  consumptionType?: ConsumptionType
+  /** When true, persists failed/unknown attempts even if usage is null. */
+  logUnknown?: boolean
 }
 
-/**
- * Best-effort append to `ai_usage_log` — one row per LLM call, for cost
- * visibility on the account's BYO key. NEVER throws: usage accounting
- * must not fail a reply the customer is waiting on, so any DB error is
- * logged and swallowed. Skips entirely when the provider didn't report
- * usage (we'd only be writing zeros).
- *
- * Pass the service-role admin client from the webhook, or the RLS-scoped
- * SSR client from a route — writes land either way (there's no
- * `authenticated` INSERT policy, so an SSR write relies on the service
- * role; callers that must persist from a route should pass the admin
- * client).
- */
 export async function logAiUsage(
   db: SupabaseClient,
   args: LogAiUsageArgs,
 ): Promise<void> {
-  if (!args.usage) return
+  const status: AiUsageStatus = args.status ?? 'completed'
+  if (!args.usage && !args.logUnknown && status === 'completed') return
+
+  const cost = calculateInferenceCost(args.provider, args.model, args.usage)
+  const consumptionType: ConsumptionType = args.consumptionType ?? cost.consumptionType
+
   try {
     const { error } = await db.from('ai_usage_log').insert({
       account_id: args.accountId,
@@ -56,9 +59,22 @@ export async function logAiUsage(
       mode: args.mode,
       provider: args.provider,
       model: args.model,
-      prompt_tokens: args.usage.promptTokens,
-      completion_tokens: args.usage.completionTokens,
-      total_tokens: args.usage.totalTokens,
+      prompt_tokens: args.usage?.promptTokens ?? 0,
+      completion_tokens: args.usage?.completionTokens ?? 0,
+      total_tokens: args.usage?.totalTokens ?? 0,
+      cached_tokens: args.usage?.cachedTokens ?? null,
+      reasoning_tokens: args.usage?.reasoningTokens ?? null,
+      latency_ms:
+        typeof args.latencyMs === 'number' ? Math.max(0, Math.round(args.latencyMs)) : null,
+      status,
+      error_code: args.errorCode ?? null,
+      error_reason: args.errorReason ? args.errorReason.slice(0, 500) : null,
+      fallback_used: args.fallbackUsed ?? false,
+      attempt_number: args.attemptNumber ?? 1,
+      cost_usd: cost.costUsd,
+      cost_brl: cost.costBrl,
+      usd_brl_rate: cost.usdBrlRate,
+      consumption_type: consumptionType,
     })
     if (error) {
       console.error('[ai usage] log insert failed:', error)
