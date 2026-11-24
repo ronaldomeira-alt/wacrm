@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Bell, CheckCheck, Flame, Loader2, Sparkles, UserPlus } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -32,6 +32,7 @@ export function AssignedNotificationsPopover({
   const dateFnsLocale = getDateFnsLocale(appLocale);
   const router = useRouter();
   const { accountId } = useAuth();
+  const instanceId = useId();
   const [open, setOpen] = useState(false);
   const [filterMode, setFilterMode] = useState<"all" | "unread">("all");
   const [notifications, setNotifications] = useState<Notification[] | null>(null);
@@ -57,7 +58,7 @@ export function AssignedNotificationsPopover({
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
-      .channel(`notifications-bell-${onlyMatch ? "match" : "all"}`)
+      .channel(`notifications-bell-${onlyMatch ? "match" : "all"}-${instanceId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "notifications" },
@@ -84,7 +85,7 @@ export function AssignedNotificationsPopover({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [onlyMatch]);
+  }, [onlyMatch, instanceId]);
 
   const markRead = useCallback(
     async (id: string) => {
