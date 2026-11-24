@@ -208,7 +208,7 @@ describe('isReadyForPriceDisclosure', () => {
 });
 
 describe('generateOpenCodeGo reasoning_effort and JSON retry', () => {
-  it('sends reasoning_effort: "none" by default for deepseek-v4.1-flash', async () => {
+  it('sends reasoning_effort: "high" by default for deepseek-v4.1-flash', async () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -229,7 +229,7 @@ describe('generateOpenCodeGo reasoning_effort and JSON retry', () => {
     });
 
     const sentBody = JSON.parse((fetchMock.mock.calls[0][1]?.body as string) || '{}');
-    expect(sentBody.reasoning_effort).toBe('none');
+    expect(sentBody.reasoning_effort).toBe('high');
     expect(sentBody.response_format).toEqual({ type: 'json_object' });
   });
 

@@ -61,7 +61,7 @@ interface OpenCodeResponsesApiResponse {
 
 function pickReasoningEffort(
   spec: CatalogModel | null,
-  preferred: 'none' | 'low' | 'high' | 'max' = 'none',
+  preferred: 'none' | 'low' | 'medium' | 'high' | 'max' = 'high',
   modelId?: string,
 ): string | undefined {
   const normalizedModel = (modelId ?? '').trim().toLowerCase()
@@ -80,7 +80,7 @@ function pickReasoningEffort(
   const efforts = spec.capabilities.reasoningEfforts
   if (!efforts || efforts.length === 0) return undefined
   if (efforts.includes(preferred)) return preferred
-  const priority = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  const priority = ['high', 'medium', 'low', 'minimal', 'none', 'xhigh', 'max']
   return priority.find((e) => efforts.includes(e)) ?? efforts[0]
 }
 
@@ -89,7 +89,7 @@ function pickReasoningEffort(
  * `messages`, or `responses`) and capability metadata from `/zen/go/v1/models`.
  */
 export async function generateOpenCodeGo(
-  args: ProviderArgs & { reasoningEffort?: 'none' | 'low' | 'high' | 'max' },
+  args: ProviderArgs & { reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max' },
 ): Promise<ProviderResult> {
   const {
     apiKey,
@@ -101,7 +101,7 @@ export async function generateOpenCodeGo(
     sessionId,
     structuredOutputRequired,
     maxOutputTokens,
-    reasoningEffort = 'none',
+    reasoningEffort = 'high',
   } = args
 
   if (!apiKey || !apiKey.trim()) {
