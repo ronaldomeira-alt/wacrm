@@ -512,9 +512,9 @@ export function AiPlayground({ onGoToSetup }: AiPlaygroundProps = {}) {
             </Select>
 
             {overrideProvider !== 'production' && (
-              <div className="min-w-[230px] flex-1 sm:max-w-[300px]">
+              <div className="min-w-[240px] flex-1 sm:max-w-[320px]">
                 <ModelSelector
-                  compact
+                  playgroundLabel="Modelo (Isolado)"
                   provider={overrideProvider}
                   value={overrideModel}
                   onChange={setOverrideModel}
