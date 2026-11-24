@@ -742,6 +742,38 @@ export interface TemplateSampleValues {
   header?: string[];
 }
 
+export interface TemplateSnapshotButton {
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  text: string;
+  url?: string;
+  phone_number?: string;
+  code?: string;
+}
+
+export interface TemplateSnapshotProperty {
+  id: string;
+  title: string;
+  public_url: string;
+  match_id?: string | null;
+}
+
+export interface TemplateSnapshot {
+  template_id?: string | null;
+  meta_template_id?: string | null;
+  template_name: string;
+  language?: string | null;
+  category?: string | null;
+  header_type?: 'text' | 'image' | 'video' | 'document' | null;
+  header_text?: string | null;
+  header_media_url?: string | null;
+  body_text: string;
+  footer_text?: string | null;
+  buttons?: TemplateSnapshotButton[];
+  property?: TemplateSnapshotProperty | null;
+  rendered_at?: string;
+  recovered?: boolean;
+}
+
 export interface MessageTemplate {
   id: string;
   user_id: string;

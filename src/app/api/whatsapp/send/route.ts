@@ -70,6 +70,7 @@ export async function POST(request: Request) {
       // Match card "Enviar" contextual draft: only recorded after confirmed
       // WhatsApp Cloud API delivery so preparing a draft never marks it sent.
       match_share_context,
+      template_property,
       // Central de Ações' Follow-up "Enviar mensagem" (action-item-detail-
       // sheet.tsx) threads the action_items.id through so this same send
       // request also claims the single-send guard — see the block below.
@@ -235,6 +236,22 @@ export async function POST(request: Request) {
         albumId: typeof album_id === 'string' ? album_id : null,
         albumIndex: typeof album_index === 'number' ? album_index : null,
         thumbnailUrl: typeof thumbnail_url === 'string' ? thumbnail_url : null,
+        templateProperty:
+          template_property &&
+          typeof template_property === 'object' &&
+          typeof template_property.id === 'string' &&
+          typeof template_property.title === 'string' &&
+          typeof template_property.public_url === 'string'
+            ? {
+                id: template_property.id,
+                title: template_property.title,
+                public_url: template_property.public_url,
+                match_id:
+                  typeof template_property.match_id === 'string'
+                    ? template_property.match_id
+                    : null,
+              }
+            : null,
       })
 
       // Best-effort, never blocks the response: a successful send from a

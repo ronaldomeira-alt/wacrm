@@ -222,11 +222,18 @@ describe('POST /api/ai/suggestions/[id]/followup/send — Janela Aberta, Templat
       'acc-1',
       expect.objectContaining({
         messageType: 'template',
+        contentText: expect.stringContaining('Luzinete'),
         templateName: 'match_imovel_personalizado',
         templateLanguage: 'pt_BR',
         templateMessageParams: {
           body: ['Luzinete', 'de 2 quartos no bairro Bessa (Mahal)'],
           buttonParams: { 0: 'dev-bd1ac8a946d4bfb0' },
+        },
+        templateProperty: {
+          id: 'p-1',
+          title: 'Mahal',
+          public_url: 'https://ronaldomeira.com.br/imovel/dev-bd1ac8a946d4bfb0',
+          match_id: 'm-1',
         },
       })
     );

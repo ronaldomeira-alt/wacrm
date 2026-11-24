@@ -2892,6 +2892,53 @@ export function MessageThread({
       const renderedBody = renderTemplateBody(template.body_text, values.body);
       const tempId = `temp-${Date.now()}`;
 
+      const activePrime = followupPrimeRef.current;
+      const followupSuggestionId = activePrime?.suggestionId;
+      const matchSharePrime = activePrime?.matchShare;
+      setFollowupPrime(null);
+      followupPrimeRef.current = null;
+      setFollowupTemplateSelection(null);
+
+      const optimisticSnapshot = {
+        template_id: template.id,
+        meta_template_id: template.meta_template_id ?? null,
+        template_name: template.name,
+        language: template.language ?? 'pt_BR',
+        category: template.category ?? null,
+        header_type: template.header_type ?? null,
+        header_text:
+          template.header_type === 'text' && template.header_content
+            ? values.headerText?.trim()
+              ? renderTemplateBody(template.header_content, [values.headerText])
+              : template.header_content
+            : null,
+        header_media_url:
+          template.header_type && template.header_type !== 'text'
+            ? template.header_media_url ?? null
+            : null,
+        body_text: renderedBody,
+        footer_text: template.footer_text ?? null,
+        buttons: (template.buttons ?? []).map((btn, idx) => {
+          const override = values.buttonParams?.[idx];
+          if (btn.type === 'URL') {
+            const val = (override ?? btn.example ?? '').trim();
+            return {
+              type: 'URL' as const,
+              text: btn.text,
+              url: btn.url.includes('{{') && val ? btn.url.replace(/\{\{\d+\}\}/g, val) : btn.url,
+            };
+          }
+          if (btn.type === 'PHONE_NUMBER') {
+            return { type: 'PHONE_NUMBER' as const, text: btn.text, phone_number: btn.phone_number };
+          }
+          if (btn.type === 'COPY_CODE') {
+            return { type: 'COPY_CODE' as const, text: btn.text, code: (override ?? btn.example ?? '').trim() || undefined };
+          }
+          return { type: 'QUICK_REPLY' as const, text: btn.text };
+        }),
+        rendered_at: new Date().toISOString(),
+      };
+
       const optimisticMsg: Message = {
         id: tempId,
         conversation_id: conversation.id,
@@ -2902,16 +2949,10 @@ export function MessageThread({
         template_name: template.name,
         status: 'sending',
         created_at: new Date().toISOString(),
+        metadata: { template_snapshot: optimisticSnapshot },
       };
       onNewMessage(optimisticMsg);
       scrollToBottom(true);
-
-      const activePrime = followupPrimeRef.current;
-      const followupSuggestionId = activePrime?.suggestionId;
-      const matchSharePrime = activePrime?.matchShare;
-      setFollowupPrime(null);
-      followupPrimeRef.current = null;
-      setFollowupTemplateSelection(null);
 
       try {
         const res = await fetch('/api/whatsapp/send', {

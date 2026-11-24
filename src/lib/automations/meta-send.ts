@@ -6,12 +6,10 @@ import {
 } from '@/lib/flows/meta-send'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { maybeActivateCtwaFep } from '@/lib/whatsapp/ctwa-fep'
-import {
-  sanitizePhoneForMeta,
-  isValidE164,
-  phoneVariants,
-  isRecipientNotAllowedError,
-} from '@/lib/whatsapp/phone-utils'
+import { sanitizePhoneForMeta, isValidE164, phoneVariants, isRecipientNotAllowedError } from '@/lib/whatsapp/phone-utils'
+import { buildTemplateSnapshot } from '@/lib/whatsapp/template-snapshot'
+import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard'
+import type { MessageTemplate, TemplateSnapshot } from '@/types'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -193,8 +191,27 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   // Meta message id. sender_type='bot' distinguishes automation sends
   // from manual agent sends.
   const content_type = input.kind === 'template' ? 'template' : 'text'
-  const content_text = input.kind === 'text' ? input.text : null
   const template_name = input.kind === 'template' ? input.templateName : null
+  let content_text: string | null = input.kind === 'text' ? input.text : null
+  let templateSnapshot: TemplateSnapshot | null = null
+
+  if (input.kind === 'template') {
+    const { data: tplRow } = await db
+      .from('message_templates')
+      .select('*')
+      .eq('account_id', input.accountId)
+      .eq('name', input.templateName)
+      .eq('language', input.language)
+      .maybeSingle()
+
+    if (tplRow && isMessageTemplate(tplRow)) {
+      templateSnapshot = buildTemplateSnapshot({
+        template: tplRow as MessageTemplate,
+        params: { body: input.params ?? [] },
+      })
+      content_text = templateSnapshot.body_text
+    }
+  }
 
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: input.conversationId,
@@ -204,6 +221,7 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     template_name,
     message_id: waMessageId,
     status: 'sent',
+    ...(templateSnapshot ? { metadata: { template_snapshot: templateSnapshot } } : {}),
   })
   if (msgErr) {
     // Meta already has the message; record the DB error but don't pretend
@@ -217,7 +235,9 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     .from('conversations')
     .update({
       last_message_text:
-        input.kind === 'template' ? `[template:${input.templateName}]` : input.text,
+        input.kind === 'template'
+          ? content_text || `[template:${input.templateName}]`
+          : input.text,
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })

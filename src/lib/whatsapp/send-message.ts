@@ -50,8 +50,12 @@ import {
   phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
-import type { MessageTemplate } from '@/types';
+import type { MessageTemplate, TemplateSnapshotProperty } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
+import {
+  buildTemplateSnapshot,
+  normalizeTemplateSendParams,
+} from '@/lib/whatsapp/template-snapshot';
 import { generateDocumentPreviewFromUrl, looksLikePdf } from '@/lib/documents/generate-document-preview';
 import { resolveMediaUrlForSend } from '@/lib/storage/resolve-media-for-send';
 import { logError } from '@/lib/observability/log';
@@ -159,6 +163,11 @@ export interface SendMessageParams {
    * message-bubble.tsx's poster resolution.
    */
   thumbnailUrl?: string | null;
+  /**
+   * Optional property associated with a template send (e.g. Follow-up / Match),
+   * stored inside `metadata.template_snapshot.property` so history stays intact.
+   */
+  templateProperty?: TemplateSnapshotProperty | null;
 }
 
 export interface SendMessageResult {
@@ -277,9 +286,12 @@ export async function sendMessageToConversation(
     albumId,
     albumIndex,
     thumbnailUrl,
+    templateProperty,
   } = params;
 
-  const metadata = thumbnailUrl ? { thumbnail_url: thumbnailUrl } : null;
+  let metadata: Record<string, unknown> | null = thumbnailUrl
+    ? { thumbnail_url: thumbnailUrl }
+    : null;
   // `messages.metadata` may not exist yet on every environment this
   // code runs against until its migration has been applied there —
   // rather than let that turn into a hard failure for every message
@@ -580,6 +592,40 @@ export async function sendMessageToConversation(
     }
   }
 
+  let effectiveContentText: string | null = interactiveBody ?? contentText ?? null;
+  if (messageType === 'template' && templateName) {
+    const normalizedParams = normalizeTemplateSendParams(
+      templateMessageParams,
+      templateParams
+    );
+    if (templateRow) {
+      const snapshot = buildTemplateSnapshot({
+        template: templateRow,
+        params: normalizedParams,
+        renderedBodyOverride: contentText,
+        property: templateProperty ?? null,
+      });
+      if (!effectiveContentText || !effectiveContentText.trim()) {
+        effectiveContentText = snapshot.body_text;
+      }
+      metadata = {
+        ...(metadata ?? {}),
+        template_snapshot: snapshot,
+      };
+    } else if (templateProperty) {
+      metadata = {
+        ...(metadata ?? {}),
+        template_snapshot: {
+          template_name: templateName,
+          language: templateLanguage || 'pt_BR',
+          body_text: effectiveContentText || '',
+          property: templateProperty,
+          rendered_at: new Date().toISOString(),
+        },
+      };
+    }
+  }
+
   // `mediaUrl` as persisted/passed in may be an R2 key (private media)
   // or our own permanent public-media URL — neither is directly
   // fetchable by Meta. Resolve once, before the phone-variant retry
@@ -756,7 +802,7 @@ export async function sendMessageToConversation(
     ? await db
         .from('messages')
         .update({
-          content_text: interactiveBody ?? contentText ?? null,
+          content_text: effectiveContentText,
           media_url: mediaUrl || null,
           template_name: templateName || null,
           interactive_payload:
@@ -782,7 +828,7 @@ export async function sendMessageToConversation(
           sender_type: 'agent',
           sender_id: senderId || null,
           content_type: messageType,
-          content_text: interactiveBody ?? contentText ?? null,
+          content_text: effectiveContentText,
           media_url: mediaUrl || null,
           template_name: templateName || null,
           interactive_payload:
@@ -885,7 +931,7 @@ export async function sendMessageToConversation(
   const lastMessageText =
     messageType === 'interactive'
       ? interactivePayloadPreviewText(interactivePayload!)
-      : contentText || `[${messageType}]`;
+      : effectiveContentText || `[${messageType}]`;
 
   const convPatch: Record<string, unknown> = {
     last_message_text: lastMessageText,

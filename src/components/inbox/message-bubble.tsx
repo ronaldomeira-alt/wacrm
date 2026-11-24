@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import type { Message, MessageReaction } from "@/types";
+import type { Message, MessageReaction, TemplateSnapshot } from "@/types";
 import {
   Clock,
   Check,
@@ -19,6 +19,11 @@ import {
   Play,
   Maximize2,
   X,
+  ExternalLink,
+  Phone,
+  Copy,
+  Reply,
+  Building2,
 } from "lucide-react";
 import {
   Dialog,
@@ -910,20 +915,195 @@ function MessageContent({
         />
       );
 
-    case "template":
+    case "template": {
+      const snapshot = (message.metadata as Record<string, unknown> | null | undefined)
+        ?.template_snapshot as TemplateSnapshot | undefined;
+      const displayBody = snapshot?.body_text || message.content_text || null;
+      const displayName = snapshot?.template_name || message.template_name;
+      const buttons = Array.isArray(snapshot?.buttons) ? snapshot.buttons : [];
+
       return (
-        <div>
-          <span className="mb-1 inline-flex items-center gap-1 rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary-on-soft">
-            <LayoutTemplate className="h-3 w-3" />
-            {t("template")}
+        <div className="min-w-[210px] max-w-full">
+          <span
+            className={cn(
+              "mb-1.5 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+              isAgent
+                ? "bg-primary-foreground/15 text-primary-foreground"
+                : "bg-primary/15 text-primary-on-soft",
+            )}
+          >
+            <LayoutTemplate className="h-3 w-3 shrink-0" />
+            <span className="truncate max-w-[200px]">
+              {displayName ? `${t("template")}: ${displayName}` : t("template")}
+            </span>
           </span>
-          {message.content_text && (
-            <p className="mt-1 select-text whitespace-pre-wrap break-words pr-8 text-sm">
-              {linkifyText(message.content_text)}
+
+          {snapshot?.header_type === "image" && snapshot.header_media_url && (
+            <div className="mb-2 overflow-hidden rounded-md">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={snapshot.header_media_url}
+                alt={displayName || "Template header"}
+                className="max-h-48 w-full object-cover"
+              />
+            </div>
+          )}
+
+          {snapshot?.header_type === "video" && snapshot.header_media_url && (
+            <div className="mb-2 overflow-hidden rounded-md">
+              <video
+                src={snapshot.header_media_url}
+                controls
+                preload="metadata"
+                className="max-h-48 w-full rounded-md"
+              />
+            </div>
+          )}
+
+          {snapshot?.header_type === "document" && snapshot.header_media_url && (
+            <a
+              href={snapshot.header_media_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "mb-2 flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                isAgent
+                  ? "bg-primary-foreground/10 text-primary-foreground hover:bg-primary-foreground/20"
+                  : "bg-muted text-foreground hover:bg-muted/80",
+              )}
+            >
+              <FileText className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Documento anexo</span>
+              <ExternalLink className="ml-auto h-3 w-3 shrink-0 opacity-75" />
+            </a>
+          )}
+
+          {snapshot?.header_type === "text" && snapshot.header_text && (
+            <p className="mb-1 select-text whitespace-pre-wrap break-words pr-6 text-sm font-semibold">
+              {snapshot.header_text}
             </p>
+          )}
+
+          {displayBody ? (
+            <p className="select-text whitespace-pre-wrap break-words pr-8 text-sm">
+              {linkifyText(displayBody)}
+            </p>
+          ) : (
+            <p
+              className={cn(
+                "select-text pr-8 text-xs italic",
+                isAgent ? "text-primary-foreground/80" : "text-muted-foreground",
+              )}
+            >
+              {displayName
+                ? `Template "${displayName}" enviado (conteúdo histórico indisponível)`
+                : "Template enviado (conteúdo histórico indisponível)"}
+            </p>
+          )}
+
+          {snapshot?.footer_text && (
+            <p
+              className={cn(
+                "mt-1.5 select-text whitespace-pre-wrap break-words text-[11px]",
+                isAgent ? "text-primary-foreground/75" : "text-muted-foreground",
+              )}
+            >
+              {snapshot.footer_text}
+            </p>
+          )}
+
+          {snapshot?.property?.title && (
+            <div
+              className={cn(
+                "mt-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium",
+                isAgent
+                  ? "bg-primary-foreground/10 text-primary-foreground/95"
+                  : "bg-muted/70 text-foreground",
+              )}
+            >
+              <Building2 className="h-3 w-3 shrink-0" />
+              <span className="truncate">{snapshot.property.title}</span>
+            </div>
+          )}
+
+          {buttons.length > 0 && (
+            <div
+              className={cn(
+                "mt-2 flex flex-col border-t pt-1.5",
+                isAgent ? "border-primary-foreground/20" : "border-border",
+              )}
+            >
+              {buttons.map((btn, idx) => {
+                if (btn.type === "URL" && btn.url) {
+                  return (
+                    <a
+                      key={`${btn.text}-${idx}`}
+                      href={btn.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={cn(
+                        "flex min-h-[34px] items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium transition-colors",
+                        isAgent
+                          ? "text-primary-foreground hover:bg-primary-foreground/15"
+                          : "text-primary hover:bg-muted",
+                      )}
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{btn.text}</span>
+                    </a>
+                  );
+                }
+                if (btn.type === "PHONE_NUMBER" && btn.phone_number) {
+                  return (
+                    <a
+                      key={`${btn.text}-${idx}`}
+                      href={`tel:${btn.phone_number}`}
+                      className={cn(
+                        "flex min-h-[34px] items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium transition-colors",
+                        isAgent
+                          ? "text-primary-foreground hover:bg-primary-foreground/15"
+                          : "text-primary hover:bg-muted",
+                      )}
+                    >
+                      <Phone className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{btn.text}</span>
+                    </a>
+                  );
+                }
+                if (btn.type === "COPY_CODE") {
+                  return (
+                    <div
+                      key={`${btn.text}-${idx}`}
+                      className={cn(
+                        "flex min-h-[34px] items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium",
+                        isAgent ? "text-primary-foreground/90" : "text-primary",
+                      )}
+                    >
+                      <Copy className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">
+                        {btn.code ? `${btn.text}: ${btn.code}` : btn.text}
+                      </span>
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    key={`${btn.text}-${idx}`}
+                    className={cn(
+                      "flex min-h-[34px] items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium",
+                      isAgent ? "text-primary-foreground/90" : "text-primary",
+                    )}
+                  >
+                    <Reply className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{btn.text}</span>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       );
+    }
 
     case "location":
       return (

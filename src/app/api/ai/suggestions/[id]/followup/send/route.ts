@@ -308,10 +308,16 @@ export async function POST(
       const buttonParams: Record<number, string> =
         urlButtonIdx >= 0 ? { [urlButtonIdx]: buttonUrlSuffix } : { 0: buttonUrlSuffix };
 
+      const renderedBody = renderApprovedTemplatePreview(
+        approvedTemplate.body_text,
+        bodyValues
+      );
+
       try {
         const result = await sendMessageToConversation(supabase, accountId, {
           conversationId: suggestion.conversation_id,
           messageType: 'template',
+          contentText: renderedBody,
           templateName: approvedTemplate.name,
           templateLanguage: approvedTemplate.language || 'pt_BR',
           templateParams: bodyValues,
@@ -319,13 +325,19 @@ export async function POST(
             body: bodyValues,
             buttonParams,
           },
+          templateProperty: {
+            id: targetProp.propertyId,
+            title: targetProp.title,
+            public_url: targetProp.publicUrl,
+            match_id: targetProp.matchId ?? null,
+          },
           senderId: userId,
           clientRef,
         });
         sentMessageId = result.messageId;
         whatsappMessageId = result.whatsappMessageId;
         realizedTemplateName = approvedTemplate.name;
-        realizedMessageText = renderApprovedTemplatePreview(approvedTemplate.body_text, bodyValues);
+        realizedMessageText = renderedBody;
       } catch (err) {
         if (err instanceof SendMessageError) {
           return bad(err.message, err.status, { code: err.code });
