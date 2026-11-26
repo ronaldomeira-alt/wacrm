@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 const h = vi.hoisted(() => ({
   pendingAfter: [] as Promise<unknown>[],
@@ -386,5 +389,33 @@ describe('WhatsApp webhook inbound audio auto-reply gate', () => {
     expect(h.dbControls.insertedMessagesCount).toBe(0)
     expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
     expect(h.dispatchInboundToLeadAnalysis).not.toHaveBeenCalled()
+  })
+
+  it('persists raw webhook payload to local JSONL emergency spool when WHATSAPP_WEBHOOK_EMERGENCY_SPOOL_DIR is enabled and DB fails', async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'wacrm-webhook-spool-'))
+    try {
+      process.env.WHATSAPP_WEBHOOK_EMERGENCY_SPOOL_DIR = tmpDir
+      h.dbControls.configError = {
+        message: 'Service for this project is restricted due to the following violations: exceed_egress_quota',
+        code: '402',
+      }
+
+      const res = await POST(makeAudioWebhookRequest())
+      expect(res.status).toBe(200)
+      const json = await res.json()
+      expect(json).toEqual({ status: 'spooled_for_replay' })
+
+      const files = await readdir(tmpDir)
+      expect(files).toHaveLength(1)
+      expect(files[0]).toMatch(/^whatsapp-webhook-\d{4}-\d{2}-\d{2}\.jsonl$/)
+
+      const content = await readFile(path.join(tmpDir, files[0]), 'utf8')
+      const record = JSON.parse(content.trim())
+      expect(record.reason).toContain('Failed fetching whatsapp_config')
+      expect(record.payload).toContain('wamid.audio.1')
+    } finally {
+      delete process.env.WHATSAPP_WEBHOOK_EMERGENCY_SPOOL_DIR
+      await rm(tmpDir, { recursive: true, force: true })
+    }
   })
 })
