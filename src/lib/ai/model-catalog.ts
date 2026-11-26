@@ -33,6 +33,8 @@ export interface CatalogModel {
     inputPer1M?: number
     outputPer1M?: number
     cacheReadPer1M?: number
+    cacheWritePer1M?: number
+    hasPeakMultiplier?: boolean
   }
 }
 
@@ -318,9 +320,10 @@ interface RawOpenCodeModel {
   }
   cost?: {
     text?: {
-      input?: { price?: number; cache?: { read?: number } }
+      input?: { price?: number; cache?: { read?: number; write?: number } }
       output?: { price?: number }
     }
+    multipliers?: Array<{ factor?: number }>
   }
   api?: Record<
     string,
@@ -392,6 +395,8 @@ export function parseOpenCodeModelsPayload(payload: unknown): CatalogModel[] {
             inputPer1M: item.cost.text.input?.price,
             outputPer1M: item.cost.text.output?.price,
             cacheReadPer1M: item.cost.text.input?.cache?.read,
+            cacheWritePer1M: item.cost.text.input?.cache?.write,
+            hasPeakMultiplier: Array.isArray(item.cost.multipliers) && item.cost.multipliers.some((m) => m.factor === 2),
           }
         : undefined,
     })

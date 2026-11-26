@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { BarChart3, RefreshCw } from 'lucide-react';
+import { BarChart3, RefreshCw, X } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -48,57 +48,88 @@ interface UsageResponse {
     estimated_calls: number;
     unknown_calls: number;
     cost_measured_calls?: number;
+    cost_unknown_calls?: number;
+    provider_confirmed_calls?: number;
+    cost_estimated_calls?: number;
     cache_measured_calls?: number;
     prompt_tokens: number;
     completion_tokens: number;
     cached_tokens: number;
     reasoning_tokens: number;
     total_tokens: number;
-    cost_usd: number;
-    cost_brl: number;
+    cost_usd: number | null;
+    input_cost_usd?: number | null;
+    cache_cost_usd?: number | null;
+    output_cost_usd?: number | null;
+    billed_cost_usd?: number | null;
+    cost_brl: number | null;
     avg_latency_ms: number | null;
   };
   by_provider: {
     provider: string;
     attempts: number;
     completed_calls: number;
+    cost_measured_calls?: number;
+    cost_unknown_calls?: number;
     prompt_tokens: number;
     completion_tokens: number;
     cached_tokens: number;
     total_tokens: number;
-    cost_usd: number;
-    cost_brl: number;
+    cost_usd: number | null;
+    input_cost_usd?: number | null;
+    cache_cost_usd?: number | null;
+    output_cost_usd?: number | null;
+    billed_cost_usd?: number | null;
+    cost_brl: number | null;
   }[];
   by_mode: {
     mode: string;
     calls: number;
+    cost_measured_calls?: number;
+    cost_unknown_calls?: number;
     prompt_tokens: number;
     completion_tokens: number;
     cached_tokens: number;
     total_tokens: number;
-    cost_usd: number;
-    cost_brl: number;
+    cost_usd: number | null;
+    input_cost_usd?: number | null;
+    cache_cost_usd?: number | null;
+    output_cost_usd?: number | null;
+    billed_cost_usd?: number | null;
+    cost_brl: number | null;
   }[];
   by_model: {
     provider: string;
     model: string;
     calls: number;
+    cost_measured_calls?: number;
+    cost_unknown_calls?: number;
     prompt_tokens: number;
     completion_tokens: number;
     cached_tokens: number;
     total_tokens: number;
-    cost_usd: number;
-    cost_brl: number;
+    cost_usd: number | null;
+    input_cost_usd?: number | null;
+    cache_cost_usd?: number | null;
+    output_cost_usd?: number | null;
+    billed_cost_usd?: number | null;
+    cost_brl: number | null;
   }[];
   daily: {
     date: string;
     calls: number;
+    cost_measured_calls?: number;
+    cost_unknown_calls?: number;
     prompt_tokens: number;
     completion_tokens: number;
     cached_tokens: number;
     total_tokens: number;
-    cost_usd: number;
-    cost_brl: number;
+    cost_usd: number | null;
+    input_cost_usd?: number | null;
+    cache_cost_usd?: number | null;
+    output_cost_usd?: number | null;
+    billed_cost_usd?: number | null;
+    cost_brl: number | null;
   }[];
   opencode_subscription: {
     quota: {
@@ -154,8 +185,90 @@ function formatBrl(v: number): string {
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+type UsageViewMode = 'tokens' | 'usd';
+
+interface DailyChartPoint {
+  dateKey: string;
+  day: string;
+  fullDate: string;
+  Entrada: number | null;
+  Cache: number | null;
+  Saída: number | null;
+  Total: number | null;
+  calls: number;
+  costMeasuredCalls: number;
+  costUnknownCalls: number;
+}
+
 function formatUsd(v: number): string {
   return v.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+function formatUsdComponent(v: number): string {
+  if (!Number.isFinite(v)) return 'US$ 0,0000';
+  if (v > 0 && v < 0.0001) {
+    return v.toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 6,
+      maximumFractionDigits: 6,
+    });
+  }
+  return v.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  });
+}
+
+function formatUsdTotal(v: number): string {
+  if (!Number.isFinite(v) || v === 0) {
+    return (0).toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+  if (v > 0 && v < 0.01) {
+    return v.toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 4,
+      maximumFractionDigits: 4,
+    });
+  }
+  return v.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatUsdAxis(v: number): string {
+  if (!Number.isFinite(v) || v === 0) return 'US$ 0';
+  if (v >= 1) {
+    return v.toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: 2,
+    });
+  }
+  if (v >= 0.01) {
+    return v.toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+  return v.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 4,
+  });
 }
 
 function CustomTooltip({
@@ -191,6 +304,149 @@ function CustomTooltip({
   );
 }
 
+function DailyUsdDetails({
+  point,
+  periodTotalUsd,
+  onClose,
+}: {
+  point: DailyChartPoint;
+  periodTotalUsd: number | null;
+  onClose?: () => void;
+}) {
+  const isUnknown = point.calls > 0 && point.costMeasuredCalls === 0;
+  return (
+    <div className="space-y-1.5 text-xs">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-semibold text-foreground">{point.fullDate}</p>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fechar detalhes do dia"
+            className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {isUnknown ? (
+        <p className="text-muted-foreground">Valor financeiro desconhecido para este dia.</p>
+      ) : (
+        <>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-4">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="inline-block size-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
+                Entrada:
+              </span>
+              <span className="font-medium text-foreground tabular-nums">
+                {formatUsdComponent(Number(point.Entrada ?? 0))}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="inline-block size-2 rounded-full" style={{ backgroundColor: '#10b981' }} />
+                Cache:
+              </span>
+              <span className="font-medium text-foreground tabular-nums">
+                {formatUsdComponent(Number(point.Cache ?? 0))}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="inline-block size-2 rounded-full" style={{ backgroundColor: '#f59e0b' }} />
+                Saída:
+              </span>
+              <span className="font-medium text-foreground tabular-nums">
+                {formatUsdComponent(Number(point.Saída ?? 0))}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4 border-t border-border pt-1.5">
+            <span className="font-semibold text-foreground">Total:</span>
+            <span className="text-sm font-bold text-foreground tabular-nums">
+              {formatUsdTotal(Number(point.Total ?? 0))}
+            </span>
+          </div>
+        </>
+      )}
+      <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-1 text-[11px] text-muted-foreground">
+        <span>Acumulado do período:</span>
+        <span className="font-medium text-foreground tabular-nums">
+          {periodTotalUsd !== null ? formatUsdTotal(periodTotalUsd) : 'Desconhecido'}
+        </span>
+      </div>
+      {point.costUnknownCalls > 0 && point.costMeasuredCalls > 0 && (
+        <p className="text-[10px] text-muted-foreground">
+          {point.costUnknownCalls} chamada(s) sem medição excluída(s) do total.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function DailyUsdTooltip({
+  active,
+  payload,
+  periodTotalUsd,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: DailyChartPoint }>;
+  periodTotalUsd: number | null;
+}) {
+  const point = payload?.[0]?.payload;
+  if (!active || !point) return null;
+  return (
+    <div className="min-w-[210px] rounded-lg border border-border bg-popover px-3 py-2 text-popover-foreground shadow-lg">
+      <DailyUsdDetails point={point} periodTotalUsd={periodTotalUsd} />
+    </div>
+  );
+}
+
+function BreakdownUsdTooltip({
+  active,
+  payload,
+  label,
+  periodTotalUsd,
+}: {
+  active?: boolean;
+  payload?: Array<{
+    value?: number | null;
+    color?: string;
+    payload?: { costMeasuredCalls?: number; calls?: number; costUnknownCalls?: number };
+  }>;
+  label?: string;
+  periodTotalUsd: number | null;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const entry = payload[0];
+  const meta = entry.payload;
+  const isUnknown = (meta?.calls ?? 0) > 0 && (meta?.costMeasuredCalls ?? 0) === 0;
+  return (
+    <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-lg">
+      <p className="mb-1.5 font-semibold text-foreground">{label}</p>
+      <div className="flex items-center justify-between gap-4">
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <span
+            className="inline-block size-2 rounded-full"
+            style={{ backgroundColor: entry.color || 'var(--primary)' }}
+          />
+          Valor (USD):
+        </span>
+        <span className="font-semibold text-foreground tabular-nums">
+          {isUnknown || entry.value == null ? 'Desconhecido' : formatUsdComponent(Number(entry.value))}
+        </span>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between gap-4 border-t border-border/60 pt-1 text-[11px] text-muted-foreground">
+        <span>Acumulado do período:</span>
+        <span className="font-medium text-foreground tabular-nums">
+          {periodTotalUsd !== null ? formatUsdTotal(periodTotalUsd) : 'Desconhecido'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function AiUsageCard() {
   const { accountId, accountRole, profileLoading } = useAuth();
   const canView = accountRole ? canEditSettings(accountRole) : false;
@@ -201,6 +457,8 @@ export function AiUsageCard() {
   const [providerFilter, setProviderFilter] = useState('all');
   const [modelFilter, setModelFilter] = useState('all');
   const [modeFilter, setModeFilter] = useState('all');
+  const [viewMode, setViewMode] = useState<UsageViewMode>('tokens');
+  const [selectedDailyDate, setSelectedDailyDate] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<UsageResponse | null>(null);
@@ -210,6 +468,7 @@ export function AiUsageCard() {
     if (preset === 'custom' && (!startDate || !endDate)) return;
 
     setLoading(true);
+    setSelectedDailyDate(null);
     try {
       const params = new URLSearchParams({ preset });
       if (preset === 'custom') {
@@ -247,33 +506,107 @@ export function AiUsageCard() {
   const totals = data?.totals;
   const costMeasured = totals?.cost_measured_calls ?? 0;
   const cacheMeasured = totals?.cache_measured_calls ?? 0;
+  const isUsd = viewMode === 'usd';
+  const periodTotalUsd =
+    totals && (totals.attempts === 0 || costMeasured > 0) && totals.cost_usd !== null
+      ? Number(totals.cost_usd)
+      : null;
 
-  const dailyData =
-    data?.daily.map((d) => ({
-      day: format(parseISO(d.date), 'dd/MM', { locale: ptBR }),
-      Entrada: Math.max(0, d.prompt_tokens - d.cached_tokens),
-      Cache: d.cached_tokens,
-      Saída: d.completion_tokens,
-      Total: d.total_tokens,
-    })) ?? [];
+  const dailyData: DailyChartPoint[] =
+    data?.daily.map((d) => {
+      const parsed = parseISO(d.date);
+      const dayCostMeasured = d.cost_measured_calls ?? (d.cost_usd != null ? d.calls : 0);
+      const dayCostUnknown = d.cost_unknown_calls ?? (d.cost_usd == null ? d.calls : 0);
+      if (isUsd) {
+        const hasMeasured = dayCostMeasured > 0;
+        return {
+          dateKey: d.date,
+          day: format(parsed, 'dd/MM', { locale: ptBR }),
+          fullDate: format(parsed, 'dd/MM/yyyy', { locale: ptBR }),
+          Entrada: hasMeasured ? Number(d.input_cost_usd ?? 0) : null,
+          Cache: hasMeasured ? Number(d.cache_cost_usd ?? 0) : null,
+          Saída: hasMeasured ? Number(d.output_cost_usd ?? 0) : null,
+          Total: hasMeasured ? Number(d.cost_usd ?? 0) : null,
+          calls: d.calls,
+          costMeasuredCalls: dayCostMeasured,
+          costUnknownCalls: dayCostUnknown,
+        };
+      }
+      return {
+        dateKey: d.date,
+        day: format(parsed, 'dd/MM', { locale: ptBR }),
+        fullDate: format(parsed, 'dd/MM/yyyy', { locale: ptBR }),
+        Entrada: Math.max(0, d.prompt_tokens - d.cached_tokens),
+        Cache: d.cached_tokens,
+        Saída: d.completion_tokens,
+        Total: d.total_tokens,
+        calls: d.calls,
+        costMeasuredCalls: dayCostMeasured,
+        costUnknownCalls: dayCostUnknown,
+      };
+    }) ?? [];
 
-  const providerChartData =
-    data?.by_provider.map((p) => ({
-      name: PROVIDER_LABELS[p.provider] ?? p.provider,
-      Tokens: p.total_tokens,
-    })) ?? [];
+  const selectedDailyPoint =
+    selectedDailyDate ? dailyData.find((d) => d.dateKey === selectedDailyDate) ?? null : null;
 
-  const modelChartData =
-    data?.by_model.map((m) => ({
-      name: m.model,
-      Tokens: m.total_tokens,
-    })) ?? [];
+  const handleDailySelectIndex = (rawIndex: number | string | null | undefined) => {
+    if (rawIndex == null) return;
+    const idx = typeof rawIndex === 'number' ? rawIndex : Number(rawIndex);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= dailyData.length) return;
+    const target = dailyData[idx];
+    if (!target) return;
+    setSelectedDailyDate((prev) => (prev === target.dateKey ? null : target.dateKey));
+  };
 
-  const modeChartData =
-    data?.by_mode.map((m) => ({
-      name: MODE_LABELS[m.mode] ?? m.mode,
-      Tokens: m.total_tokens,
-    })) ?? [];
+  const breakdownMetricKey = isUsd ? 'Valor' : 'Tokens';
+
+  const providerChartData = (data?.by_provider ?? [])
+    .map((p) => {
+      const measured = p.cost_measured_calls ?? (p.cost_usd != null ? p.attempts : 0);
+      return {
+        name: PROVIDER_LABELS[p.provider] ?? p.provider,
+        Tokens: p.total_tokens,
+        Valor: measured > 0 && p.cost_usd != null ? Number(p.cost_usd) : null,
+        calls: p.attempts,
+        costMeasuredCalls: measured,
+        costUnknownCalls: p.cost_unknown_calls ?? 0,
+      };
+    })
+    .sort((a, b) =>
+      isUsd ? Number(b.Valor ?? -1) - Number(a.Valor ?? -1) : b.Tokens - a.Tokens,
+    );
+
+  const modelChartData = (data?.by_model ?? [])
+    .map((m) => {
+      const measured = m.cost_measured_calls ?? (m.cost_usd != null ? m.calls : 0);
+      return {
+        name: m.model,
+        Tokens: m.total_tokens,
+        Valor: measured > 0 && m.cost_usd != null ? Number(m.cost_usd) : null,
+        calls: m.calls,
+        costMeasuredCalls: measured,
+        costUnknownCalls: m.cost_unknown_calls ?? 0,
+      };
+    })
+    .sort((a, b) =>
+      isUsd ? Number(b.Valor ?? -1) - Number(a.Valor ?? -1) : b.Tokens - a.Tokens,
+    );
+
+  const modeChartData = (data?.by_mode ?? [])
+    .map((m) => {
+      const measured = m.cost_measured_calls ?? (m.cost_usd != null ? m.calls : 0);
+      return {
+        name: MODE_LABELS[m.mode] ?? m.mode,
+        Tokens: m.total_tokens,
+        Valor: measured > 0 && m.cost_usd != null ? Number(m.cost_usd) : null,
+        calls: m.calls,
+        costMeasuredCalls: measured,
+        costUnknownCalls: m.cost_unknown_calls ?? 0,
+      };
+    })
+    .sort((a, b) =>
+      isUsd ? Number(b.Valor ?? -1) - Number(a.Valor ?? -1) : b.Tokens - a.Tokens,
+    );
 
   const distinctModels = Array.from(new Set(data?.by_model.map((m) => m.model) ?? []));
 
@@ -409,7 +742,7 @@ export function AiUsageCard() {
                   {totals.attempts === 0 ? (
                     'Sem chamadas no período'
                   ) : costMeasured === 0 ? (
-                    'Custo histórico não registrado (disponível a partir de 24/11)'
+                    'Valor financeiro desconhecido no período'
                   ) : costMeasured < totals.attempts ? (
                     `Custo parcial (${costMeasured.toLocaleString('pt-BR')} de ${totals.attempts.toLocaleString('pt-BR')}): ${formatBrl(Number(totals.cost_brl ?? 0))} (${formatUsd(Number(totals.cost_usd ?? 0))})`
                   ) : (
@@ -463,12 +796,67 @@ export function AiUsageCard() {
 
             {/* Gráfico 1: Consumo diário (Entrada, Cache, Saída) */}
             <div className="space-y-2 rounded-lg border border-border p-4">
-              <h4 className="text-sm font-medium text-foreground">
-                Consumo Diário (Entrada, Cache e Saída)
-              </h4>
-              <div className="h-64 w-full">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-medium text-foreground">
+                    Consumo Diário (Entrada, Cache e Saída)
+                  </h4>
+                  {isUsd && (
+                    <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                      Total acumulado do período:{' '}
+                      <span className="font-semibold text-foreground">
+                        {periodTotalUsd !== null ? formatUsdTotal(periodTotalUsd) : 'Desconhecido'}
+                      </span>
+                      <span className="ml-2 text-[11px]">
+                        · OpenCode Go exibido pelo equivalente monetário de consumo
+                      </span>
+                    </p>
+                  )}
+                </div>
+                <div
+                  role="group"
+                  aria-label="Modo de visualização do consumo"
+                  className="inline-flex items-center rounded-md border border-border bg-muted/40 p-0.5 text-xs"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={!isUsd}
+                    onClick={() => {
+                      setViewMode('tokens');
+                      setSelectedDailyDate(null);
+                    }}
+                    className={`rounded px-2.5 py-1 transition-colors ${
+                      !isUsd
+                        ? 'bg-background font-medium text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Tokens
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={isUsd}
+                    onClick={() => {
+                      setViewMode('usd');
+                      setSelectedDailyDate(null);
+                    }}
+                    className={`rounded px-2.5 py-1 transition-colors ${
+                      isUsd
+                        ? 'bg-background font-medium text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Valor (USD)
+                  </button>
+                </div>
+              </div>
+              <div className="h-64 w-full touch-manipulation">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={dailyData} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                  <BarChart
+                    data={dailyData}
+                    margin={{ top: 8, right: 8, left: 0, bottom: 4 }}
+                    onClick={(state) => handleDailySelectIndex(state?.activeTooltipIndex)}
+                  >
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
                     <XAxis
                       dataKey="day"
@@ -480,21 +868,54 @@ export function AiUsageCard() {
                       tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
                       axisLine={{ stroke: 'var(--border)' }}
                       tickLine={{ stroke: 'var(--border)' }}
-                      tickFormatter={formatTokens}
+                      tickFormatter={isUsd ? formatUsdAxis : formatTokens}
                     />
                     <Tooltip
-                      content={<CustomTooltip />}
+                      content={
+                        isUsd ? (
+                          <DailyUsdTooltip periodTotalUsd={periodTotalUsd} />
+                        ) : (
+                          <CustomTooltip />
+                        )
+                      }
                       cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
                     />
                     <Legend
                       wrapperStyle={{ fontSize: 12, color: 'var(--foreground)', paddingTop: 8 }}
                     />
-                    <Bar dataKey="Entrada" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="Cache" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="Saída" stackId="a" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                    <Bar
+                      dataKey="Entrada"
+                      stackId="a"
+                      fill="#3b82f6"
+                      radius={[0, 0, 0, 0]}
+                      onClick={(_, index) => handleDailySelectIndex(index)}
+                    />
+                    <Bar
+                      dataKey="Cache"
+                      stackId="a"
+                      fill="#10b981"
+                      radius={[0, 0, 0, 0]}
+                      onClick={(_, index) => handleDailySelectIndex(index)}
+                    />
+                    <Bar
+                      dataKey="Saída"
+                      stackId="a"
+                      fill="#f59e0b"
+                      radius={[4, 4, 0, 0]}
+                      onClick={(_, index) => handleDailySelectIndex(index)}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+              {isUsd && selectedDailyPoint && (
+                <div className="rounded-md border border-border bg-muted/20 p-3">
+                  <DailyUsdDetails
+                    point={selectedDailyPoint}
+                    periodTotalUsd={periodTotalUsd}
+                    onClose={() => setSelectedDailyDate(null)}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Gráficos 2, 3 e 4 em barra com contraste e rótulos legíveis */}
@@ -515,13 +936,19 @@ export function AiUsageCard() {
                         tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }}
                         axisLine={{ stroke: 'var(--border)' }}
                         tickLine={{ stroke: 'var(--border)' }}
-                        tickFormatter={formatTokens}
+                        tickFormatter={isUsd ? formatUsdAxis : formatTokens}
                       />
                       <Tooltip
-                        content={<CustomTooltip />}
+                        content={
+                          isUsd ? (
+                            <BreakdownUsdTooltip periodTotalUsd={periodTotalUsd} />
+                          ) : (
+                            <CustomTooltip />
+                          )
+                        }
                         cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
                       />
-                      <Bar dataKey="Tokens" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey={breakdownMetricKey} fill="#3b82f6" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -542,7 +969,7 @@ export function AiUsageCard() {
                         tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }}
                         axisLine={{ stroke: 'var(--border)' }}
                         tickLine={{ stroke: 'var(--border)' }}
-                        tickFormatter={formatTokens}
+                        tickFormatter={isUsd ? formatUsdAxis : formatTokens}
                       />
                       <YAxis
                         type="category"
@@ -553,10 +980,16 @@ export function AiUsageCard() {
                         tickLine={{ stroke: 'var(--border)' }}
                       />
                       <Tooltip
-                        content={<CustomTooltip />}
+                        content={
+                          isUsd ? (
+                            <BreakdownUsdTooltip periodTotalUsd={periodTotalUsd} />
+                          ) : (
+                            <CustomTooltip />
+                          )
+                        }
                         cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
                       />
-                      <Bar dataKey="Tokens" fill="#10b981" radius={[0, 4, 4, 0]} />
+                      <Bar dataKey={breakdownMetricKey} fill="#10b981" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -577,7 +1010,7 @@ export function AiUsageCard() {
                         tick={{ fill: 'var(--muted-foreground)', fontSize: 10 }}
                         axisLine={{ stroke: 'var(--border)' }}
                         tickLine={{ stroke: 'var(--border)' }}
-                        tickFormatter={formatTokens}
+                        tickFormatter={isUsd ? formatUsdAxis : formatTokens}
                       />
                       <YAxis
                         type="category"
@@ -588,10 +1021,16 @@ export function AiUsageCard() {
                         tickLine={{ stroke: 'var(--border)' }}
                       />
                       <Tooltip
-                        content={<CustomTooltip />}
+                        content={
+                          isUsd ? (
+                            <BreakdownUsdTooltip periodTotalUsd={periodTotalUsd} />
+                          ) : (
+                            <CustomTooltip />
+                          )
+                        }
                         cursor={{ fill: 'var(--muted)', opacity: 0.25 }}
                       />
-                      <Bar dataKey="Tokens" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                      <Bar dataKey={breakdownMetricKey} fill="#8b5cf6" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

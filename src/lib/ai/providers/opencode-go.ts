@@ -1,4 +1,4 @@
-import { AiError, type ProviderResult } from '../types'
+import { AiError, type AiProviderCostMeta, type ProviderResult } from '../types'
 import { MAX_OUTPUT_TOKENS } from '../defaults'
 import { getCachedOpenCodeModelSpec, type CatalogModel } from '../model-catalog'
 import {
@@ -13,6 +13,21 @@ import {
 const OPENCODE_GO_BASE = 'https://opencode.ai/zen/go/v1'
 const JSON_RETRY_ENFORCEMENT =
   '[INSTRUÇÃO ESTRUTURAL DE SISTEMA: Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente o esquema pedido no prompt do sistema, iniciando com { e terminando com }, sem blocos markdown e sem texto fora do JSON.]'
+
+interface OpenCodeUsageMeta {
+  billing_source?: string
+  list_cost?: number
+  allowance?: number
+  estimated?: boolean
+  tokens?: {
+    input?: number
+    output?: number
+    reasoning?: number
+    cache_read?: number
+    cache_write_5m?: number
+    cache_write_1h?: number
+  }
+}
 
 interface OpenCodeChatResponse {
   choices?: {
@@ -32,6 +47,8 @@ interface OpenCodeChatResponse {
     completion_tokens_details?: {
       reasoning_tokens?: number
     }
+    cost?: number
+    opencode?: OpenCodeUsageMeta
   }
 }
 
@@ -41,6 +58,8 @@ interface OpenCodeMessagesResponse {
     input_tokens?: number
     output_tokens?: number
     cache_read_input_tokens?: number
+    cost?: number
+    opencode?: OpenCodeUsageMeta
   }
 }
 
@@ -56,6 +75,59 @@ interface OpenCodeResponsesApiResponse {
     total_tokens?: number
     input_tokens_details?: { cached_tokens?: number }
     output_tokens_details?: { reasoning_tokens?: number }
+    cost?: number
+    opencode?: OpenCodeUsageMeta
+  }
+}
+
+function finiteNum(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined
+}
+
+function extractOpenCodeCostMeta(raw?: {
+  cost?: number
+  opencode?: OpenCodeUsageMeta
+} | null): AiProviderCostMeta | undefined {
+  if (!raw) return undefined
+  const oc = raw.opencode
+  const billedCostUsd = finiteNum(raw.cost)
+  const listCostUsd = finiteNum(oc?.list_cost)
+  const allowanceUsd = finiteNum(oc?.allowance)
+  const billingSource =
+    typeof oc?.billing_source === 'string' && oc.billing_source.trim()
+      ? oc.billing_source.trim()
+      : undefined
+  const providerEstimated = typeof oc?.estimated === 'boolean' ? oc.estimated : undefined
+  const tokens = oc?.tokens
+  const uncachedInputTokens = finiteNum(tokens?.input)
+  const cacheReadTokens = finiteNum(tokens?.cache_read)
+  const cacheWrite5mTokens = finiteNum(tokens?.cache_write_5m)
+  const cacheWrite1hTokens = finiteNum(tokens?.cache_write_1h)
+  const outputTokens = finiteNum(tokens?.output)
+  const reasoningTokens = finiteNum(tokens?.reasoning)
+
+  if (
+    billedCostUsd === undefined &&
+    listCostUsd === undefined &&
+    allowanceUsd === undefined &&
+    billingSource === undefined &&
+    uncachedInputTokens === undefined
+  ) {
+    return undefined
+  }
+
+  return {
+    ...(listCostUsd !== undefined ? { listCostUsd } : {}),
+    ...(billedCostUsd !== undefined ? { billedCostUsd } : {}),
+    ...(allowanceUsd !== undefined ? { allowanceUsd } : {}),
+    ...(billingSource !== undefined ? { billingSource } : {}),
+    ...(providerEstimated !== undefined ? { providerEstimated } : {}),
+    ...(uncachedInputTokens !== undefined ? { uncachedInputTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheWrite5mTokens !== undefined ? { cacheWrite5mTokens } : {}),
+    ...(cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
   }
 }
 
@@ -190,11 +262,24 @@ export async function generateOpenCodeGo(
     if (structuredOutputRequired && !text.startsWith('{')) {
       text = '{' + text
     }
+    const providerCost = extractOpenCodeCostMeta(data?.usage)
+    const msgCached =
+      providerCost?.cacheReadTokens ?? data?.usage?.cache_read_input_tokens ?? 0
+    const msgPrompt =
+      providerCost?.uncachedInputTokens !== undefined
+        ? providerCost.uncachedInputTokens + msgCached
+        : typeof data?.usage?.input_tokens === 'number'
+          ? data.usage.input_tokens + msgCached
+          : undefined
     const usage = normalizeUsage({
-      prompt: data?.usage?.input_tokens,
-      completion: data?.usage?.output_tokens,
-      cached: data?.usage?.cache_read_input_tokens,
+      prompt: msgPrompt,
+      completion: providerCost?.outputTokens ?? data?.usage?.output_tokens,
+      cached: msgCached,
+      reasoning: providerCost?.reasoningTokens,
     })
+    if (usage && providerCost) {
+      usage.providerCost = providerCost
+    }
     return { text, usage }
   }
 
@@ -244,13 +329,20 @@ export async function generateOpenCodeGo(
         status: 502,
       })
     }
+    const providerCost = extractOpenCodeCostMeta(data?.usage)
+    const respCached =
+      providerCost?.cacheReadTokens ?? data?.usage?.input_tokens_details?.cached_tokens
     const usage = normalizeUsage({
       prompt: data?.usage?.input_tokens,
-      completion: data?.usage?.output_tokens,
+      completion: providerCost?.outputTokens ?? data?.usage?.output_tokens,
       total: data?.usage?.total_tokens,
-      cached: data?.usage?.input_tokens_details?.cached_tokens,
-      reasoning: data?.usage?.output_tokens_details?.reasoning_tokens,
+      cached: respCached,
+      reasoning:
+        providerCost?.reasoningTokens ?? data?.usage?.output_tokens_details?.reasoning_tokens,
     })
+    if (usage && providerCost) {
+      usage.providerCost = providerCost
+    }
     return { text, usage }
   }
 
@@ -346,15 +438,22 @@ export async function generateOpenCodeGo(
     })
   }
 
+  const providerCost = extractOpenCodeCostMeta(data?.usage)
+  const chatCached =
+    providerCost?.cacheReadTokens ??
+    data?.usage?.prompt_tokens_details?.cached_tokens ??
+    data?.usage?.prompt_cache_hit_tokens
   const usage = normalizeUsage({
     prompt: data?.usage?.prompt_tokens,
-    completion: data?.usage?.completion_tokens,
+    completion: providerCost?.outputTokens ?? data?.usage?.completion_tokens,
     total: data?.usage?.total_tokens,
-    cached:
-      data?.usage?.prompt_tokens_details?.cached_tokens ??
-      data?.usage?.prompt_cache_hit_tokens,
-    reasoning: data?.usage?.completion_tokens_details?.reasoning_tokens,
+    cached: chatCached,
+    reasoning:
+      providerCost?.reasoningTokens ?? data?.usage?.completion_tokens_details?.reasoning_tokens,
   })
+  if (usage && providerCost) {
+    usage.providerCost = providerCost
+  }
 
   return { text, usage }
 }

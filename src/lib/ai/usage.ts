@@ -51,6 +51,8 @@ export async function logAiUsage(
 
   const cost = calculateInferenceCost(args.provider, args.model, args.usage)
   const consumptionType: ConsumptionType = args.consumptionType ?? cost.consumptionType
+  const costSource =
+    consumptionType === 'unknown' ? 'unknown' : cost.costSource
 
   try {
     const { error } = await db.from('ai_usage_log').insert({
@@ -72,9 +74,16 @@ export async function logAiUsage(
       fallback_used: args.fallbackUsed ?? false,
       attempt_number: args.attemptNumber ?? 1,
       cost_usd: cost.costUsd,
+      input_cost_usd: cost.inputCostUsd,
+      cache_cost_usd: cost.cacheCostUsd,
+      output_cost_usd: cost.outputCostUsd,
+      billed_cost_usd: cost.billedCostUsd,
+      opencode_allowance_usd: cost.opencodeAllowanceUsd,
+      billing_source: cost.billingSource,
       cost_brl: cost.costBrl,
       usd_brl_rate: cost.usdBrlRate,
       consumption_type: consumptionType,
+      cost_source: costSource,
     })
     if (error) {
       console.error('[ai usage] log insert failed:', error)

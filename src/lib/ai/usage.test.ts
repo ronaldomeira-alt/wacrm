@@ -32,6 +32,49 @@ describe('logAiUsage', () => {
         total_tokens: 36,
         status: 'completed',
         consumption_type: 'confirmed',
+        cost_source: 'estimated',
+        input_cost_usd: expect.any(Number),
+        cache_cost_usd: 0,
+        output_cost_usd: expect.any(Number),
+        cost_usd: expect.any(Number),
+      }),
+    )
+  })
+
+  it('persists OpenCode Go provider-confirmed cost breakdown without overwriting null for unknown usage', async () => {
+    const { db, insert } = fakeDb()
+    await logAiUsage(db, {
+      accountId: 'acct-1',
+      conversationId: 'conv-1',
+      mode: 'auto_reply',
+      provider: 'opencode_go',
+      model: 'deepseek-v4.1-flash',
+      usage: {
+        promptTokens: 134,
+        completionTokens: 12,
+        totalTokens: 146,
+        cachedTokens: 100,
+        providerCost: {
+          listCostUsd: 0.0000126,
+          billedCostUsd: 0,
+          allowanceUsd: 0.00000756,
+          billingSource: 'go',
+          uncachedInputTokens: 34,
+          cacheReadTokens: 100,
+          outputTokens: 12,
+        },
+      },
+    })
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'opencode_go',
+        model: 'deepseek-v4.1-flash',
+        cost_usd: 0.0000126,
+        billed_cost_usd: 0,
+        opencode_allowance_usd: 0.00000756,
+        billing_source: 'go',
+        consumption_type: 'estimated',
+        cost_source: 'provider_confirmed',
       }),
     )
   })

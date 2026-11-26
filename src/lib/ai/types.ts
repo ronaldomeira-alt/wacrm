@@ -137,6 +137,27 @@ export interface ChatMessage {
   content: string
 }
 
+export interface AiProviderCostMeta {
+  /** Equivalent USD value at list/official model price (`usage.opencode.list_cost`),
+   *  or direct charge when not covered by subscription. */
+  listCostUsd?: number
+  /** Actual USD charged to balance (`usage.cost`, e.g. `0` when covered by Go). */
+  billedCostUsd?: number
+  /** Go subscription allowance USD consumed (`usage.opencode.allowance`). */
+  allowanceUsd?: number
+  /** Billing source reported by OpenCode (`go`, `go-plus`, `balance`, `free`, `byok`). */
+  billingSource?: string
+  /** True when the provider flagged its reported cost as an estimate. */
+  providerEstimated?: boolean
+  /** Exact token breakdown reported by `usage.opencode.tokens`. */
+  uncachedInputTokens?: number
+  cacheReadTokens?: number
+  cacheWrite5mTokens?: number
+  cacheWrite1hTokens?: number
+  outputTokens?: number
+  reasoningTokens?: number
+}
+
 /**
  * Token counts for one provider call, normalized across OpenAI
  * (`prompt`/`completion`) and Anthropic (`input`/`output`). Null when
@@ -148,6 +169,7 @@ export interface AiUsage {
   totalTokens: number
   cachedTokens?: number
   reasoningTokens?: number
+  providerCost?: AiProviderCostMeta
 }
 
 /** Raw text + usage a provider adapter returns before handoff parsing. */

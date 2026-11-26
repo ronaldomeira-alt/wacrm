@@ -216,15 +216,20 @@ describe('AI Resilience, Fallback & Quota Guard', () => {
     expect(isEligibleForFallback('timeout')).toBe(true)
     expect(isEligibleForFallback('context_length_exceeded')).toBe(false)
 
-    const cost = calculateInferenceCost('deepseek', 'deepseek-flash', {
-      promptTokens: 1000,
-      completionTokens: 500,
-      totalTokens: 1500,
-      cachedTokens: 400,
-    })
+    const cost = calculateInferenceCost(
+      'deepseek',
+      'deepseek-flash',
+      {
+        promptTokens: 1000,
+        completionTokens: 500,
+        totalTokens: 1500,
+        cachedTokens: 400,
+      },
+      { timestamp: new Date('2026-11-25T15:00:00.000Z') }, // off-peak UTC
+    )
     expect(cost.consumptionType).toBe('confirmed')
-    // 600 uncached * 0.14 + 400 cached * 0.014 + 500 output * 0.28 = 84 + 5.6 + 140 = 229.6 / 1M
-    expect(cost.costUsd).toBeCloseTo(0.00023, 5)
+    // 600 uncached * 0.15 + 400 cached * 0.003 + 500 output * 0.60 = 90 + 1.2 + 300 = 391.2 / 1M
+    expect(cost.costUsd).toBeCloseTo(0.0003912, 7)
 
     const unknownCost = calculateInferenceCost('deepseek', 'deepseek-flash', null)
     expect(unknownCost.consumptionType).toBe('unknown')
