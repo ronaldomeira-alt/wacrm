@@ -61,7 +61,7 @@ describe("audio-feature-flags", () => {
     expect(agentFlags).toEqual({
       audio_diagnostics_enabled: false,
       audio_outbox_v2_enabled: true,
-      audio_capture_v2_enabled: false,
+      audio_capture_v2_enabled: true,
       audio_native_capture_enabled: false,
     });
   });
@@ -71,6 +71,7 @@ describe("audio-feature-flags", () => {
     expect(isAuthorizedForAudioFlags(ownerCtx)).toBe(true);
     expect(resolveAudioFeatureFlags(ownerCtx).audio_diagnostics_enabled).toBe(true);
     expect(resolveAudioFeatureFlags(ownerCtx).audio_outbox_v2_enabled).toBe(true);
+    expect(resolveAudioFeatureFlags(ownerCtx).audio_capture_v2_enabled).toBe(true);
 
     const rolledBack = setLocalAudioFeatureFlag(ownerCtx, "audio_outbox_v2_enabled", false);
     expect(rolledBack.audio_outbox_v2_enabled).toBe(false);
@@ -87,6 +88,7 @@ describe("audio-feature-flags", () => {
     const flags = resolveAudioFeatureFlags(betaCtx);
     expect(flags.audio_diagnostics_enabled).toBe(true);
     expect(flags.audio_outbox_v2_enabled).toBe(true);
-    expect(flags.audio_capture_v2_enabled).toBe(false);
+    expect(flags.audio_capture_v2_enabled).toBe(true);
+    expect(flags.audio_native_capture_enabled).toBe(false);
   });
 });

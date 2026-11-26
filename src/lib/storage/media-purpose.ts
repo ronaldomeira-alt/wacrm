@@ -110,7 +110,7 @@ export function ruleForPurpose(purpose: MediaPurpose): PurposeRule {
  * facing MIME allowlist (used for `<input accept>` too) doesn't grow a
  * kind that has no picker.
  */
-const AUDIO_MIME_TYPES = ["audio/ogg"] as const;
+const AUDIO_MIME_TYPES = ["audio/ogg", "audio/mp4", "audio/webm"] as const;
 
 export function allowedMimeTypesForKind(kind: MediaKind): readonly string[] {
   if (kind === "audio") return AUDIO_MIME_TYPES;
@@ -141,11 +141,12 @@ export function validateSizeAndMime(
       error: `File too large for kind "${kind}": ${sizeBytes} bytes exceeds the ${maxBytes}-byte limit`,
     };
   }
+  const normalizedMime = contentType.split(";")[0].toLowerCase().trim();
   const allowedMimes = allowedMimeTypesForKind(kind);
   const isAllowed =
-    allowedMimes.includes(contentType) ||
+    allowedMimes.includes(normalizedMime) ||
     (kind === "document" &&
-      (contentType.startsWith("video/") || contentType === "application/octet-stream"));
+      (normalizedMime.startsWith("video/") || normalizedMime === "application/octet-stream"));
   if (!isAllowed) {
     return { error: `Unsupported content type "${contentType}" for kind "${kind}"` };
   }

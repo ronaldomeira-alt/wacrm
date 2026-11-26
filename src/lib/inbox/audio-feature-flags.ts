@@ -38,7 +38,7 @@ const FLAGS_CHANGED_EVENT = "wacrm:audio-flags-changed";
 const DEFAULT_FLAGS: AudioFeatureFlags = {
   audio_diagnostics_enabled: false,
   audio_outbox_v2_enabled: true,
-  audio_capture_v2_enabled: false,
+  audio_capture_v2_enabled: true,
   audio_native_capture_enabled: false,
 };
 
@@ -95,7 +95,7 @@ export function resolveAudioFeatureFlags(auth: AudioFlagAuthContext): AudioFeatu
     audio_outbox_v2_enabled:
       overrides.audio_outbox_v2_enabled ?? true,
     audio_capture_v2_enabled:
-      overrides.audio_capture_v2_enabled ?? beta.has("audio_capture_v2_enabled"),
+      overrides.audio_capture_v2_enabled ?? true,
     audio_native_capture_enabled:
       overrides.audio_native_capture_enabled ?? beta.has("audio_native_capture_enabled"),
   };

@@ -46,7 +46,7 @@ export function resolveClientFileMime(file: { name?: string; type?: string }): s
   if (ext === "m4a") return "audio/mp4";
   if (ext === "pdf") return "application/pdf";
 
-  const rawType = file.type?.toLowerCase().trim();
+  const rawType = file.type?.split(";")[0].toLowerCase().trim();
   if (rawType && rawType !== "application/octet-stream") {
     if (rawType === "image/x-heic" || rawType === "image/heic-sequence") return "image/heic";
     if (rawType === "image/heif-sequence") return "image/heif";
@@ -54,6 +54,7 @@ export function resolveClientFileMime(file: { name?: string; type?: string }): s
     return rawType;
   }
 
+  if (ext === "webm") return "audio/webm";
   return "application/octet-stream";
 }
 

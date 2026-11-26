@@ -29,6 +29,7 @@ export type AudioFailureCategory =
   | "recorder_timeout"
   | "recorder_error"
   | "empty_or_silent_capture"
+  | "silent_capture_interrupted"
   | "file_too_large"
   | "track_interrupted"
   | "idb_persist_failed"
