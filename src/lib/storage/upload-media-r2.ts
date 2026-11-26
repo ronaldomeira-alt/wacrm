@@ -42,9 +42,11 @@ export function resolveClientFileMime(file: { name?: string; type?: string }): s
   if (ext === "mp4" || ext === "m4v") return "video/mp4";
   if (ext === "3gp" || ext === "3gpp") return "video/3gpp";
   if (ext === "mov") return "video/quicktime";
+  if (ext === "ogg" || ext === "oga" || ext === "opus") return "audio/ogg";
+  if (ext === "m4a") return "audio/mp4";
   if (ext === "pdf") return "application/pdf";
 
-  const rawType = file.type?.toLowerCase().trim();
+  const rawType = file.type?.split(";")[0].toLowerCase().trim();
   if (rawType && rawType !== "application/octet-stream") {
     if (rawType === "image/x-heic" || rawType === "image/heic-sequence") return "image/heic";
     if (rawType === "image/heif-sequence") return "image/heif";
@@ -52,6 +54,7 @@ export function resolveClientFileMime(file: { name?: string; type?: string }): s
     return rawType;
   }
 
+  if (ext === "webm") return "audio/webm";
   return "application/octet-stream";
 }
 

@@ -37,8 +37,8 @@ const FLAGS_CHANGED_EVENT = "wacrm:audio-flags-changed";
 
 const DEFAULT_FLAGS: AudioFeatureFlags = {
   audio_diagnostics_enabled: false,
-  audio_outbox_v2_enabled: false,
-  audio_capture_v2_enabled: false,
+  audio_outbox_v2_enabled: true,
+  audio_capture_v2_enabled: true,
   audio_native_capture_enabled: false,
 };
 
@@ -74,9 +74,8 @@ function readLocalOverrides(): Partial<AudioFeatureFlags> {
 
 /**
  * Resolves the effective audio feature flags for the current session.
- * Server `beta_features` can enable a flag for an authorized user; an
- * authorized user (owner / diagnostics-enabled) can also toggle flags
- * locally for canary testing or instant rollback.
+ * Restricted flags (`audio_diagnostics_enabled`, local device overrides)
+ * may only be controlled by authorized users (`owner` / beta-enrolled).
  */
 export function resolveAudioFeatureFlags(auth: AudioFlagAuthContext): AudioFeatureFlags {
   if (!isAuthorizedForAudioFlags(auth)) {
@@ -87,16 +86,16 @@ export function resolveAudioFeatureFlags(auth: AudioFlagAuthContext): AudioFeatu
   const overrides = readLocalOverrides();
 
   // Owners have diagnostics panel access enabled by default so they can
-  // inspect baseline telemetry and toggle canary flags on their iPhone.
+  // inspect telemetry and toggle canary/rollback overrides on their iPhone.
   const diagnosticsDefault = auth.accountRole === "owner" || beta.has("audio_diagnostics_enabled");
 
   return {
     audio_diagnostics_enabled:
       overrides.audio_diagnostics_enabled ?? diagnosticsDefault,
     audio_outbox_v2_enabled:
-      overrides.audio_outbox_v2_enabled ?? beta.has("audio_outbox_v2_enabled"),
+      overrides.audio_outbox_v2_enabled ?? true,
     audio_capture_v2_enabled:
-      overrides.audio_capture_v2_enabled ?? beta.has("audio_capture_v2_enabled"),
+      overrides.audio_capture_v2_enabled ?? true,
     audio_native_capture_enabled:
       overrides.audio_native_capture_enabled ?? beta.has("audio_native_capture_enabled"),
   };

@@ -356,6 +356,8 @@ export interface SendMediaMessageArgs {
   caption?: string
   /** Document-only. Shown in the recipient's chat as the file name. Ignored for image/video/audio. */
   filename?: string
+  /** Audio-only. Marks OGG/Opus audio as a native push-to-talk voice note (`voice: true`). */
+  voice?: boolean
   contextMessageId?: string
 }
 
@@ -367,14 +369,13 @@ export interface SendMediaMessageArgs {
  * throws on non-2xx, returns Meta's message id.
  *
  * Audio is special-cased: Meta rejects `caption` and `filename` on audio
- * messages, so we send `{ link }` only. WhatsApp auto-renders an
- * OGG/Opus file as a playable voice note (waveform) rather than a file
- * attachment.
+ * messages. OGG/Opus voice notes set `{ link, voice: true }` so WhatsApp
+ * renders them with the native PTT waveform and playback controls.
  */
 export async function sendMediaMessage(
   args: SendMediaMessageArgs,
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, kind, link, caption, filename, voice, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
@@ -382,6 +383,9 @@ export async function sendMediaMessage(
   // either yields a 400. image/video/document accept a caption; only
   // document accepts a filename.
   const media: Record<string, unknown> = { link }
+  if (kind === 'audio' && (voice === true || (voice !== false && /\.(ogg|opus)(\?|$)/i.test(link)))) {
+    media.voice = true
+  }
   if (caption && kind !== 'audio') media.caption = caption
   if (kind === 'document' && filename) media.filename = filename
 

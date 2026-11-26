@@ -76,18 +76,76 @@ export function AudioMessagePlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const fallbackCtxRef = useRef<AudioContext | null>(null);
+  const fallbackSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const fallbackBufferRef = useRef<AudioBuffer | null>(null);
+  const fallbackStartedAtRef = useRef<number>(0);
+  const fallbackOffsetRef = useRef<number>(0);
+  const [usingWebAudioFallback, setUsingWebAudioFallback] = useState(false);
   const { speed, speedLabel, cycleSpeed } = useAudioPlaybackSpeed();
+  const speedRef = useRef(speed);
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
+  const [trackedSrc, setTrackedSrc] = useState(src);
+  if (trackedSrc !== src) {
+    setTrackedSrc(src);
+    setUsingWebAudioFallback(false);
+  }
   const bars = useWaveformBars(url);
   const generatedId = useId();
   const playerIdRef = useRef<string>(generatedId);
 
-  // Pause playback whenever all audio is requested to stop (e.g. mic recording started)
-  // or whenever another audio player begins playing.
+  const stopWebAudioFallback = (resetOffset = false) => {
+    const srcNode = fallbackSourceRef.current;
+    if (srcNode) {
+      fallbackSourceRef.current = null;
+      try {
+        srcNode.onended = null;
+        srcNode.stop();
+      } catch {}
+      try {
+        srcNode.disconnect();
+      } catch {}
+    }
+    if (resetOffset) {
+      fallbackOffsetRef.current = 0;
+      setCurrentTime(0);
+    }
+  };
+
+  // Reset Web Audio buffer cleanly whenever resolved `src` changes
   useEffect(() => {
+    const srcNode = fallbackSourceRef.current;
+    if (srcNode) {
+      fallbackSourceRef.current = null;
+      try {
+        srcNode.onended = null;
+        srcNode.stop();
+        srcNode.disconnect();
+      } catch {}
+    }
+    fallbackOffsetRef.current = 0;
+    fallbackBufferRef.current = null;
+  }, [src]);
+
+  // Pause playback whenever all audio is requested to stop (e.g. mic recording started)
+  // or whenever another audio player begins playing; tear down elements on unmount only.
+  useEffect(() => {
+    const audioEl = audioRef.current;
     const handlePauseAll = () => {
       const audio = audioRef.current;
       if (audio && !audio.paused) {
         audio.pause();
+      }
+      if (fallbackSourceRef.current) {
+        fallbackOffsetRef.current = Math.min(
+          fallbackBufferRef.current?.duration ?? 0,
+          fallbackOffsetRef.current +
+            (fallbackCtxRef.current ? fallbackCtxRef.current.currentTime - fallbackStartedAtRef.current : 0) *
+              speedRef.current,
+        );
+        stopWebAudioFallback(false);
       }
       setIsPlaying(false);
     };
@@ -95,11 +153,7 @@ export function AudioMessagePlayer({
     const handleOtherPlaying = (e: Event) => {
       const customEvent = e as CustomEvent<AudioPlayingDetail>;
       if (customEvent.detail && customEvent.detail.playerId !== playerIdRef.current) {
-        const audio = audioRef.current;
-        if (audio && !audio.paused) {
-          audio.pause();
-        }
-        setIsPlaying(false);
+        handlePauseAll();
       }
     };
 
@@ -109,11 +163,16 @@ export function AudioMessagePlayer({
     return () => {
       window.removeEventListener(PAUSE_ALL_AUDIO_EVENT, handlePauseAll);
       window.removeEventListener(AUDIO_PLAYING_EVENT, handleOtherPlaying);
-      if (audioRef.current) {
+      stopWebAudioFallback(true);
+      if (fallbackCtxRef.current) {
+        void fallbackCtxRef.current.close().catch(() => {});
+        fallbackCtxRef.current = null;
+      }
+      if (audioEl) {
         try {
-          audioRef.current.pause();
-          audioRef.current.removeAttribute("src");
-          audioRef.current.load();
+          audioEl.pause();
+          audioEl.removeAttribute("src");
+          audioEl.load();
         } catch {
           // Ignore unmount error
         }
@@ -125,6 +184,9 @@ export function AudioMessagePlayer({
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.playbackRate = speed;
+    }
+    if (fallbackSourceRef.current) {
+      fallbackSourceRef.current.playbackRate.value = speed;
     }
   }, [speed]);
 
@@ -144,15 +206,24 @@ export function AudioMessagePlayer({
       setIsPlaying(false);
       setCurrentTime(0);
     };
+    const onError = () => {
+      // iOS < 18.4 WebKit may refuse native <audio> playback of OGG/Opus;
+      // defer cleanly to Web Audio decodeAudioData on demand when Play is pressed.
+      if (src) {
+        setUsingWebAudioFallback(true);
+      }
+    };
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onLoaded);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
     return () => {
       audio.removeEventListener("timeupdate", onTime);
       audio.removeEventListener("loadedmetadata", onLoaded);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
     };
   }, [src, speed]);
 
@@ -165,15 +236,76 @@ export function AudioMessagePlayer({
     if (!isPlaying) return;
     let rafId: number;
     const tick = () => {
-      const audio = audioRef.current;
-      if (audio) setCurrentTime(audio.currentTime);
+      if (fallbackSourceRef.current && fallbackCtxRef.current) {
+        const elapsed =
+          fallbackOffsetRef.current +
+          (fallbackCtxRef.current.currentTime - fallbackStartedAtRef.current) * speed;
+        const total = fallbackBufferRef.current?.duration ?? duration;
+        setCurrentTime(total > 0 ? Math.min(total, elapsed) : elapsed);
+      } else {
+        const audio = audioRef.current;
+        if (audio) setCurrentTime(audio.currentTime);
+      }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [isPlaying]);
+  }, [isPlaying, speed, duration]);
+
+  const playWithWebAudioFallback = async () => {
+    if (!src || typeof AudioContext === "undefined") return;
+    try {
+      const ctx = fallbackCtxRef.current ?? new AudioContext();
+      fallbackCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      if (!fallbackBufferRef.current) {
+        const res = await fetch(src);
+        const arr = await res.arrayBuffer();
+        fallbackBufferRef.current = await ctx.decodeAudioData(arr);
+        setDuration(fallbackBufferRef.current.duration || 0);
+      }
+      const buf = fallbackBufferRef.current;
+      if (!buf) return;
+      stopWebAudioFallback(false);
+      const source = ctx.createBufferSource();
+      source.buffer = buf;
+      source.playbackRate.value = speed;
+      source.connect(ctx.destination);
+      const offset = fallbackOffsetRef.current >= buf.duration ? 0 : fallbackOffsetRef.current;
+      fallbackOffsetRef.current = offset;
+      fallbackStartedAtRef.current = ctx.currentTime;
+      source.onended = () => {
+        if (fallbackSourceRef.current === source) {
+          fallbackSourceRef.current = null;
+          fallbackOffsetRef.current = 0;
+          setIsPlaying(false);
+          setCurrentTime(0);
+        }
+      };
+      fallbackSourceRef.current = source;
+      notifyAudioPlaying(playerIdRef.current);
+      source.start(0, offset);
+      setIsPlaying(true);
+    } catch {
+      setIsPlaying(false);
+    }
+  };
 
   const togglePlay = () => {
+    if (usingWebAudioFallback) {
+      if (isPlaying) {
+        if (fallbackCtxRef.current) {
+          fallbackOffsetRef.current +=
+            (fallbackCtxRef.current.currentTime - fallbackStartedAtRef.current) * speed;
+        }
+        stopWebAudioFallback(false);
+        setIsPlaying(false);
+      } else {
+        void playWithWebAudioFallback();
+      }
+      return;
+    }
+
     const audio = audioRef.current;
     if (!audio) return;
     if (isPlaying) {
@@ -182,7 +314,10 @@ export function AudioMessagePlayer({
     } else {
       notifyAudioPlaying(playerIdRef.current);
       audio.playbackRate = speed;
-      void audio.play();
+      void audio.play().catch(() => {
+        setUsingWebAudioFallback(true);
+        void playWithWebAudioFallback();
+      });
       setIsPlaying(true);
     }
   };
