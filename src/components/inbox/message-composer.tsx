@@ -19,12 +19,15 @@ import {
   Mic,
   Trash2,
   Lock,
+  Play,
+  Pause,
   X,
   Loader2,
   AlertCircle,
 } from "lucide-react";
 import { GatedButton } from "@/components/ui/gated-button";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/use-auth";
 import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -51,6 +54,14 @@ import {
   type PendingAudioRecord,
 } from "@/lib/inbox/pending-audio-db";
 import { discardPendingAudio } from "@/lib/inbox/pending-audio-sync";
+import {
+  buildPlayableAudioBlob,
+  getOutboxEntry,
+  listOutboxJobsByConversation,
+  persistAudioToOutbox,
+} from "@/lib/inbox/audio-outbox-db";
+import { discardOutboxAudioJob } from "@/lib/inbox/audio-outbox-sync";
+import { useAudioFeatureFlags } from "@/lib/inbox/use-audio-feature-flags";
 import { audioLog, audioLogError } from "@/lib/inbox/pending-audio-log";
 import {
   startAudioDiagnosticSession,
@@ -541,6 +552,22 @@ export function MessageComposer({
   const sendOnStopRef = useRef(false);
   // Failure reason for the rehydrated/failed bar — display-only.
   const [failedError, setFailedError] = useState<string | undefined>(undefined);
+  const { accountId, user } = useAuth();
+  const audioFlags = useAudioFeatureFlags();
+  const [draftAudioUrl, setDraftAudioUrl] = useState<string | null>(null);
+  const draftAudioUrlRef = useRef<string | null>(null);
+  const draftPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [draftPlaying, setDraftPlaying] = useState(false);
+
+  const setManagedDraftAudioUrl = useCallback((nextUrl: string | null) => {
+    if (draftAudioUrlRef.current && draftAudioUrlRef.current !== nextUrl) {
+      URL.revokeObjectURL(draftAudioUrlRef.current);
+    }
+    draftAudioUrlRef.current = nextUrl;
+    setDraftAudioUrl(nextUrl);
+    if (!nextUrl) setDraftPlaying(false);
+  }, []);
+
   const micButtonRef = useRef<HTMLButtonElement>(null);
   const lockHintRef = useRef<HTMLDivElement>(null);
   const gestureRef = useRef<{ startY: number } | null>(null);
@@ -557,17 +584,49 @@ export function MessageComposer({
   // Media (like free-form text) is only allowed inside the 24h window.
   const inputsDisabled = readOnly || sessionExpired;
 
-  // Rehydrate on mount / conversation switch: if this conversation has a
-  // voice note left over from an interrupted previous attempt (upload or
-  // send that never resolved because the PWA was killed or backgrounded
-  // mid-request — the exact class of bug this whole pipeline exists for),
-  // surface it as "failed" so the agent can retry or discard it instead
-  // of it silently sitting invisible in IndexedDB forever. Only the most
-  // recent one is shown here (one mic bar); the app-wide sweep in
-  // inbox/page.tsx still processes every pending record regardless.
+  // Rehydrate on mount / conversation switch:
+  // - Outbox v2: ONLY restore unauthorized `saved_draft` recordings into the
+  //   composer's "paused" review bar. Authorized/failed sends belong exclusively
+  //   to MessageThread bubbles so the composer NEVER locks across conversations.
+  // - Legacy v1 fallback: preserve existing rehydration if Outbox v2 is toggled off.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      if (audioFlags.audio_outbox_v2_enabled && accountId && user?.id) {
+        try {
+          const jobs = await listOutboxJobsByConversation({
+            accountId,
+            userId: user.id,
+            conversationId,
+          });
+          if (cancelled) return;
+          const draftJob = jobs
+            .filter((j) => j.status === "saved_draft" && !j.sendAuthorized)
+            .sort((a, b) => b.createdAt - a.createdAt)[0];
+          if (!draftJob) {
+            pendingRecordIdRef.current = null;
+            setFailedError(undefined);
+            setManagedDraftAudioUrl(null);
+            setLocked(false);
+            setMicPhase((prev) => (prev === "recording" || prev === "sending" ? prev : "idle"));
+            return;
+          }
+          const entry = await getOutboxEntry(draftJob.id, { accountId, userId: user.id });
+          if (cancelled || !entry?.blob || entry.blob.data.byteLength === 0) return;
+          const playable = buildPlayableAudioBlob(entry.blob);
+          const url = URL.createObjectURL(playable);
+          pendingRecordIdRef.current = draftJob.id;
+          setRecordSeconds(Math.max(1, Math.round((entry.blob.durationMs || 1000) / 1000)));
+          setManagedDraftAudioUrl(url);
+          setFailedError(undefined);
+          setMicPhase("paused");
+          audioLog("recording:rehydrated-draft", { id: draftJob.id, status: draftJob.status });
+        } catch (err) {
+          audioLogError("recording:rehydrate-failed", err, { conversationId });
+        }
+        return;
+      }
+
       try {
         const records = await listPendingAudioByConversation(conversationId);
         if (cancelled || records.length === 0) return;
@@ -583,7 +642,13 @@ export function MessageComposer({
     return () => {
       cancelled = true;
     };
-  }, [conversationId]);
+  }, [
+    conversationId,
+    accountId,
+    user?.id,
+    audioFlags.audio_outbox_v2_enabled,
+    setManagedDraftAudioUrl,
+  ]);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -1164,18 +1229,6 @@ export function MessageComposer({
         (typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
           : `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      const record: PendingAudioRecord = {
-        id,
-        conversationId,
-        replyToId: replyTo?.id,
-        blob: file,
-        mimeType: file.type,
-        sizeBytes: file.size,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        status: "uploading",
-        attempts: 0,
-      };
 
       updateAudioDiagnosticSession(id, (prev) => ({
         ...prev,
@@ -1190,49 +1243,116 @@ export function MessageComposer({
       }));
 
       const persistStart = Date.now();
-      try {
-        // Persisted BEFORE anything else touches the network — even if
-        // the upload hangs, gets interrupted, or the PWA is killed a
-        // moment later, the recording itself is never lost.
-        await putPendingAudio(record);
-        audioLog("recording:saved-local", { id, traceId });
-        updateAudioDiagnosticSession(id, (prev) => ({
-          ...prev,
-          stage: "persisted_local",
-          persistenceResult: {
-            ok: true,
-            storage: "idb_v1",
-            latencyMs: Date.now() - persistStart,
-          },
-        }));
-      } catch (err) {
-        // IndexedDB itself failing (private browsing, quota, disabled) —
-        // rare, but don't let it strand the recording: fall through and
-        // hand it off anyway. The downstream pipeline will just fail to
-        // re-read it from IndexedDB on a retry if this ever happens; the
-        // *current* send attempt is unaffected either way.
-        audioLogError("recording:save-local-failed", err, { id });
-        updateAudioDiagnosticSession(
-          id,
-          (prev) => ({
+      const useOutboxV2 = Boolean(audioFlags.audio_outbox_v2_enabled && accountId && user?.id);
+
+      if (useOutboxV2 && accountId && user?.id) {
+        try {
+          const exactBuffer = bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength,
+          ) as ArrayBuffer;
+          const outboxRes = await persistAudioToOutbox({
+            id,
+            accountId,
+            userId: user.id,
+            conversationId,
+            replyToId: replyTo?.id,
+            arrayBuffer: exactBuffer,
+            mimeType: file.type || "audio/ogg",
+            codec: "opus",
+            durationMs: captureDurationMs,
+            sendAuthorized: Boolean(sendOnStopRef.current),
+          });
+          audioLog("recording:saved-local", {
+            id,
+            traceId,
+            persistedInIdb: outboxRes.persistedInIdb,
+          });
+          updateAudioDiagnosticSession(id, (prev) => ({
             ...prev,
-            stage: "persist_failed",
+            stage: "persisted_local",
             persistenceResult: {
-              ok: false,
-              storage: "none",
+              ok: true,
+              storage: outboxRes.persistedInIdb ? "idb_v2" : "ram_vault",
               latencyMs: Date.now() - persistStart,
-              error: err instanceof Error ? err.message : String(err),
+              error: outboxRes.error,
             },
-            failureCategory: "idb_persist_failed",
-            errorDetail: err instanceof Error ? err.message : String(err),
-          }),
-          { flush: true },
-        );
+          }));
+          if (!outboxRes.persistedInIdb) {
+            toast.warning(
+              "Armazenamento local indisponível — áudio mantido em memória até concluir o envio.",
+            );
+          }
+        } catch (err) {
+          audioLogError("recording:save-local-failed", err, { id });
+          updateAudioDiagnosticSession(
+            id,
+            (prev) => ({
+              ...prev,
+              stage: "persist_failed",
+              persistenceResult: {
+                ok: false,
+                storage: "none",
+                latencyMs: Date.now() - persistStart,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              failureCategory: "idb_persist_failed",
+              errorDetail: err instanceof Error ? err.message : String(err),
+            }),
+            { flush: true },
+          );
+        }
+      } else {
+        const record: PendingAudioRecord = {
+          id,
+          conversationId,
+          replyToId: replyTo?.id,
+          blob: file,
+          mimeType: file.type,
+          sizeBytes: file.size,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          status: "uploading",
+          attempts: 0,
+        };
+
+        try {
+          await putPendingAudio(record);
+          audioLog("recording:saved-local", { id, traceId });
+          updateAudioDiagnosticSession(id, (prev) => ({
+            ...prev,
+            stage: "persisted_local",
+            persistenceResult: {
+              ok: true,
+              storage: "idb_v1",
+              latencyMs: Date.now() - persistStart,
+            },
+          }));
+        } catch (err) {
+          audioLogError("recording:save-local-failed", err, { id });
+          updateAudioDiagnosticSession(
+            id,
+            (prev) => ({
+              ...prev,
+              stage: "persist_failed",
+              persistenceResult: {
+                ok: false,
+                storage: "none",
+                latencyMs: Date.now() - persistStart,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              failureCategory: "idb_persist_failed",
+              errorDetail: err instanceof Error ? err.message : String(err),
+            }),
+            { flush: true },
+          );
+        }
       }
 
       if (sendOnStopRef.current) {
         sendOnStopRef.current = false;
         pendingRecordIdRef.current = null;
+        setManagedDraftAudioUrl(null);
         setMicPhase("idle");
         setLocked(false);
         updateLiveRecorderResources({ micPhase: "idle" });
@@ -1244,8 +1364,14 @@ export function MessageComposer({
         return;
       }
 
-      // No decision yet — sit in "paused" with the trash/send bar; the
-      // handlers below act on `id` directly once tapped.
+      // No decision yet — sit in "paused" with the trash/preview/send bar;
+      // local preview lets the agent listen before authorizing send.
+      try {
+        const previewUrl = URL.createObjectURL(file);
+        setManagedDraftAudioUrl(previewUrl);
+      } catch {
+        setManagedDraftAudioUrl(null);
+      }
       pendingRecordIdRef.current = id;
       setMicPhase("paused");
       setLocked(false);
@@ -1259,7 +1385,17 @@ export function MessageComposer({
       finalizationInFlightRef.current = false;
       recordingTraceIdRef.current = null;
     },
-    [conversationId, onRecordAudio, replyTo?.id, onClearReply, t],
+    [
+      conversationId,
+      onRecordAudio,
+      replyTo?.id,
+      onClearReply,
+      t,
+      audioFlags.audio_outbox_v2_enabled,
+      accountId,
+      user?.id,
+      setManagedDraftAudioUrl,
+    ],
   );
 
   // Actual mic/encoder setup — deliberately kept separate from the
@@ -1826,6 +1962,10 @@ export function MessageComposer({
   );
 
   const handleDiscardRecording = useCallback(() => {
+    try {
+      draftPreviewAudioRef.current?.pause();
+    } catch {}
+    setManagedDraftAudioUrl(null);
     if (micPhase === "recording") {
       // Still actively capturing (held or locked) — full cancel, mirrors
       // the pre-existing cancel behaviour: mark cancelled so
@@ -1845,25 +1985,22 @@ export function MessageComposer({
       setLocked(false);
       setFailedError(undefined);
       if (id) {
-        // Deletes the IndexedDB record and, if it had already made it to
-        // Storage, GCs that object too. Fire-and-forget: nothing in the
-        // UI is waiting on this, and a failure here is a storage nit, not
-        // something the agent needs to see (mirrors deleteAccountMedia's
-        // existing best-effort GC calls elsewhere in this file).
-        void discardPendingAudio(id);
+        if (audioFlags.audio_outbox_v2_enabled) {
+          void discardOutboxAudioJob(id);
+        } else {
+          void discardPendingAudio(id);
+        }
       }
     }
-  }, [micPhase, clearTimer, stopRecorder]);
+  }, [micPhase, clearTimer, stopRecorder, audioFlags.audio_outbox_v2_enabled, setManagedDraftAudioUrl]);
 
   const handleSendRecording = useCallback(() => {
     if (finalizationInFlightRef.current) return;
     audioLog("recording:send-click", { traceId: recordingTraceIdRef.current });
+    try {
+      draftPreviewAudioRef.current?.pause();
+    } catch {}
     if (micPhase === "recording") {
-      // Only reachable while locked (send isn't shown unless the bar is
-      // up, and the bar only stays up hands-free once locked). Stop the
-      // recorder now; finalizeRecording sees sendOnStopRef and queues the
-      // send itself the moment the encoder finishes flushing — a local,
-      // sub-second wait, not a network one.
       clearTimer();
       sendOnStopRef.current = true;
       setMicPhase("sending");
@@ -1873,6 +2010,7 @@ export function MessageComposer({
     if (micPhase === "paused" || micPhase === "failed") {
       const id = pendingRecordIdRef.current;
       pendingRecordIdRef.current = null;
+      setManagedDraftAudioUrl(null);
       setMicPhase("idle");
       setLocked(false);
       setFailedError(undefined);
@@ -1881,7 +2019,15 @@ export function MessageComposer({
         onClearReply?.();
       }
     }
-  }, [micPhase, clearTimer, onRecordAudio, replyTo?.id, onClearReply, stopRecorder]);
+  }, [
+    micPhase,
+    clearTimer,
+    onRecordAudio,
+    replyTo?.id,
+    onClearReply,
+    stopRecorder,
+    setManagedDraftAudioUrl,
+  ]);
 
   // Auto-stop at the cap so a forgotten recording can't blow the upload
   // size limit — pauses exactly like an unlocked release (keeps what was
@@ -1898,13 +2044,16 @@ export function MessageComposer({
   // navigation doesn't leak the mic, and GC any staged-but-unsent
   // image/video/document draft so it doesn't orphan in the bucket. A
   // paused/failed voice note is deliberately NOT GC'd here — it's already
-  // durable in pending-audio-db.ts and is meant to survive a conversation
-  // switch or unmount, so the mount effect above can rehydrate it later.
+  // durable locally and survives conversation switch / unmount.
   useEffect(() => {
     return () => {
       clearTimer();
       clearLongPressTimer();
       cancelledRef.current = true;
+      if (draftAudioUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(draftAudioUrlRef.current);
+        draftAudioUrlRef.current = null;
+      }
       // stop() releases the mic stream + audio context inside opus-recorder.
       void stopRecorder();
       removeStaged(draftRef.current?.path);
@@ -2362,6 +2511,42 @@ export function MessageComposer({
                   // mounts (locked flips true) — this pop-in is what
                   // actually carries the "locked!" confirmation moment.
                   <Lock className="h-3.5 w-3.5 shrink-0 animate-in text-primary zoom-in-50 duration-200" />
+                )}
+                {micPhase === "paused" && draftAudioUrl && (
+                  <>
+                    <audio
+                      ref={draftPreviewAudioRef}
+                      src={draftAudioUrl}
+                      preload="metadata"
+                      onEnded={() => setDraftPlaying(false)}
+                      onPause={() => setDraftPlaying(false)}
+                      onPlay={() => setDraftPlaying(true)}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.preventDefault()}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        const el = draftPreviewAudioRef.current;
+                        if (!el) return;
+                        if (draftPlaying) {
+                          el.pause();
+                        } else {
+                          stopAllAudioPlayback();
+                          void el.play().catch(() => {});
+                        }
+                      }}
+                      aria-label={draftPlaying ? "Pausar rascunho" : "Ouvir rascunho"}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors hover:bg-primary/25"
+                    >
+                      {draftPlaying ? (
+                        <Pause className="h-3.5 w-3.5" />
+                      ) : (
+                        <Play className="ml-0.5 h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </>
                 )}
                 {micPhase === "sending" ? (
                   <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />

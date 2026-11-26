@@ -60,23 +60,23 @@ describe("audio-feature-flags", () => {
     const agentFlags = resolveAudioFeatureFlags({ accountRole: "agent", betaFeatures: [] });
     expect(agentFlags).toEqual({
       audio_diagnostics_enabled: false,
-      audio_outbox_v2_enabled: false,
+      audio_outbox_v2_enabled: true,
       audio_capture_v2_enabled: false,
       audio_native_capture_enabled: false,
     });
   });
 
-  it("allows owner to enable diagnostics by default and toggle canary flags locally", () => {
+  it("allows owner to enable diagnostics by default and toggle canary/rollback overrides locally", () => {
     const ownerCtx = { accountRole: "owner" as const, betaFeatures: [] };
     expect(isAuthorizedForAudioFlags(ownerCtx)).toBe(true);
     expect(resolveAudioFeatureFlags(ownerCtx).audio_diagnostics_enabled).toBe(true);
-    expect(resolveAudioFeatureFlags(ownerCtx).audio_outbox_v2_enabled).toBe(false);
-
-    const updated = setLocalAudioFeatureFlag(ownerCtx, "audio_outbox_v2_enabled", true);
-    expect(updated.audio_outbox_v2_enabled).toBe(true);
+    expect(resolveAudioFeatureFlags(ownerCtx).audio_outbox_v2_enabled).toBe(true);
 
     const rolledBack = setLocalAudioFeatureFlag(ownerCtx, "audio_outbox_v2_enabled", false);
     expect(rolledBack.audio_outbox_v2_enabled).toBe(false);
+
+    const reEnabled = setLocalAudioFeatureFlag(ownerCtx, "audio_outbox_v2_enabled", true);
+    expect(reEnabled.audio_outbox_v2_enabled).toBe(true);
   });
 
   it("allows beta-enrolled diagnostics user to use flags", () => {

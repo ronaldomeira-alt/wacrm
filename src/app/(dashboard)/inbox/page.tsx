@@ -11,6 +11,7 @@ import {
 import type { Conversation, Message, Contact, ConversationStatus, Profile } from "@/types";
 import { fetchAssignedAgentMap } from "@/lib/responder-color";
 import { useRealtime } from "@/hooks/use-realtime";
+import { useAuth } from "@/hooks/use-auth";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread, LOCAL_AUDIO_PREFIX } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
@@ -19,6 +20,12 @@ import { BlockLeadDialog } from "@/components/contacts/block-lead-dialog";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { scanAndRetryAllPendingAudio } from "@/lib/inbox/pending-audio-sync";
+import {
+  migrateLegacyPendingAudioToOutbox,
+  pruneConfirmedOutboxEntries,
+} from "@/lib/inbox/audio-outbox-db";
+import { scanAndRetryOutboxAudio } from "@/lib/inbox/audio-outbox-sync";
+import { useAudioFeatureFlags } from "@/lib/inbox/use-audio-feature-flags";
 import {
   getCachedMessages,
   setCachedMessages,
@@ -57,6 +64,8 @@ export default function InboxPage() {
 function InboxPageInner() {
   const t = useTranslations("Inbox.page");
   const searchParams = useSearchParams();
+  const { user, accountId } = useAuth();
+  const audioFlags = useAudioFeatureFlags();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
    * dashboard's recent-conversations list so the right thread opens
@@ -448,11 +457,14 @@ function InboxPageInner() {
             // still showing. Skip adding this placeholder rather than
             // showing a second, empty audio bubble; the UPDATE event once
             // the send actually completes reconciles the two (see below).
-            if (
-              newMsg.client_ref &&
-              prev.some((m) => m.id === `${LOCAL_AUDIO_PREFIX}${newMsg.client_ref}`)
-            ) {
-              return prev;
+            if (newMsg.client_ref) {
+              const localId = `${LOCAL_AUDIO_PREFIX}${newMsg.client_ref}`;
+              if (prev.some((m) => m.id === localId)) {
+                if (newMsg.status === "sending") {
+                  return prev;
+                }
+                return prev.map((m) => (m.id === localId ? newMsg : m));
+              }
             }
 
             // In-place reconciliation: matches specific temp item by client_ref,
@@ -1050,7 +1062,45 @@ function InboxPageInner() {
    * effect when that conversation happens to be the open one.
    */
   useEffect(() => {
+    const syncJobToThread = (
+      jobId: string,
+      status: string,
+      mediaUrl?: string,
+    ) => {
+      const tempId = `${LOCAL_AUDIO_PREFIX}${jobId}`;
+      if (mediaUrl) handleUpdateMessage(tempId, { media_url: mediaUrl });
+      if (status === "sent" || status === "delivered" || status === "read") {
+        handleUpdateMessage(tempId, { status: "sent" });
+      } else if (status === "retryable_failure" || status === "permanent_failure") {
+        handleUpdateMessage(tempId, { status: "failed" });
+      } else if (
+        status === "queued" ||
+        status === "uploading" ||
+        status === "uploaded" ||
+        status === "sending" ||
+        status === "awaiting_confirmation"
+      ) {
+        handleUpdateMessage(tempId, { status: "sending" });
+      }
+    };
+
     const sweep = () => {
+      if (audioFlags.audio_outbox_v2_enabled && accountId && user?.id) {
+        void migrateLegacyPendingAudioToOutbox({ accountId, userId: user.id })
+          .catch(() => {})
+          .then(() => pruneConfirmedOutboxEntries().catch(() => {}))
+          .then(() =>
+            scanAndRetryOutboxAudio(
+              { accountId, userId: user.id },
+              {
+                onJobUpdate: (job) => syncJobToThread(job.id, job.status, job.mediaUrl),
+                onMediaUrl: (job, url) => syncJobToThread(job.id, job.status, url),
+              },
+            ),
+          );
+        return;
+      }
+
       void scanAndRetryAllPendingAudio((record, status, mediaUrl) => {
         const tempId = `local-audio-${record.id}`;
         if (mediaUrl) handleUpdateMessage(tempId, { media_url: mediaUrl });
@@ -1061,15 +1111,17 @@ function InboxPageInner() {
     };
     sweep();
     window.addEventListener("online", sweep);
+    window.addEventListener("pageshow", sweep);
     const onVisible = () => {
       if (document.visibilityState === "visible") sweep();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.removeEventListener("online", sweep);
+      window.removeEventListener("pageshow", sweep);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [handleUpdateMessage]);
+  }, [handleUpdateMessage, audioFlags.audio_outbox_v2_enabled, accountId, user?.id]);
 
   // Local removal for a deleted message — covers both the optimistic
   // removal right after the agent confirms "Apagar mensagem" and the

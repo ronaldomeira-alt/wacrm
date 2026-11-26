@@ -90,6 +90,17 @@ import {
 import { createOptimisticAlbum } from '@/lib/inbox/optimistic-album';
 import { getPendingAudio } from '@/lib/inbox/pending-audio-db';
 import { runPendingAudio, discardPendingAudio } from '@/lib/inbox/pending-audio-sync';
+import {
+  buildPlayableAudioBlob,
+  getOutboxEntry,
+  listOutboxJobsByConversation,
+  subscribeOutboxUpdates,
+} from '@/lib/inbox/audio-outbox-db';
+import {
+  authorizeAndSendDraftJob,
+  discardOutboxAudioJob,
+} from '@/lib/inbox/audio-outbox-sync';
+import { useAudioFeatureFlags } from '@/lib/inbox/use-audio-feature-flags';
 import { markConversationUnread } from '@/lib/inbox/conversations';
 import { TemplatePicker, type TemplateSendValues } from './template-picker';
 import { AiThreadBanner } from './ai-thread-banner';
@@ -490,7 +501,32 @@ export function MessageThread({
   const tCtwaFep = useTranslations('Inbox.ctwaFep');
   const tQuote = useTranslations('Inbox.replyQuote');
 
-  const { user } = useAuth();
+  const { user, accountId } = useAuth();
+  const audioFlags = useAudioFeatureFlags();
+  const localAudioUrlsRef = useRef<Map<string, string>>(new Map());
+  const registerLocalAudioPreviewUrl = useCallback((recordId: string, url: string) => {
+    const existing = localAudioUrlsRef.current.get(recordId);
+    if (existing && existing !== url && existing.startsWith("blob:")) {
+      URL.revokeObjectURL(existing);
+    }
+    localAudioUrlsRef.current.set(recordId, url);
+  }, []);
+  const revokeLocalAudioPreviewUrl = useCallback((recordId: string) => {
+    const existing = localAudioUrlsRef.current.get(recordId);
+    if (existing && existing.startsWith("blob:")) {
+      URL.revokeObjectURL(existing);
+    }
+    localAudioUrlsRef.current.delete(recordId);
+  }, []);
+  useEffect(() => {
+    const map = localAudioUrlsRef.current;
+    return () => {
+      for (const u of map.values()) {
+        if (u.startsWith("blob:")) URL.revokeObjectURL(u);
+      }
+      map.clear();
+    };
+  }, []);
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   // The actual message-list content, one level inside scrollRef — its
@@ -1663,11 +1699,13 @@ export function MessageThread({
   // genuine teardown, not on every conversation change.
   useEffect(() => {
     const controllers = batchControllersRef.current;
+    const retryMap = batchRetryMapRef.current;
     return () => {
       for (const entry of controllers.values()) {
         entry.abort.abort();
       }
       controllers.clear();
+      retryMap.clear();
     };
   }, []);
 
@@ -2699,19 +2737,166 @@ export function MessageThread({
   // timeout-bounded and retried at every network step — see that
   // module's doc comment for why this can never hang the way the old
   // inline upload in message-composer.tsx could.
+  // Hydrate any authorized/in-flight/recoverable Outbox v2 voice notes for the
+  // active conversation (e.g. after PWA reopen or conversation switch), so they
+  // render as playable bubbles in the thread while leaving the composer free.
+  const messagesRefForOutbox = useRef<Message[]>(messages);
+  useEffect(() => {
+    messagesRefForOutbox.current = messages;
+  }, [messages]);
+  useEffect(() => {
+    if (!conversation?.id || !audioFlags.audio_outbox_v2_enabled || !accountId || !user?.id) {
+      return;
+    }
+    let cancelled = false;
+    const convId = conversation.id;
+    const hydrate = async () => {
+      try {
+        const jobs = await listOutboxJobsByConversation({
+          accountId,
+          userId: user.id,
+          conversationId: convId,
+        });
+        if (cancelled) return;
+        const activeJobs = jobs.filter(
+          (j) =>
+            j.sendAuthorized &&
+            j.status !== 'discarded' &&
+            j.status !== 'sent' &&
+            j.status !== 'delivered' &&
+            j.status !== 'read',
+        );
+        if (activeJobs.length === 0) return;
+
+        const currentMsgs = messagesRefForOutbox.current;
+        const toAdd: Message[] = [];
+        for (const job of activeJobs) {
+          const tempId = `${LOCAL_AUDIO_PREFIX}${job.id}`;
+          const mappedStatus: Message['status'] =
+            job.status === 'retryable_failure' || job.status === 'permanent_failure'
+              ? 'failed'
+              : 'sending';
+          const alreadyExists = currentMsgs.some(
+            (m) => m.id === tempId || (m.client_ref && m.client_ref === job.clientRef),
+          );
+          if (alreadyExists) {
+            onUpdateMessage(tempId, {
+              status: mappedStatus,
+              ...(job.mediaUrl ? { media_url: job.mediaUrl } : {}),
+            });
+            continue;
+          }
+          const entry = await getOutboxEntry(job.id, { accountId, userId: user.id });
+          if (cancelled || !entry) continue;
+          let mediaUrl = job.mediaUrl;
+          if (!mediaUrl && entry.blob && entry.blob.data.byteLength > 0) {
+            try {
+              const url = URL.createObjectURL(buildPlayableAudioBlob(entry.blob));
+              registerLocalAudioPreviewUrl(job.id, url);
+              mediaUrl = url;
+            } catch {}
+          }
+          toAdd.push({
+            id: tempId,
+            client_ref: job.clientRef,
+            conversation_id: convId,
+            sender_type: 'agent',
+            sender_id: user.id,
+            content_type: 'audio',
+            media_url: mediaUrl,
+            status: mappedStatus,
+            created_at: new Date(job.createdAt).toISOString(),
+            reply_to_message_id: job.replyToId,
+          });
+        }
+        if (toAdd.length > 0 && !cancelled) {
+          if (onNewMessages) {
+            onNewMessages(toAdd);
+          } else {
+            for (const m of toAdd) onNewMessage(m);
+          }
+        }
+      } catch {}
+    };
+    void hydrate();
+    const unsubscribe = subscribeOutboxUpdates(() => {
+      void hydrate();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [
+    conversation?.id,
+    accountId,
+    user?.id,
+    audioFlags.audio_outbox_v2_enabled,
+    onNewMessage,
+    onNewMessages,
+    onUpdateMessage,
+    registerLocalAudioPreviewUrl,
+  ]);
+
   const handleQueuedAudio = useCallback(
     async (recordId: string, replyToId?: string) => {
       if (!conversation) return;
+      const tempId = `${LOCAL_AUDIO_PREFIX}${recordId}`;
+
+      if (audioFlags.audio_outbox_v2_enabled && accountId && user?.id) {
+        const entry = await getOutboxEntry(recordId, { accountId, userId: user.id });
+        if (!entry) return;
+
+        let previewUrl = entry.job.mediaUrl || '';
+        if (!previewUrl && entry.blob && entry.blob.data.byteLength > 0) {
+          try {
+            previewUrl = URL.createObjectURL(buildPlayableAudioBlob(entry.blob));
+            registerLocalAudioPreviewUrl(recordId, previewUrl);
+          } catch {}
+        }
+
+        const optimisticMsg: Message = {
+          id: tempId,
+          client_ref: entry.job.clientRef,
+          conversation_id: conversation.id,
+          sender_type: 'agent',
+          sender_id: user.id,
+          content_type: 'audio',
+          media_url: previewUrl || undefined,
+          status: 'sending',
+          created_at: new Date(entry.job.createdAt).toISOString(),
+          reply_to_message_id: replyToId ?? entry.job.replyToId,
+        };
+        onNewMessage(optimisticMsg);
+        scrollToBottom(true);
+
+        const result = await authorizeAndSendDraftJob(recordId, {
+          onMediaUrl: (_job, url) => {
+            revokeLocalAudioPreviewUrl(recordId);
+            onUpdateMessage(tempId, { media_url: url });
+          },
+        });
+
+        if (result.ok) {
+          revokeLocalAudioPreviewUrl(recordId);
+          onUpdateMessage(tempId, { status: 'sent' });
+        } else if (result.job?.status === 'awaiting_confirmation') {
+          onUpdateMessage(tempId, { status: 'sending' });
+        } else {
+          onUpdateMessage(tempId, { status: 'failed' });
+          toast.error(`Falha ao enviar áudio: ${result.error}`);
+        }
+        return;
+      }
+
       const record = await getPendingAudio(recordId);
       if (!record) return;
 
-      const tempId = `${LOCAL_AUDIO_PREFIX}${recordId}`;
       let previewUrl = '';
       try {
         previewUrl = URL.createObjectURL(record.blob);
+        registerLocalAudioPreviewUrl(recordId, previewUrl);
       } catch {
-        // No local preview available — the bubble just shows nothing
-        // playable until the real mediaUrl lands; upload/send still proceed.
+        // No local preview available — upload/send still proceed.
       }
       const optimisticMsg: Message = {
         id: tempId,
@@ -2728,7 +2913,10 @@ export function MessageThread({
       scrollToBottom(true);
 
       const result = await runPendingAudio(recordId, {
-        onMediaUrl: (url) => onUpdateMessage(tempId, { media_url: url }),
+        onMediaUrl: (url) => {
+          revokeLocalAudioPreviewUrl(recordId);
+          onUpdateMessage(tempId, { media_url: url });
+        },
       });
       onUpdateMessage(tempId, { status: result.ok ? 'sent' : 'failed' });
       if (!result.ok) {
@@ -2736,20 +2924,60 @@ export function MessageThread({
         toast.error(`Failed to send: ${result.error}`);
       }
     },
-    [conversation, onNewMessage, onUpdateMessage, user?.id, scrollToBottom]
+    [
+      conversation,
+      accountId,
+      user?.id,
+      audioFlags.audio_outbox_v2_enabled,
+      onNewMessage,
+      onUpdateMessage,
+      scrollToBottom,
+      registerLocalAudioPreviewUrl,
+      revokeLocalAudioPreviewUrl,
+    ]
   );
 
   // Retries a voice note bubble already showing `status: 'failed'` — the
-  // recording is still sitting in pending-audio-db.ts (never deleted
-  // until the server actually confirms receipt), so this just re-runs
-  // the same upload/send pipeline against it, no re-recording needed.
+  // recording is preserved locally in `wacrm-audio-outbox` (for both
+  // `local-audio-<id>` bubbles AND persisted DB rows whose `client_ref`
+  // matches an outbox entry).
   const handleRetryAudio = useCallback(
     async (message: Message) => {
+      const recordId = message.id.startsWith(LOCAL_AUDIO_PREFIX)
+        ? message.id.slice(LOCAL_AUDIO_PREFIX.length)
+        : message.client_ref;
+      if (!recordId) return;
+
+      if (audioFlags.audio_outbox_v2_enabled && accountId && user?.id) {
+        const entry = await getOutboxEntry(recordId, { accountId, userId: user.id });
+        if (entry) {
+          onUpdateMessage(message.id, { status: 'sending' });
+          const result = await authorizeAndSendDraftJob(recordId, {
+            onMediaUrl: (_job, url) => {
+              revokeLocalAudioPreviewUrl(recordId);
+              onUpdateMessage(message.id, { media_url: url });
+            },
+          });
+          if (result.ok) {
+            revokeLocalAudioPreviewUrl(recordId);
+            onUpdateMessage(message.id, { status: 'sent' });
+          } else if (result.job?.status === 'awaiting_confirmation') {
+            onUpdateMessage(message.id, { status: 'sending' });
+          } else {
+            onUpdateMessage(message.id, { status: 'failed' });
+            toast.error(`Falha ao reenviar áudio: ${result.error}`);
+          }
+          return;
+        }
+      }
+
       if (!message.id.startsWith(LOCAL_AUDIO_PREFIX)) return;
-      const recordId = message.id.slice(LOCAL_AUDIO_PREFIX.length);
       onUpdateMessage(message.id, { status: 'sending' });
       const result = await runPendingAudio(recordId, {
-        onMediaUrl: (url) => onUpdateMessage(message.id, { media_url: url }),
+        onMediaUrl: (url) => {
+          revokeLocalAudioPreviewUrl(recordId);
+          onUpdateMessage(message.id, { media_url: url });
+        },
       });
       onUpdateMessage(message.id, { status: result.ok ? 'sent' : 'failed' });
       if (!result.ok) {
@@ -2757,24 +2985,26 @@ export function MessageThread({
         toast.error(`Failed to send: ${result.error}`);
       }
     },
-    [onUpdateMessage]
+    [
+      audioFlags.audio_outbox_v2_enabled,
+      accountId,
+      user?.id,
+      onUpdateMessage,
+      revokeLocalAudioPreviewUrl,
+    ]
   );
 
-  // WhatsApp-style delete: only ever called on agent-sent messages (the
-  // Trash icon in MessageActions is gated on that already). Waits for
-  // the DB delete before touching local state — simpler and safer than
-  // optimistic-removal-with-rollback, and still feels instant since
-  // this is a single-row delete. Throws on failure so the confirm
-  // dialog's catch block can surface the toast.
+  // WhatsApp-style delete: only ever called on agent-sent messages.
   const handleDeleteMessage = useCallback(
     async (msg: Message) => {
-      // A failed voice note never made it into the `messages` table — it
-      // only exists as this optimistic bubble backed by a
-      // pending-audio-db.ts record — so there's no DB row to delete here,
-      // just the local record (and its Storage object, if the upload had
-      // already succeeded before the send itself failed).
       if (msg.id.startsWith(LOCAL_AUDIO_PREFIX)) {
-        await discardPendingAudio(msg.id.slice(LOCAL_AUDIO_PREFIX.length));
+        const recordId = msg.id.slice(LOCAL_AUDIO_PREFIX.length);
+        revokeLocalAudioPreviewUrl(recordId);
+        if (audioFlags.audio_outbox_v2_enabled) {
+          await discardOutboxAudioJob(recordId);
+        } else {
+          await discardPendingAudio(recordId);
+        }
         onDeleteMessage(msg.id);
         return;
       }
@@ -2804,7 +3034,7 @@ export function MessageThread({
         void deleteR2Media(msg.media_url).catch(() => {});
       }
     },
-    [onDeleteMessage]
+    [onDeleteMessage, audioFlags.audio_outbox_v2_enabled, revokeLocalAudioPreviewUrl]
   );
 
   // Powers the "Transcrever" message action (message-actions.tsx). Most
