@@ -270,10 +270,12 @@ export async function runPendingAudio(
 }
 
 /** Discards a pending/failed voice note — deletes the IndexedDB record
- *  and GCs the storage object if the upload had already succeeded. */
+ *  and GCs the storage object only when it is safe to do so (never when
+ *  a send is already in flight/ambiguous, and server-side `/api/media/delete`
+ *  also blocks deletion if any message already references the key). */
 export async function discardPendingAudio(id: string): Promise<void> {
   const record = await getPendingAudio(id);
-  if (record?.path) {
+  if (record?.path && record.status !== "sending") {
     const remove = record.storageProvider === "r2"
       ? deleteR2Media(record.path)
       : deleteAccountMedia(CHAT_MEDIA_BUCKET, record.path);
@@ -282,7 +284,7 @@ export async function discardPendingAudio(id: string): Promise<void> {
     );
   }
   await deletePendingAudio(id);
-  audioLog("discard", { id });
+  audioLog("discard", { id, skippedRemoteGc: record?.status === "sending" });
 }
 
 /**
