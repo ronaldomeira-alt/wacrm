@@ -199,6 +199,8 @@ export const RATE_LIMITS = {
    *  Meta fetching a header image, while bounding scraping/enumeration
    *  attempts against the key space. */
   mediaPublicRedirect: { limit: 60, windowMs: 60_000 },
+  /** Structured audio diagnostic telemetry + forensic log endpoints, per user. */
+  audioTelemetry: { limit: 60, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't

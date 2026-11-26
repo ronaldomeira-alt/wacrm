@@ -1,6 +1,22 @@
 import createNextIntlPlugin from "next-intl/plugin";
+import { execSync } from "node:child_process";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+
+function resolveBuildCommit() {
+  const fromEnv =
+    process.env.NEXT_PUBLIC_BUILD_COMMIT ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.GITHUB_SHA;
+  if (fromEnv) return fromEnv.slice(0, 7);
+  try {
+    return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Baseline security headers applied to every response.
@@ -67,6 +83,10 @@ const SECURITY_HEADERS = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    NEXT_PUBLIC_APP_VERSION: "0.8.1",
+    NEXT_PUBLIC_BUILD_COMMIT: resolveBuildCommit(),
+  },
   // Emit a self-contained server bundle (.next/standalone) so the
   // Docker image can run without node_modules or the Next CLI.
   // Harmless outside Docker: `next start` keeps working as before.

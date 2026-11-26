@@ -47,13 +47,27 @@ interface HeaderProps {
   onOpenSidebar?: () => void;
 }
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { Activity } from "lucide-react";
+import { AudioDiagnosticsDrawer } from "@/components/inbox/audio-diagnostics-drawer";
+import { isAuthorizedForAudioFlags } from "@/lib/inbox/audio-feature-flags";
+import { setAudioTelemetryEnabled } from "@/lib/inbox/audio-telemetry";
 
 export function Header({ onOpenSidebar }: HeaderProps) {
   const t = useTranslations("Header");
   const pathname = usePathname();
-  const { profile, signOut } = useAuth();
+  const { profile, profileLoading, accountRole, signOut } = useAuth();
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const canAccessDiagnostics = isAuthorizedForAudioFlags({
+    accountRole,
+    betaFeatures: profile?.beta_features,
+    profileLoading,
+  });
+
+  useEffect(() => {
+    setAudioTelemetryEnabled(canAccessDiagnostics);
+  }, [canAccessDiagnostics]);
   const titleKey = getPageTitleKey(pathname);
   const statusBarShieldRef = useRef<HTMLDivElement>(null);
   const blurCoverRef = useRef<HTMLDivElement>(null);
@@ -227,6 +241,15 @@ export function Header({ onOpenSidebar }: HeaderProps) {
             <SettingsIcon className="size-4" />
             {t("menuSettings")}
           </DropdownMenuItem>
+          {canAccessDiagnostics && (
+            <DropdownMenuItem
+              onClick={() => setDiagnosticsOpen(true)}
+              className="text-popover-foreground focus:bg-accent focus:text-accent-foreground"
+            >
+              <Activity className="size-4" />
+              Diagnóstico de Áudio
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator className="bg-border" />
           <DropdownMenuItem
             onClick={signOut}
@@ -239,6 +262,7 @@ export function Header({ onOpenSidebar }: HeaderProps) {
         </DropdownMenu>
         </div>
       </div>
+      <AudioDiagnosticsDrawer open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} />
     </header>
   );
 }
