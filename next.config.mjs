@@ -1,6 +1,22 @@
 import createNextIntlPlugin from "next-intl/plugin";
+import { execSync } from "node:child_process";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+
+function resolveBuildCommit() {
+  const fromEnv =
+    process.env.NEXT_PUBLIC_BUILD_COMMIT ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.GITHUB_SHA;
+  if (fromEnv) return fromEnv.slice(0, 7);
+  try {
+    return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Baseline security headers applied to every response.
@@ -67,6 +83,10 @@ const SECURITY_HEADERS = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    NEXT_PUBLIC_APP_VERSION: "0.8.1",
+    NEXT_PUBLIC_BUILD_COMMIT: resolveBuildCommit(),
+  },
   // Emit a self-contained server bundle (.next/standalone) so the
   // Docker image can run without node_modules or the Next CLI.
   // Harmless outside Docker: `next start` keeps working as before.
@@ -269,7 +289,25 @@ const nextConfig = {
         ],
       },
       {
-        source: "/:path((?!_next/static|_next/image|api).*)",
+        source: "/opus/encoderWorker.8.0.5-c3a64a87b286.min.js",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
+        source: "/opus/encoderWorker.min.js",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=3600, must-revalidate",
+          },
+        ],
+      },
+      {
+        source: "/:path((?!_next/static|_next/image|api|opus/encoderWorker).*)",
         headers: [
           {
             key: "Cache-Control",

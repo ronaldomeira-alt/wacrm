@@ -52,6 +52,12 @@ import {
 } from "@/lib/inbox/pending-audio-db";
 import { discardPendingAudio } from "@/lib/inbox/pending-audio-sync";
 import { audioLog, audioLogError } from "@/lib/inbox/pending-audio-log";
+import {
+  startAudioDiagnosticSession,
+  updateAudioDiagnosticSession,
+  updateLiveRecorderResources,
+  type AudioFailureCategory,
+} from "@/lib/inbox/audio-telemetry";
 import { pollNormalizationStatus } from "@/lib/media/batch-upload-pool";
 import {
   registerLocalMediaBlob,
@@ -253,7 +259,7 @@ function findSlashToken(
 /** Worker that encodes mic input to Ogg/Opus entirely in the browser
  *  (vendored from opus-recorder into /public). Recording client-side in a
  *  Meta-accepted format means no server ffmpeg / transcode step. */
-const OPUS_ENCODER_PATH = "/opus/encoderWorker.min.js";
+const OPUS_ENCODER_PATH = "/opus/encoderWorker.8.0.5-c3a64a87b286.min.js";
 
 // Vertical drag distance (px) that arms "locked" (hands-free) recording —
 // same idea as WhatsApp's own slide-up-to-lock gesture. Slightly more
@@ -520,6 +526,7 @@ export function MessageComposer({
   // "recording" with nothing left to ever stop it.
   const captureReadyRef = useRef<Promise<void> | null>(null);
   const recordingTraceIdRef = useRef<string | null>(null);
+  const captureStartedAtRef = useRef<number | null>(null);
   const finalizationInFlightRef = useRef(false);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1076,6 +1083,17 @@ export function MessageComposer({
       }
       finalizationInFlightRef.current = true;
       audioLog("recording:dataavailable", { traceId, sizeBytes: bytes.byteLength });
+      const hasOggMagic =
+        bytes.byteLength >= 4 &&
+        bytes[0] === 0x4f &&
+        bytes[1] === 0x67 &&
+        bytes[2] === 0x67 &&
+        bytes[3] === 0x53;
+      const captureDurationMs = captureStartedAtRef.current
+        ? Math.max(0, Date.now() - captureStartedAtRef.current)
+        : 0;
+      captureStartedAtRef.current = null;
+
       // Uint8Array is a valid BlobPart at runtime; the cast sidesteps the
       // lib.dom ArrayBufferLike-vs-ArrayBuffer generic mismatch.
       const file = new File([bytes as unknown as BlobPart], `voice-${Date.now()}.ogg`, {
@@ -1085,6 +1103,26 @@ export function MessageComposer({
       audioLog("recording:stopped", { traceId, sizeBytes: file.size });
       if (file.size < 200) {
         // Cancelled / empty take (< 200 bytes has no audio frames) — clean reset without phantom bubble
+        if (traceId) {
+          updateAudioDiagnosticSession(
+            traceId,
+            (prev) => ({
+              ...prev,
+              stage: "validation_failed_empty",
+              recorderState: "failed",
+              captureDurationMs,
+              fragmentCount: 1,
+              fileSizeBytes: file.size,
+              format: file.type || "audio/ogg",
+              codec: "opus",
+              validationResult: { ok: false, reason: "empty-file", hasOggMagic },
+              failureCategory: "empty_or_silent_capture",
+              errorDetail: `Empty/header-only file (${file.size} bytes)`,
+            }),
+            { flush: true },
+          );
+          updateLiveRecorderResources({ micPhase: "idle" });
+        }
         sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
@@ -1094,6 +1132,23 @@ export function MessageComposer({
         return;
       }
       if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
+        if (traceId) {
+          updateAudioDiagnosticSession(
+            traceId,
+            (prev) => ({
+              ...prev,
+              stage: "validation_failed_too_large",
+              recorderState: "failed",
+              captureDurationMs,
+              fragmentCount: 1,
+              fileSizeBytes: file.size,
+              validationResult: { ok: false, reason: "file-too-large", hasOggMagic },
+              failureCategory: "file_too_large",
+            }),
+            { flush: true },
+          );
+          updateLiveRecorderResources({ micPhase: "idle" });
+        }
         toast.error(t("recordingTooLong"));
         sendOnStopRef.current = false;
         setMicPhase("idle");
@@ -1105,9 +1160,10 @@ export function MessageComposer({
       }
 
       const id =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
+        traceId ||
+        (typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
-          : `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          : `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       const record: PendingAudioRecord = {
         id,
         conversationId,
@@ -1121,12 +1177,34 @@ export function MessageComposer({
         attempts: 0,
       };
 
+      updateAudioDiagnosticSession(id, (prev) => ({
+        ...prev,
+        stage: "validated_persisting",
+        recorderState: "finalizing",
+        captureDurationMs,
+        fragmentCount: 1,
+        fileSizeBytes: file.size,
+        format: file.type || "audio/ogg",
+        codec: "opus",
+        validationResult: { ok: true, hasOggMagic },
+      }));
+
+      const persistStart = Date.now();
       try {
         // Persisted BEFORE anything else touches the network — even if
         // the upload hangs, gets interrupted, or the PWA is killed a
         // moment later, the recording itself is never lost.
         await putPendingAudio(record);
         audioLog("recording:saved-local", { id, traceId });
+        updateAudioDiagnosticSession(id, (prev) => ({
+          ...prev,
+          stage: "persisted_local",
+          persistenceResult: {
+            ok: true,
+            storage: "idb_v1",
+            latencyMs: Date.now() - persistStart,
+          },
+        }));
       } catch (err) {
         // IndexedDB itself failing (private browsing, quota, disabled) —
         // rare, but don't let it strand the recording: fall through and
@@ -1134,6 +1212,22 @@ export function MessageComposer({
         // re-read it from IndexedDB on a retry if this ever happens; the
         // *current* send attempt is unaffected either way.
         audioLogError("recording:save-local-failed", err, { id });
+        updateAudioDiagnosticSession(
+          id,
+          (prev) => ({
+            ...prev,
+            stage: "persist_failed",
+            persistenceResult: {
+              ok: false,
+              storage: "none",
+              latencyMs: Date.now() - persistStart,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            failureCategory: "idb_persist_failed",
+            errorDetail: err instanceof Error ? err.message : String(err),
+          }),
+          { flush: true },
+        );
       }
 
       if (sendOnStopRef.current) {
@@ -1141,6 +1235,7 @@ export function MessageComposer({
         pendingRecordIdRef.current = null;
         setMicPhase("idle");
         setLocked(false);
+        updateLiveRecorderResources({ micPhase: "idle" });
         onRecordAudio(id, replyTo?.id);
         onClearReply?.();
         audioLog("recording:finalized", { id, traceId, mode: "send-on-stop" });
@@ -1154,6 +1249,12 @@ export function MessageComposer({
       pendingRecordIdRef.current = id;
       setMicPhase("paused");
       setLocked(false);
+      updateAudioDiagnosticSession(id, (prev) => ({
+        ...prev,
+        stage: "paused_in_composer",
+        recorderState: "paused",
+      }));
+      updateLiveRecorderResources({ micPhase: "paused" });
       audioLog("recording:finalized", { id, traceId, mode: "paused" });
       finalizationInFlightRef.current = false;
       recordingTraceIdRef.current = null;
@@ -1167,13 +1268,43 @@ export function MessageComposer({
   // of waiting on getUserMedia + the encoder worker load. On failure
   // this rolls the optimistic UI back.
   const beginCapture = useCallback(async () => {
+    const traceId = recordingTraceIdRef.current;
     if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === "undefined") {
+      if (traceId) {
+        updateAudioDiagnosticSession(
+          traceId,
+          (prev) => ({
+            ...prev,
+            stage: "capture_unsupported",
+            recorderState: "failed",
+            failureCategory: "encoder_init_failed",
+            errorDetail: "getUserMedia or AudioContext unavailable",
+          }),
+          { flush: true },
+        );
+      }
       toast.error(t("recordingNotSupported"));
       clearTimer();
       setMicPhase("idle");
       setLocked(false);
+      updateLiveRecorderResources({ micPhase: "idle" });
       return;
     }
+
+    // Best-effort permission state probe (never blocks capture)
+    if (traceId && navigator.permissions?.query) {
+      void navigator.permissions
+        .query({ name: "microphone" as PermissionName })
+        .then((perm) => {
+          updateAudioDiagnosticSession(traceId, (prev) => ({
+            ...prev,
+            micPermission: { ...prev.micPermission, preState: perm.state },
+          }));
+        })
+        .catch(() => {});
+    }
+
+    const initStartedAt = Date.now();
     try {
       // Use pre-warmed constructor if available to execute synchronously within user gesture
       const Recorder = recorderModuleRef.current || (await import("opus-recorder")).default;
@@ -1200,16 +1331,160 @@ export function MessageComposer({
           traceId: recordingTraceIdRef.current,
           reason: "recorder-error",
         });
+        if (traceId) {
+          updateAudioDiagnosticSession(
+            traceId,
+            (prev) => ({
+              ...prev,
+              stage: "recorder_error",
+              recorderState: "failed",
+              failureCategory: "recorder_error",
+              errorDetail: error instanceof Error ? error.message : String(error),
+            }),
+            { flush: true },
+          );
+        }
         cancelledRef.current = true;
         finalizationInFlightRef.current = false;
         clearTimer();
         setMicPhase("failed");
         setLocked(false);
+        updateLiveRecorderResources({ micPhase: "failed" });
       };
       recorderRef.current = recorder;
+      if (traceId) {
+        updateAudioDiagnosticSession(traceId, (prev) => ({
+          ...prev,
+          stage: "recorder_starting",
+          micPermission: { ...prev.micPermission, requestedAt: Date.now() },
+        }));
+      }
       await recorder.start();
+
+      // Observe internal WebKit audio state non-intrusively
+      const internal = recorder as unknown as {
+        audioContext?: AudioContext;
+        stream?: MediaStream;
+      };
+      const ctx = internal.audioContext;
+      const stream = internal.stream;
+      const tracks = stream?.getTracks?.() ?? [];
+      if (traceId) {
+        updateAudioDiagnosticSession(traceId, (prev) => ({
+          ...prev,
+          stage: "recording_active",
+          recorderState: "recording",
+          micPermission: {
+            ...prev.micPermission,
+            resolvedAt: Date.now(),
+            outcome: "granted",
+          },
+          encoderInit: {
+            ...prev.encoderInit,
+            readyAt: Date.now(),
+            latencyMs: Date.now() - initStartedAt,
+          },
+          audioContextState: {
+            ...prev.audioContextState,
+            beforeStart: ctx?.state,
+            sampleRate: ctx?.sampleRate,
+          },
+          trackStates: {
+            count: tracks.length,
+            readyStates: tracks.map((tr) => tr.readyState),
+            mutedStates: tracks.map((tr) => Boolean(tr.muted)),
+            endedEvents: prev.trackStates.endedEvents,
+          },
+        }));
+        updateLiveRecorderResources({
+          micPhase: "recording",
+          activeRecorders: 1,
+          activeTracks: tracks.length,
+          audioContextState: ctx?.state ?? null,
+        });
+
+        if (ctx && typeof ctx.addEventListener === "function") {
+          ctx.addEventListener("statechange", () => {
+            updateAudioDiagnosticSession(traceId, (prev) => ({
+              ...prev,
+              audioContextState: {
+                ...prev.audioContextState,
+                afterGetUserMedia: ctx.state,
+                interruptionCount:
+                  ctx.state !== "running"
+                    ? prev.audioContextState.interruptionCount + 1
+                    : prev.audioContextState.interruptionCount,
+              },
+              interruptionEvents: [
+                ...prev.interruptionEvents,
+                { type: "audiocontext_statechange", at: Date.now(), detail: ctx.state },
+              ],
+            }));
+            updateLiveRecorderResources({ audioContextState: ctx.state });
+          });
+        }
+        for (const tr of tracks) {
+          tr.addEventListener("ended", () => {
+            updateAudioDiagnosticSession(traceId, (prev) => ({
+              ...prev,
+              trackStates: {
+                ...prev.trackStates,
+                endedEvents: prev.trackStates.endedEvents + 1,
+                readyStates: tracks.map((x) => x.readyState),
+              },
+              interruptionEvents: [
+                ...prev.interruptionEvents,
+                { type: "track_ended", at: Date.now(), detail: tr.readyState },
+              ],
+            }));
+          });
+          tr.addEventListener("mute", () => {
+            updateAudioDiagnosticSession(traceId, (prev) => ({
+              ...prev,
+              interruptionEvents: [
+                ...prev.interruptionEvents,
+                { type: "track_mute", at: Date.now() },
+              ],
+            }));
+          });
+        }
+      }
     } catch (err) {
       audioLogError("recording:error", err, { reason: "start-failed" });
+      if (traceId) {
+        const errName = err instanceof Error ? err.name : "Error";
+        const errMsg = err instanceof Error ? err.message : String(err);
+        let category: AudioFailureCategory = "unknown";
+        if (errName === "NotAllowedError" || errName === "PermissionDeniedError") {
+          category = "permission_denied";
+        } else if (errName === "TypeError" || errMsg.toLowerCase().includes("audiocontext")) {
+          category = "gesture_or_context_blocked";
+        } else if (errMsg.toLowerCase().includes("worker") || errMsg.toLowerCase().includes("wasm")) {
+          category = "encoder_init_failed";
+        }
+        updateAudioDiagnosticSession(
+          traceId,
+          (prev) => ({
+            ...prev,
+            stage: "start_failed",
+            recorderState: "failed",
+            micPermission: {
+              ...prev.micPermission,
+              resolvedAt: Date.now(),
+              outcome: category === "permission_denied" ? "denied" : "error",
+              errorName: errName,
+            },
+            encoderInit: {
+              ...prev.encoderInit,
+              latencyMs: Date.now() - initStartedAt,
+              error: errMsg,
+            },
+            failureCategory: category,
+            errorDetail: `${errName}: ${errMsg}`,
+          }),
+          { flush: true },
+        );
+      }
       const recorder = recorderRef.current;
       recorderRef.current = null;
       if (recorder) {
@@ -1226,6 +1501,12 @@ export function MessageComposer({
       finalizationInFlightRef.current = false;
       setMicPhase("idle");
       setLocked(false);
+      updateLiveRecorderResources({
+        micPhase: "idle",
+        activeRecorders: 0,
+        activeTracks: 0,
+        audioContextState: null,
+      });
       toast.error(t("recordingPermissionDenied"));
     }
   }, [clearTimer, finalizeRecording, t]);
@@ -1260,6 +1541,19 @@ export function MessageComposer({
         error,
         { traceId, reason: "capture-ready" },
       );
+      if (traceId) {
+        updateAudioDiagnosticSession(
+          traceId,
+          (prev) => ({
+            ...prev,
+            stage: "capture_ready_timeout",
+            recorderState: "failed",
+            failureCategory: error instanceof TimeoutError ? "recorder_timeout" : "unknown",
+            errorDetail: error instanceof Error ? error.message : String(error),
+          }),
+          { flush: true },
+        );
+      }
       const recorder = recorderRef.current;
       recorderRef.current = null;
       try {
@@ -1271,6 +1565,12 @@ export function MessageComposer({
       setMicPhase("failed");
       setLocked(false);
       finalizationInFlightRef.current = false;
+      updateLiveRecorderResources({
+        micPhase: "failed",
+        activeRecorders: 0,
+        activeTracks: 0,
+        audioContextState: null,
+      });
       audioLog("recording:cleanup:complete", { traceId, result: "capture-failure" });
       return false;
     }
@@ -1281,11 +1581,21 @@ export function MessageComposer({
       return false;
     }
 
+    const internalBeforeStop = recorder as unknown as {
+      audioContext?: AudioContext;
+      stream?: MediaStream;
+    };
+    const audioCtxBeforeStop = internalBeforeStop.audioContext?.state;
+    let tracksStopped = 0;
+
     // Forcefully stop MediaStream audio tracks on iOS Safari to extinguish the red recording dot
     try {
-      const stream = (recorder as unknown as { stream?: MediaStream }).stream;
+      const stream = internalBeforeStop.stream;
       stream?.getTracks?.().forEach((track) => {
-        try { track.stop(); } catch {}
+        try {
+          track.stop();
+          tracksStopped++;
+        } catch {}
       });
     } catch {}
 
@@ -1299,6 +1609,20 @@ export function MessageComposer({
         error,
         { traceId, reason: "recorder-stop" },
       );
+      if (traceId) {
+        updateAudioDiagnosticSession(
+          traceId,
+          (prev) => ({
+            ...prev,
+            stage: "recorder_stop_timeout",
+            recorderState: "failed",
+            audioContextState: { ...prev.audioContextState, onStop: audioCtxBeforeStop },
+            failureCategory: error instanceof TimeoutError ? "recorder_timeout" : "recorder_error",
+            errorDetail: error instanceof Error ? error.message : String(error),
+          }),
+          { flush: true },
+        );
+      }
       cancelledRef.current = true;
       clearTimer();
       setMicPhase("failed");
@@ -1310,15 +1634,39 @@ export function MessageComposer({
         audioLogError("recording:error", closeError, { traceId, reason: "close-after-stop-failure" });
       }
       if (recorderRef.current === recorder) recorderRef.current = null;
+      updateLiveRecorderResources({
+        micPhase: "failed",
+        activeRecorders: 0,
+        activeTracks: 0,
+        audioContextState: null,
+      });
       audioLog("recording:cleanup:complete", { traceId, result: "stop-failure" });
       return false;
     }
 
+    let closedOk = true;
     try {
       await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
     } catch (error) {
+      closedOk = false;
       audioLogError("recording:error", error, { traceId, reason: "recorder-close" });
     }
+    if (traceId) {
+      updateAudioDiagnosticSession(traceId, (prev) => ({
+        ...prev,
+        audioContextState: { ...prev.audioContextState, onStop: audioCtxBeforeStop },
+        cleanupResult: {
+          ok: closedOk,
+          tracksStopped,
+          audioContextClosed: closedOk,
+        },
+      }));
+    }
+    updateLiveRecorderResources({
+      activeRecorders: 0,
+      activeTracks: 0,
+      audioContextState: null,
+    });
     if (recorderRef.current === recorder) recorderRef.current = null;
     audioLog("recording:cleanup:complete", { traceId, result: "stopped" });
     return true;
@@ -1341,10 +1689,18 @@ export function MessageComposer({
   // duplicate request from a second event is always a no-op.
   const startRecordingGesture = useCallback(() => {
     if (micPhase !== "idle") return;
-    recordingTraceIdRef.current =
+    const traceId =
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `audio-trace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    recordingTraceIdRef.current = traceId;
+    captureStartedAtRef.current = Date.now();
+    startAudioDiagnosticSession({
+      recordingId: traceId,
+      correlationId: traceId,
+      prewarmed: Boolean(recorderModuleRef.current),
+    });
+    updateLiveRecorderResources({ micPhase: "recording" });
     finalizationInFlightRef.current = false;
     stopAllAudioPlayback();
     setLocked(false);

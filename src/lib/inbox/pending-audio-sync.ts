@@ -21,6 +21,11 @@ import {
   type PendingAudioRecord,
 } from "./pending-audio-db";
 import { audioLog, audioLogError } from "./pending-audio-log";
+import {
+  classifySendErrorCategory,
+  classifyUploadErrorCategory,
+  updateAudioDiagnosticSession,
+} from "./audio-telemetry";
 import { retryAsync, withTimeout } from "@/lib/net/with-timeout";
 import { uploadAccountMedia, deleteAccountMedia, CHAT_MEDIA_BUCKET } from "@/lib/storage/upload-media";
 import { presignAndUpload, deleteR2Media } from "@/lib/storage/upload-media-r2";
@@ -66,35 +71,66 @@ async function ensureUploaded(
   audioLog("upload:start", { id: record.id, sizeBytes: record.sizeBytes });
   const file = buildAudioFile(record);
   const useR2 = isIPhoneSafariPwa();
+  const uploadStartedAt = Date.now();
+  let uploadAttempts = 0;
 
-  const result = await retryAsync(
-    (attempt) => {
-      audioLog("upload:attempt", { id: record.id, attempt: attempt + 1, provider: useR2 ? "r2" : "supabase" });
-      const upload = useR2
-        ? presignAndUpload("chat-attachment", "audio", file, { preferSameOriginProxy: true }).then((result) => ({
-            publicUrl: result.key,
-            path: result.key,
-          }))
-        : uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
-      return withTimeout(upload, UPLOAD_TIMEOUT_MS, "voice-note upload");
-    },
-    {
-      retries: UPLOAD_RETRIES,
-      baseDelayMs: 1500,
-      onRetry: (attempt, err) => audioLogError("upload:retry", err, { id: record.id, attempt }),
-    },
-  );
+  try {
+    const result = await retryAsync(
+      (attempt) => {
+        uploadAttempts = attempt + 1;
+        audioLog("upload:attempt", { id: record.id, attempt: uploadAttempts, provider: useR2 ? "r2" : "supabase" });
+        const upload = useR2
+          ? presignAndUpload("chat-attachment", "audio", file, { preferSameOriginProxy: true }).then((result) => ({
+              publicUrl: result.key,
+              path: result.key,
+            }))
+          : uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
+        return withTimeout(upload, UPLOAD_TIMEOUT_MS, "voice-note upload");
+      },
+      {
+        retries: UPLOAD_RETRIES,
+        baseDelayMs: 1500,
+        onRetry: (attempt, err) => audioLogError("upload:retry", err, { id: record.id, attempt }),
+      },
+    );
 
-  audioLog("upload:success", { id: record.id, path: result.path });
-  const updated = await patchPendingAudio(record.id, {
-    status: "uploaded",
-    mediaUrl: result.publicUrl,
-    path: result.path,
-    storageProvider: useR2 ? "r2" : "supabase",
-  });
-  cb?.onMediaUrl?.(result.publicUrl);
-  cb?.onStatus?.("uploaded");
-  return updated ?? { ...record, status: "uploaded", mediaUrl: result.publicUrl, path: result.path };
+    audioLog("upload:success", { id: record.id, path: result.path });
+    updateAudioDiagnosticSession(record.id, (prev) => ({
+      ...prev,
+      stage: "uploaded",
+      uploadResult: {
+        ok: true,
+        provider: useR2 ? "r2" : "supabase",
+        latencyMs: Date.now() - uploadStartedAt,
+        attempts: uploadAttempts,
+      },
+    }));
+    const updated = await patchPendingAudio(record.id, {
+      status: "uploaded",
+      mediaUrl: result.publicUrl,
+      path: result.path,
+      storageProvider: useR2 ? "r2" : "supabase",
+    });
+    cb?.onMediaUrl?.(result.publicUrl);
+    cb?.onStatus?.("uploaded");
+    return updated ?? { ...record, status: "uploaded", mediaUrl: result.publicUrl, path: result.path };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    updateAudioDiagnosticSession(record.id, (prev) => ({
+      ...prev,
+      stage: "upload_failed",
+      uploadResult: {
+        ok: false,
+        provider: useR2 ? "r2" : "supabase",
+        latencyMs: Date.now() - uploadStartedAt,
+        attempts: uploadAttempts,
+        error: msg,
+      },
+      failureCategory: classifyUploadErrorCategory(msg),
+      errorDetail: msg,
+    }));
+    throw err;
+  }
 }
 
 async function sendToWhatsapp(record: PendingAudioRecord, cb?: PendingAudioCallbacks): Promise<void> {
@@ -103,46 +139,88 @@ async function sendToWhatsapp(record: PendingAudioRecord, cb?: PendingAudioCallb
   cb?.onStatus?.("sending");
   await patchPendingAudio(record.id, { status: "sending" });
   audioLog("send:start", { id: record.id, conversationId: record.conversationId });
+  const sendStartedAt = Date.now();
+  let sendAttempts = 0;
+  let lastHttpStatus: number | undefined;
 
-  await retryAsync(
-    async (attempt) => {
-      audioLog("send:attempt", { id: record.id, attempt: attempt + 1 });
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
-      try {
-        const res = await fetch("/api/whatsapp/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: record.conversationId,
-            message_type: "audio",
-            media_url: record.mediaUrl,
-            reply_to_message_id: record.replyToId,
-            // record.id is stable across every retry of this recording
-            // (this call, a later manual retry, or the recovery sweep) —
-            // see migration 20260903230000 for why this is required: a
-            // client-side timeout/abort here does not mean the server
-            // didn't already reach Meta, so a retry must be idempotent.
-            client_ref: record.id,
-          }),
-          signal: controller.signal,
-        });
-        const payload = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(payload?.error || `HTTP ${res.status}`);
+  try {
+    await retryAsync(
+      async (attempt) => {
+        sendAttempts = attempt + 1;
+        audioLog("send:attempt", { id: record.id, attempt: sendAttempts });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+        try {
+          const res = await fetch("/api/whatsapp/send", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-correlation-id": record.id,
+            },
+            body: JSON.stringify({
+              conversation_id: record.conversationId,
+              message_type: "audio",
+              media_url: record.mediaUrl,
+              reply_to_message_id: record.replyToId,
+              // record.id is stable across every retry of this recording
+              // (this call, a later manual retry, or the recovery sweep) —
+              // see migration 20260903230000 for why this is required: a
+              // client-side timeout/abort here does not mean the server
+              // didn't already reach Meta, so a retry must be idempotent.
+              client_ref: record.id,
+            }),
+            signal: controller.signal,
+          });
+          lastHttpStatus = res.status;
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(payload?.error || `HTTP ${res.status}`);
+          }
+        } finally {
+          clearTimeout(timer);
         }
-      } finally {
-        clearTimeout(timer);
-      }
-    },
-    {
-      retries: SEND_RETRIES,
-      baseDelayMs: 1000,
-      onRetry: (attempt, err) => audioLogError("send:retry", err, { id: record.id, attempt }),
-    },
-  );
+      },
+      {
+        retries: SEND_RETRIES,
+        baseDelayMs: 1000,
+        onRetry: (attempt, err) => audioLogError("send:retry", err, { id: record.id, attempt }),
+      },
+    );
 
-  audioLog("send:success", { id: record.id });
+    audioLog("send:success", { id: record.id });
+    updateAudioDiagnosticSession(
+      record.id,
+      (prev) => ({
+        ...prev,
+        stage: "sent",
+        recorderState: "stopped",
+        sendResult: {
+          ok: true,
+          latencyMs: Date.now() - sendStartedAt,
+          attempts: sendAttempts,
+          httpStatus: lastHttpStatus ?? 200,
+        },
+        failureCategory: "none",
+      }),
+      { flush: true },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    updateAudioDiagnosticSession(record.id, (prev) => ({
+      ...prev,
+      stage: "send_failed",
+      sendResult: {
+        ok: false,
+        latencyMs: Date.now() - sendStartedAt,
+        attempts: sendAttempts,
+        httpStatus: lastHttpStatus,
+        error: msg,
+      },
+      failureCategory: classifySendErrorCategory(msg, lastHttpStatus),
+      errorDetail: msg,
+    }));
+    throw err;
+  }
 }
 
 /**
@@ -172,10 +250,19 @@ export async function runPendingAudio(
     const message = err instanceof Error ? err.message : String(err);
     audioLogError("pipeline:failed", err, { id });
     const current = await getPendingAudio(id);
+    const nextAttempts = (current?.attempts ?? 0) + 1;
+    updateAudioDiagnosticSession(
+      id,
+      (prev) => ({
+        ...prev,
+        retryCount: nextAttempts,
+      }),
+      { flush: true },
+    );
     await patchPendingAudio(id, {
       status: current?.mediaUrl ? "failed-send" : "failed-upload",
       lastError: message,
-      attempts: (current?.attempts ?? 0) + 1,
+      attempts: nextAttempts,
     });
     cb?.onStatus?.("failed");
     return { ok: false, error: message };
@@ -183,10 +270,12 @@ export async function runPendingAudio(
 }
 
 /** Discards a pending/failed voice note — deletes the IndexedDB record
- *  and GCs the storage object if the upload had already succeeded. */
+ *  and GCs the storage object only when it is safe to do so (never when
+ *  a send is already in flight/ambiguous, and server-side `/api/media/delete`
+ *  also blocks deletion if any message already references the key). */
 export async function discardPendingAudio(id: string): Promise<void> {
   const record = await getPendingAudio(id);
-  if (record?.path) {
+  if (record?.path && record.status !== "sending") {
     const remove = record.storageProvider === "r2"
       ? deleteR2Media(record.path)
       : deleteAccountMedia(CHAT_MEDIA_BUCKET, record.path);
@@ -195,7 +284,7 @@ export async function discardPendingAudio(id: string): Promise<void> {
     );
   }
   await deletePendingAudio(id);
-  audioLog("discard", { id });
+  audioLog("discard", { id, skippedRemoteGc: record?.status === "sending" });
 }
 
 /**

@@ -4,6 +4,58 @@ import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { hasMinRole } from "@/lib/auth/roles";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
 import { getR2Client, isR2MediaKey } from "@/lib/storage/r2-client";
+import { supabaseAdmin } from "@/lib/storage/admin-client";
+
+async function isMediaKeyReferenced(
+  accountId: string,
+  key: string,
+): Promise<{ referenced: boolean; ambiguous: boolean; reason?: string }> {
+  const admin = supabaseAdmin();
+
+  const [msgMediaRes, msgThumbRes, broadcastRes, templateRes] = await Promise.all([
+    admin
+      .from("messages")
+      .select("id, status, conversations!inner(account_id)")
+      .eq("conversations.account_id", accountId)
+      .eq("media_url", key)
+      .limit(1),
+    admin
+      .from("messages")
+      .select("id, status, conversations!inner(account_id)")
+      .eq("conversations.account_id", accountId)
+      .eq("document_thumbnail_url", key)
+      .limit(1),
+    admin
+      .from("broadcasts")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("header_media_url", key)
+      .limit(1),
+    admin
+      .from("message_templates")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("header_media_url", key)
+      .limit(1),
+  ]);
+
+  if (msgMediaRes.error || msgThumbRes.error || broadcastRes.error || templateRes.error) {
+    return { referenced: true, ambiguous: true, reason: "reference_lookup_failed" };
+  }
+  if (msgMediaRes.data && msgMediaRes.data.length > 0) {
+    return { referenced: true, ambiguous: false, reason: "referenced_by_message" };
+  }
+  if (msgThumbRes.data && msgThumbRes.data.length > 0) {
+    return { referenced: true, ambiguous: false, reason: "referenced_by_message_thumbnail" };
+  }
+  if (broadcastRes.data && broadcastRes.data.length > 0) {
+    return { referenced: true, ambiguous: false, reason: "referenced_by_broadcast" };
+  }
+  if (templateRes.data && templateRes.data.length > 0) {
+    return { referenced: true, ambiguous: false, reason: "referenced_by_template" };
+  }
+  return { referenced: false, ambiguous: false };
+}
 
 /**
  * Best-effort GC for private (`visibility='private'`) media — mirrors
@@ -59,6 +111,23 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "Public-bucket media is not deletable via this endpoint" },
         { status: 403 },
+      );
+    }
+
+    // Never allow a local discard operation to delete an R2 object that is
+    // already associated with a dispatched, in-flight, or ambiguous message.
+    const refCheck = await isMediaKeyReferenced(accountId, key);
+    if (refCheck.referenced) {
+      return NextResponse.json(
+        {
+          error: refCheck.ambiguous
+            ? "Could not verify media references; preserving object"
+            : "Media object is still referenced by a message or campaign",
+          deleted: false,
+          protected: true,
+          reason: refCheck.reason,
+        },
+        { status: refCheck.ambiguous ? 500 : 409 },
       );
     }
 
