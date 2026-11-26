@@ -17,6 +17,12 @@ declare module "opus-recorder" {
     encoderBitRate?: number;
     /** When false (default), ondataavailable fires once with the full file. */
     streamPages?: boolean;
+    /** Optional pre-created MediaStreamAudioSourceNode owned by the caller. */
+    sourceNode?: MediaStreamAudioSourceNode;
+    /** Recording gain multiplier (default 1). */
+    recordingGain?: number;
+    /** Monitor gain multiplier (default 0). */
+    monitorGain?: number;
   }
 
   export default class Recorder {

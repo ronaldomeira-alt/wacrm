@@ -2937,6 +2937,17 @@ export function MessageThread({
     ]
   );
 
+  const handleRecordAudio = useCallback(
+    (recordId: string, replyToId?: string) => {
+      void handleQueuedAudio(recordId, replyToId);
+    },
+    [handleQueuedAudio]
+  );
+
+  const handleClearReply = useCallback(() => {
+    setReplyTo(null);
+  }, []);
+
   // Retries a voice note bubble already showing `status: 'failed'` — the
   // recording is preserved locally in `wacrm-audio-outbox` (for both
   // `local-audio-<id>` bubbles AND persisted DB rows whose `client_ref`
@@ -4193,10 +4204,10 @@ export function MessageThread({
         onSend={handleSend}
         onSendMedia={handleSendMedia}
         onSendMediaBatch={handleSendMediaBatch}
-        onRecordAudio={(recordId, replyToId) => void handleQueuedAudio(recordId, replyToId)}
+        onRecordAudio={handleRecordAudio}
         onOpenTemplates={handleOpenTemplates}
         replyTo={replyTo}
-        onClearReply={() => setReplyTo(null)}
+        onClearReply={handleClearReply}
         initialText={
           followupPrime?.mode === 'free' && !sessionInfo.expired
             ? followupPrime.text

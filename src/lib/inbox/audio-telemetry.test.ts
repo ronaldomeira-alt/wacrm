@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  assessIosUaVersion,
   classifySendErrorCategory,
   classifyUploadErrorCategory,
   clearAudioDiagnosticSessions,
@@ -26,13 +27,33 @@ describe("audio-telemetry", () => {
     clearAudioDiagnosticSessions();
   });
 
-  it("extracts iOS version safely from user agent", () => {
+  it("extracts iOS version safely from user agent and flags frozen iOS 26 OS token", () => {
     expect(
       detectIosVersion(
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4_1 like Mac OS X) AppleWebKit/605.1.15",
       ),
     ).toBe("18.4.1");
     expect(detectIosVersion("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBeNull();
+
+    expect(
+      assessIosUaVersion(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1",
+      ),
+    ).toEqual({
+      iosVersion: "18.7",
+      safariVersion: "26.0",
+      note: "ua_os_token_frozen_ios26_candidate",
+    });
+
+    expect(
+      assessIosUaVersion(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      ),
+    ).toEqual({
+      iosVersion: "18.7",
+      safariVersion: null,
+      note: "ua_frozen_or_standalone_omits_version",
+    });
   });
 
   it("caps ring buffer at 60 sessions and redacts URLs/Bearer tokens in errorDetail", () => {
