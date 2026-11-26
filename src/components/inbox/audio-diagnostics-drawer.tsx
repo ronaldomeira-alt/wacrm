@@ -95,7 +95,9 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
 
   useEffect(() => {
     if (!authorized || !open) return;
-    void refreshState();
+    const timer = setTimeout(() => {
+      void refreshState();
+    }, 0);
     const unsubDiag = subscribeAudioDiagnostics(() => {
       setSessions(getAudioDiagnosticSessions());
       setResources(getLiveRecorderResources());
@@ -110,6 +112,7 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
       );
     });
     return () => {
+      clearTimeout(timer);
       unsubDiag();
       unsubFlags();
     };
