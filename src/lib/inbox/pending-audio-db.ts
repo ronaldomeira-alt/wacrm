@@ -47,12 +47,14 @@ export interface PendingAudioRecord {
   lastError?: string;
 }
 
+let legacyDbPromise: Promise<IDBDatabase> | null = null;
+
 function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === "undefined") {
-      reject(new Error("IndexedDB unavailable"));
-      return;
-    }
+  if (legacyDbPromise) return legacyDbPromise;
+  if (typeof indexedDB === "undefined") {
+    return Promise.reject(new Error("IndexedDB unavailable"));
+  }
+  legacyDbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -61,9 +63,29 @@ function openDb(): Promise<IDBDatabase> {
         store.createIndex("conversationId", "conversationId", { unique: false });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error("Failed to open IndexedDB"));
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        try {
+          db.close();
+        } catch {}
+        legacyDbPromise = null;
+      };
+      db.onclose = () => {
+        legacyDbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      legacyDbPromise = null;
+      reject(req.error ?? new Error("Failed to open IndexedDB"));
+    };
+    req.onblocked = () => {
+      legacyDbPromise = null;
+      reject(new Error("IndexedDB open blocked"));
+    };
   });
+  return legacyDbPromise;
 }
 
 async function withStore<T>(

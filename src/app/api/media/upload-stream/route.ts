@@ -79,6 +79,8 @@ export async function POST(request: Request) {
       else if (lowerKey.endsWith(".mp4") || lowerKey.endsWith(".m4v")) actualContentType = "video/mp4";
       else if (lowerKey.endsWith(".3gp") || lowerKey.endsWith(".3gpp")) actualContentType = "video/3gpp";
       else if (lowerKey.endsWith(".mov")) actualContentType = "video/quicktime";
+      else if (lowerKey.endsWith(".ogg") || lowerKey.endsWith(".oga") || lowerKey.endsWith(".opus")) actualContentType = "audio/ogg";
+      else if (lowerKey.endsWith(".m4a")) actualContentType = "audio/mp4";
       else if (lowerKey.endsWith(".pdf")) actualContentType = "application/pdf";
     }
 

@@ -42,6 +42,8 @@ export function resolveClientFileMime(file: { name?: string; type?: string }): s
   if (ext === "mp4" || ext === "m4v") return "video/mp4";
   if (ext === "3gp" || ext === "3gpp") return "video/3gpp";
   if (ext === "mov") return "video/quicktime";
+  if (ext === "ogg" || ext === "oga" || ext === "opus") return "audio/ogg";
+  if (ext === "m4a") return "audio/mp4";
   if (ext === "pdf") return "application/pdf";
 
   const rawType = file.type?.toLowerCase().trim();
