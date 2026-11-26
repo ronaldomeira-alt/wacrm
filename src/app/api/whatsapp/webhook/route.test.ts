@@ -7,6 +7,12 @@ const h = vi.hoisted(() => ({
   transcribeInboundAudioMessage: vi.fn<() => Promise<string | null>>(async () => null),
   getMediaUrl: vi.fn(async () => ({ url: 'https://lookaside.fbsbx.com/audio/123', mime_type: 'audio/ogg' })),
   downloadMedia: vi.fn(async () => ({ buffer: Buffer.from('fake-ogg'), mimeType: 'audio/ogg' })),
+  dbControls: {
+    configError: null as { message: string; code?: string } | null,
+    insertMessageError: null as { message: string; code?: string } | null,
+    existingMessageIds: new Set<string>(),
+    insertedMessagesCount: 0,
+  },
 }))
 
 vi.mock('next/server', async () => {
@@ -95,9 +101,13 @@ function createSupabaseAdminMock() {
     from: (table: string) => {
       let mode: 'select' | 'insert' | 'update' = 'select'
       let headCount = false
+      const eqFilters: Record<string, unknown> = {}
 
       const resolveQuery = () => {
         if (table === 'whatsapp_config' && mode === 'select') {
+          if (h.dbControls.configError) {
+            return { data: null, error: h.dbControls.configError }
+          }
           return {
             data: [
               {
@@ -120,7 +130,18 @@ function createSupabaseAdminMock() {
         if (table === 'messages' && mode === 'select' && headCount) {
           return { count: 1, error: null }
         }
+        if (table === 'messages' && mode === 'select' && !headCount) {
+          const msgId = typeof eqFilters.message_id === 'string' ? eqFilters.message_id : ''
+          if (msgId && h.dbControls.existingMessageIds.has(msgId)) {
+            return { data: [{ id: 'msg-existing-1' }], error: null }
+          }
+          return { data: [], error: null }
+        }
         if (table === 'messages' && mode === 'insert') {
+          if (h.dbControls.insertMessageError) {
+            return { data: null, error: h.dbControls.insertMessageError }
+          }
+          h.dbControls.insertedMessagesCount += 1
           return { data: { id: 'msg-audio-1' }, error: null }
         }
         return { data: null, error: null }
@@ -141,7 +162,10 @@ function createSupabaseAdminMock() {
         },
         upsert: () => chain,
         delete: () => chain,
-        eq: () => chain,
+        eq: (col: string, val: unknown) => {
+          eqFilters[col] = val
+          return chain
+        },
         neq: () => chain,
         in: () => chain,
         order: () => chain,
@@ -217,6 +241,11 @@ describe('WhatsApp webhook inbound audio auto-reply gate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     h.pendingAfter = []
+    h.dbControls.configError = null
+    h.dbControls.insertMessageError = null
+    h.dbControls.existingMessageIds.clear()
+    h.dbControls.insertedMessagesCount = 0
+    delete process.env.WHATSAPP_WEBHOOK_EMERGENCY_SPOOL_DIR
     process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co'
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
   })
@@ -318,5 +347,44 @@ describe('WhatsApp webhook inbound audio auto-reply gate', () => {
         errorTitle: 'Media upload error',
       }),
     )
+  })
+
+  it('returns HTTP 503 with Retry-After when Supabase fails on whatsapp_config lookup (e.g. exceed_egress_quota)', async () => {
+    h.dbControls.configError = {
+      message: 'Service for this project is restricted due to the following violations: exceed_egress_quota',
+      code: '402',
+    }
+
+    const res = await POST(makeAudioWebhookRequest())
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('60')
+    expect(h.pendingAfter).toHaveLength(0)
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('returns HTTP 503 when durable insert into messages fails instead of silently acking 200', async () => {
+    h.dbControls.insertMessageError = {
+      message: 'Service unavailable (402 exceed_egress_quota)',
+      code: '402',
+    }
+
+    const res = await POST(makeAudioWebhookRequest())
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('60')
+    expect(h.pendingAfter).toHaveLength(0)
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('skips duplicate Meta webhook retries idempotently without duplicating messages or Clara replies', async () => {
+    h.dbControls.existingMessageIds.add('wamid.audio.1')
+    h.transcribeInboundAudioMessage.mockResolvedValueOnce('Mensagem repetida')
+
+    const res = await POST(makeAudioWebhookRequest())
+    expect(res.status).toBe(200)
+    await Promise.all(h.pendingAfter)
+
+    expect(h.dbControls.insertedMessagesCount).toBe(0)
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToLeadAnalysis).not.toHaveBeenCalled()
   })
 })

@@ -6,11 +6,12 @@ import {
 } from './inventory-reconciler';
 
 const DEFAULT_OPERATIONAL_ACCOUNT_ID = 'f8d2ae51-e393-4a74-a432-ddab0610837e';
-const DEFAULT_WATCHER_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
-const DEFAULT_FULL_RECONCILE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos (proteção complementar contra empate de COUNT/updated_at)
+const DEFAULT_WATCHER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
+const DEFAULT_FULL_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 horas (rede de segurança; inserts/updates/deletes são detectados pelo watermark)
 
 let watcherStarted = false;
 let syncInFlight = false;
+let cachedOperationalAccountId: string | null = null;
 const lastObservedInventoryByAccount = new Map<
   string,
   { count: number; latestUpdatedAt: number; lastFullReconcileAt: number }
@@ -21,12 +22,17 @@ export function resetBackgroundSyncState(accountId?: string): void {
     lastObservedInventoryByAccount.delete(accountId);
   } else {
     lastObservedInventoryByAccount.clear();
+    cachedOperationalAccountId = null;
   }
 }
 
 export async function resolveOperationalMatchAccountId(db: SupabaseClient): Promise<string | null> {
   if (process.env.MATCH_CANONICAL_ACCOUNT_ID) {
     return process.env.MATCH_CANONICAL_ACCOUNT_ID.trim();
+  }
+
+  if (cachedOperationalAccountId) {
+    return cachedOperationalAccountId;
   }
 
   try {
@@ -39,13 +45,15 @@ export async function resolveOperationalMatchAccountId(db: SupabaseClient): Prom
       .maybeSingle();
 
     if (realProfile?.account_id) {
-      return String(realProfile.account_id);
+      cachedOperationalAccountId = String(realProfile.account_id);
+      return cachedOperationalAccountId;
     }
   } catch {
     // Fallback para conta operacional padrão
   }
 
-  return DEFAULT_OPERATIONAL_ACCOUNT_ID;
+  cachedOperationalAccountId = DEFAULT_OPERATIONAL_ACCOUNT_ID;
+  return cachedOperationalAccountId;
 }
 
 export interface BackgroundSyncCheckResult {
@@ -140,7 +148,14 @@ export async function runMatchInventorySyncIfChanged(
 
     const prevObserved = lastObservedInventoryByAccount.get(targetAccountId);
     const hasNewerInventory = latestInvAt > latestProjAt;
-    const hasCountMismatch = invCount >= 0 && projCount >= 0 && invCount !== projCount;
+    // `property_match_projections` retém projeções inativas/arquivadas de imóveis
+    // removidos de `inventory_properties` (nunca executa DELETE de órfãos). Portanto,
+    // `projCount > invCount` é um estado estável e legítimo — comparar `invCount !== projCount`
+    // causava falso-positivo permanente em 100% dos ticks (loop de leitura integral da tabela).
+    // Só tratamos divergência de contagem como drift no cold-start quando há MAIS imóveis
+    // no inventário do que projeções conhecidas (`invCount > projCount`). Qualquer inserção,
+    // edição ou exclusão subsequente é detectada com exatidão por `hasInventoryWatermarkChanged`.
+    const hasMissingProjections = !prevObserved && invCount >= 0 && projCount >= 0 && invCount > projCount;
     const hasInventoryWatermarkChanged = Boolean(
       prevObserved &&
         ((invCount >= 0 && prevObserved.count >= 0 && invCount !== prevObserved.count) ||
@@ -152,7 +167,7 @@ export async function runMatchInventorySyncIfChanged(
 
     if (
       !hasNewerInventory &&
-      !hasCountMismatch &&
+      !hasMissingProjections &&
       !hasInventoryWatermarkChanged &&
       !isPeriodicFullCheckDue
     ) {
@@ -166,8 +181,8 @@ export async function runMatchInventorySyncIfChanged(
 
     const reason = hasNewerInventory
       ? 'inventory_newer_than_projection'
-      : hasCountMismatch
-        ? 'inventory_count_mismatch'
+      : hasMissingProjections
+        ? 'inventory_missing_projections'
         : hasInventoryWatermarkChanged
           ? 'inventory_watermark_changed'
           : 'periodic_full_verification';
@@ -191,7 +206,7 @@ export async function runMatchInventorySyncIfChanged(
 
     return {
       checked: true,
-      driftDetected: actualDrift || hasNewerInventory || hasCountMismatch || hasInventoryWatermarkChanged,
+      driftDetected: actualDrift || hasNewerInventory || hasMissingProjections || hasInventoryWatermarkChanged,
       reason,
       reconcile,
     };

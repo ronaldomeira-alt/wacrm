@@ -1,5 +1,7 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { appendFile, mkdir } from 'node:fs/promises'
+import path from 'node:path'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
@@ -187,6 +189,84 @@ export async function GET(request: Request) {
     )
   }
 }
+/**
+ * Raised when durable persistence of an inbound webhook event fails due to a
+ * transient infrastructure / database error (e.g., Supabase 402 quota lock,
+ * 5xx outage, or network timeout). Returning HTTP 503 tells Meta to retry
+ * delivery with exponential backoff instead of silently dropping the message.
+ */
+class WebhookPersistenceError extends Error {
+  readonly causeError: unknown
+  constructor(message: string, causeError?: unknown) {
+    super(message)
+    this.name = 'WebhookPersistenceError'
+    this.causeError = causeError
+  }
+}
+
+/**
+ * Optional emergency local JSONL spool for inbound payloads when the primary
+ * database is unavailable. Disabled by default; only active when the operator
+ * explicitly sets `WHATSAPP_WEBHOOK_EMERGENCY_SPOOL_DIR`.
+ */
+async function tryWriteEmergencySpool(
+  rawBody: string,
+  reason: string,
+): Promise<boolean> {
+  const spoolDir = process.env.WHATSAPP_WEBHOOK_EMERGENCY_SPOOL_DIR?.trim()
+  if (!spoolDir) return false
+  try {
+    await mkdir(spoolDir, { recursive: true })
+    const day = new Date().toISOString().slice(0, 10)
+    const filePath = path.join(spoolDir, `whatsapp-webhook-${day}.jsonl`)
+    const line = JSON.stringify({
+      received_at: new Date().toISOString(),
+      reason,
+      payload: rawBody,
+    }) + '\n'
+    await appendFile(filePath, line, { encoding: 'utf8' })
+    return true
+  } catch (err) {
+    logError('webhook.emergency_spool_failed', err)
+    return false
+  }
+}
+
+interface DeferredInboundTask {
+  message: WhatsAppMessage
+  contact: { profile: { name: string }; wa_id: string }
+  accountId: string
+  configOwnerUserId: string
+  accessToken: string
+  contactRecord: ContactRow
+  contactWasCreated: boolean
+  conversation: Record<string, unknown> & { id: string; unread_count?: number | null }
+  conversationCreated: boolean
+  insertedMessageId: string
+  contentType: string
+  contentText: string | null
+  interactiveReplyId: string | null
+  isFirstInboundMessage: boolean
+}
+
+interface DeferredAuxiliaryEvent {
+  kind: 'template' | 'status'
+  field?: string
+  value?: unknown
+  status?: {
+    id: string
+    status: string
+    timestamp: string
+    recipient_id: string
+    errors?: Array<{
+      code?: number
+      title?: string
+      message?: string
+      error_data?: { details?: string }
+    }>
+  }
+}
+
 // POST - Receive messages
 export async function POST(request: Request) {
   // Read raw body first so we can HMAC-verify the exact bytes Meta
@@ -209,84 +289,102 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Process AFTER the response so we ack Meta within their ~20s timeout
-  // (a slow ack triggers Meta retries + duplicate inserts), while still
-  // guaranteeing the work runs to completion.
-  //
-  // This MUST use `after()` rather than a detached `processWebhook(body)`
-  // promise: on serverless/edge platforms the function can be frozen or
-  // terminated the moment the response is sent, so a floating promise's DB
-  // writes are not guaranteed to finish. Production runs on Hostinger's
-  // managed Node.js (a long-lived process, not frozen between requests),
-  // but `after()` is still the portable, correct way to defer work in
-  // Next.js regardless of host — and this app has run on Vercel before.
-  // That earlier floating-promise version dropped a
-  // non-deterministic *subset* of inbound messages — contacts/conversations
-  // were created but the message insert never landed, leaving conversations
-  // that show in the inbox with an empty thread, and no logs to explain it
-  // (see issue #301). `after()` hands the callback to the runtime, which
-  // keeps the function alive until it resolves (within the route's
-  // maxDuration).
-  after(async () => {
-    try {
-      await processWebhook(body)
-    } catch (error) {
-      logError('webhook.processing_failed', error)
+  // Phase 1 (SYNCHRONOUS — BEFORE HTTP 200 ACK):
+  // Durably persist every inbound customer message (with explicit idempotency
+  // on `(conversation_id, message_id)` so Meta retries never duplicate rows or
+  // Clara replies). If Supabase is unavailable (e.g., 402 exceed_egress_quota
+  // or 5xx outage), return HTTP 503 so Meta retries automatically instead of
+  // silently dropping the lead's message.
+  let deferredInbound: DeferredInboundTask[] = []
+  let deferredAuxiliary: DeferredAuxiliaryEvent[] = []
+  try {
+    const result = await persistWebhookDurably(body)
+    deferredInbound = result.deferredInbound
+    deferredAuxiliary = result.deferredAuxiliary
+  } catch (error) {
+    logError('webhook.durable_persistence_failed', error)
+    const spooled = await tryWriteEmergencySpool(
+      rawBody,
+      error instanceof Error ? error.message : String(error),
+    )
+    if (spooled) {
+      return NextResponse.json(
+        { status: 'spooled_for_replay' },
+        { status: 200 },
+      )
     }
-  })
+    return NextResponse.json(
+      { error: 'Temporary persistence failure; please retry' },
+      {
+        status: 503,
+        headers: { 'Retry-After': '60' },
+      },
+    )
+  }
+
+  // Phase 2 (ASYNC via `after()` — AFTER durable persistence is confirmed):
+  // Run heavy / best-effort side effects (PDF preview, audio transcription,
+  // Flows, automations, Clara AI auto-reply, lead analysis, outbound webhooks,
+  // status & template updates) without risking Meta's ~20s ACK timeout.
+  if (deferredInbound.length > 0 || deferredAuxiliary.length > 0) {
+    after(async () => {
+      try {
+        await runDeferredWebhookTasks(deferredInbound, deferredAuxiliary)
+      } catch (error) {
+        logError('webhook.processing_failed', error)
+      }
+    })
+  }
 
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
-async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
-  if (!body.entry) return
+async function persistWebhookDurably(body: { entry?: WhatsAppWebhookEntry[] }): Promise<{
+  deferredInbound: DeferredInboundTask[]
+  deferredAuxiliary: DeferredAuxiliaryEvent[]
+}> {
+  const deferredInbound: DeferredInboundTask[] = []
+  const deferredAuxiliary: DeferredAuxiliaryEvent[] = []
+  if (!body.entry) return { deferredInbound, deferredAuxiliary }
 
   for (const entry of body.entry) {
     for (const change of entry.changes) {
       // Template-lifecycle events (status / quality / components
       // updates from Meta) come in on a different change.field and
-      // have a different value shape — route them through the
-      // dedicated handler. Skip the messaging branches below so we
-      // don't try to read message-shaped fields off a template event.
+      // have a different value shape — defer them to Phase 2.
       if (isTemplateWebhookField(change.field)) {
-        await handleTemplateWebhookChange(
-          { field: change.field, value: change.value as unknown },
-          supabaseAdmin(),
-        )
+        deferredAuxiliary.push({
+          kind: 'template',
+          field: change.field,
+          value: change.value as unknown,
+        })
         continue
       }
 
       const value = change.value
 
-      // Handle status updates
+      // Defer status updates to Phase 2
       if (value.statuses) {
         for (const status of value.statuses) {
-          await handleStatusUpdate(status)
+          deferredAuxiliary.push({ kind: 'status', status })
         }
       }
 
-      // Handle incoming messages
+      // Handle incoming messages synchronously for durability
       if (!value.messages || !value.contacts) continue
 
       const phoneNumberId = value.metadata.phone_number_id
 
-      // Find user's config by phone_number_id. `.single()` returns
-      // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
-      // operators see the real cause in logs. ≥2 rows shouldn't happen
-      // post-migration 013 (UNIQUE constraint), but a row created
-      // before the constraint, or a race, would still surface here.
       const { data: configRows, error: configError } = await supabaseAdmin()
         .from('whatsapp_config')
         .select('*')
         .eq('phone_number_id', phoneNumberId)
 
       if (configError) {
-        console.error(
-          'Error fetching whatsapp_config for phone_number_id:',
-          phoneNumberId,
-          configError
+        throw new WebhookPersistenceError(
+          `Failed fetching whatsapp_config for phone_number_id=${phoneNumberId}`,
+          configError,
         )
-        continue
       }
 
       if (!configRows || configRows.length === 0) {
@@ -306,27 +404,46 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       const config = configRows[0]
-
       const decryptedAccessToken = decrypt(config.access_token)
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
         const contact = value.contacts[i] || value.contacts[0]
 
-        await processMessage(
+        const deferred = await persistInboundMessage(
           message,
           contact,
-          // Tenancy — drives every contact / conversation lookup
-          // and the engines' active-row dispatch.
           config.account_id,
-          // Audit / sender-of-record — used as the user_id on row
-          // inserts that need it for NOT NULL FK compliance. Always
-          // the admin who saved the WhatsApp config.
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
         )
+        if (deferred) {
+          deferredInbound.push(deferred)
+        }
       }
     }
+  }
+
+  return { deferredInbound, deferredAuxiliary }
+}
+
+async function runDeferredWebhookTasks(
+  deferredInbound: DeferredInboundTask[],
+  deferredAuxiliary: DeferredAuxiliaryEvent[],
+) {
+  for (const aux of deferredAuxiliary) {
+    if (aux.kind === 'template' && aux.field) {
+      await handleTemplateWebhookChange(
+        { field: aux.field, value: aux.value },
+        supabaseAdmin(),
+      )
+    } else if (aux.kind === 'status' && aux.status) {
+      await handleStatusUpdate(aux.status)
+    }
+  }
+
+  for (const task of deferredInbound) {
+    await runPostPersistSideEffects(task)
   }
 }
 
@@ -670,129 +787,118 @@ async function cancelActiveFollowupPlan(accountId: string, contactId: string) {
   }
 }
 
-async function processMessage(
+/**
+ * Phase 1 (SYNCHRONOUS — runs before returning HTTP 200 to Meta):
+ * Durably persists contact, conversation, and inbound message (with explicit
+ * idempotency on `(conversation_id, message_id)` so Meta retries never create
+ * duplicate rows or duplicate Clara AI replies). Throws `WebhookPersistenceError`
+ * on any transient DB/infrastructure failure so POST returns HTTP 503.
+ */
+async function persistInboundMessage(
   message: WhatsAppMessage,
   contact: { profile: { name: string }; wa_id: string },
-  // Tenancy. Resolved from the matched whatsapp_config row; every
-  // contact / conversation / message row created downstream is
-  // stamped with this so any member of the account can see it.
   accountId: string,
-  // Sender-of-record for inserts that need a NOT NULL user_id FK
-  // (contacts, conversations). Always the admin who saved the
-  // WhatsApp config; the choice is arbitrary post-017 but stable.
   configOwnerUserId: string,
-  accessToken: string
-) {
+  accessToken: string,
+): Promise<DeferredInboundTask | null> {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
 
-  // Find or create contact
+  // Find or create contact (throws WebhookPersistenceError on DB outage)
   const contactOutcome = await findOrCreateContact(
     accountId,
     configOwnerUserId,
     senderPhone,
-    contactName
+    contactName,
   )
-  if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
 
   // Blocked contact ("Bloquear lead" in the Inbox, migration 083) —
   // recognized before any normal processing: no conversation is
   // opened/reopened, no message is stored, no follow-up plan is
-  // touched, no automation/Flow/AI dispatch runs below. The contact and
-  // any prior history are left exactly as they were; this only stops
-  // NEW inbound traffic from generating new activity.
+  // touched, no automation/Flow/AI dispatch runs below.
   if (contactRecord.blocked_at) {
     console.log(`[webhook] Ignoring message from blocked contact ${contactRecord.id}`)
-    return
+    return null
   }
 
-  // Find or create conversation
+  // Find or create conversation (throws WebhookPersistenceError on DB outage)
   const convResult = await findOrCreateConversation(
     accountId,
     configOwnerUserId,
-    contactRecord.id
+    contactRecord.id,
   )
-  if (!convResult) return
   const conversation = convResult.conversation
-
-  // Follow-up Inteligente: an inbound message means the lead replied,
-  // so any active scheduled plan for them is now moot — cancel it and
-  // its still-pending sends rather than let a stale template land on
-  // top of a conversation that's already moving again.
-  await cancelActiveFollowupPlan(accountId, contactRecord.id)
-
-  // Click-to-WhatsApp Ads (CTWA): capture which ad brought this lead in.
-  // First-touch only — see captureCtwaReferral for why we never overwrite
-  // an already-set origin with a later, referral-less message.
-  if (message.referral) {
-    await captureCtwaReferral(supabaseAdmin(), conversation, message.referral)
-  }
-
-  // Emit conversation.created as soon as the thread is opened — BEFORE
-  // the reaction short-circuit below — so a conversation first opened by
-  // a reaction still fires the event, and a subscriber always sees the
-  // thread open before its first message.received.
-  if (convResult.created) {
-    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
-      conversation_id: conversation.id,
-      contact_id: contactRecord.id,
-    })
-    // Pipeline is the CRM's central view — every lead that starts a
-    // conversation gets a card in the first stage automatically, no
-    // manual "add deal" step required.
-    await ensureDealForNewLead({
-      db: supabaseAdmin(),
-      accountId,
-      userId: configOwnerUserId,
-      contactId: contactRecord.id,
-      contactName: contactRecord.name || contactName || senderPhone,
-      conversationId: conversation.id,
-    })
-  }
 
   // Reactions short-circuit here — they aren't messages. We never insert
   // into `messages`, never bump unread_count, never update last_message_text.
-  // Done before parseMessageContent so the media-URL fetch is skipped.
   if (message.type === 'reaction') {
     await handleReaction(message, conversation.id, contactRecord.id)
-    return
+    if (convResult.created) {
+      await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
+        conversation_id: conversation.id,
+        contact_id: contactRecord.id,
+      })
+      await ensureDealForNewLead({
+        db: supabaseAdmin(),
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        contactName: contactRecord.name || contactName || senderPhone,
+        conversationId: conversation.id,
+      })
+    }
+    return null
+  }
+
+  // Explicit idempotency guard: `idx_messages_message_id` is non-unique in the
+  // schema, so check if this Meta `wamid` was already persisted in this
+  // conversation before inserting. Prevents duplicate rows and duplicate Clara
+  // replies whenever Meta retries a batch or individual delivery.
+  if (message.id) {
+    const { data: existingRows, error: dedupeError } = await supabaseAdmin()
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', conversation.id)
+      .eq('message_id', message.id)
+      .limit(1)
+
+    if (dedupeError) {
+      throw new WebhookPersistenceError(
+        `Failed idempotency check for message_id=${message.id}`,
+        dedupeError,
+      )
+    }
+
+    if (Array.isArray(existingRows) && existingRows.length > 0) {
+      console.log(
+        `[webhook] Duplicate message_id=${message.id} already persisted in conversation=${conversation.id}; skipping`,
+      )
+      return null
+    }
   }
 
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken)
 
-  // Resolve swipe-reply context if present. A missing parent is fine —
-  // we just store NULL and the UI renders the message without a quote.
+  // Resolve swipe-reply context if present (best-effort)
   let replyToInternalId: string | null = null
   if (message.context?.id) {
     replyToInternalId = await lookupInternalIdByMetaId(
       message.context.id,
-      conversation.id
+      conversation.id,
     )
     if (!replyToInternalId) {
       console.warn(
         '[webhook] reply context parent not found:',
-        message.context.id
+        message.context.id,
       )
     }
   }
 
-  // Insert message — field names MUST match the messages table schema
-  // (see supabase/migrations/001_initial_schema.sql):
-  //   conversation_id, sender_type, content_type, content_text,
-  //   media_url, template_name, message_id, status, created_at
-  // `mediaType` is intentionally unused — the schema has no media_type
-  // column; the MIME type is only used to construct the proxy URL during
-  // parseMessageContent. Silence the unused-var warning:
   void mediaType
 
-  // The messages.content_type CHECK constraint (widened in migration 010
-  // to add 'interactive' for button/list taps) allows:
-  //   text, image, document, audio, video, location, template, interactive
-  // Map incoming WhatsApp types that aren't in that list to the closest
-  // allowed value so the INSERT doesn't fail with a constraint error.
   const ALLOWED_CONTENT_TYPES = new Set([
     'text', 'image', 'document', 'audio', 'video',
     'location', 'template', 'interactive',
@@ -804,9 +910,7 @@ async function processMessage(
       : 'text'    // reaction, unknown → text fallback
 
   // Determine whether this is the contact's very first inbound message
-  // BEFORE we insert, so the count is accurate. Covers the case where
-  // the contact row already exists (manual add / CSV import) but they've
-  // never messaged us before — which new_contact_created wouldn't catch.
+  // BEFORE we insert, so the count is accurate.
   const { count: priorCustomerMsgCount } = await supabaseAdmin()
     .from('messages')
     .select('id', { count: 'exact', head: true })
@@ -826,83 +930,24 @@ async function processMessage(
       status: 'delivered',
       created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
       reply_to_message_id: replyToInternalId,
-      // Only populated for content_type='interactive'. Migration 010 added
-      // the column; null for every other content_type so existing inserts
-      // behave identically.
       interactive_reply_id: interactiveReplyId,
     })
     .select('id')
     .single()
 
-  if (msgError) {
+  if (msgError || !insertedMessage?.id) {
+    if (msgError && isUniqueViolation(msgError)) {
+      console.log(`[webhook] Concurrent duplicate message_id=${message.id}; skipping`)
+      return null
+    }
     logError('webhook.insert_message_failed', msgError)
-    return
+    throw new WebhookPersistenceError(
+      `Failed inserting message_id=${message.id}`,
+      msgError,
+    )
   }
 
-  // WhatsApp-style PDF preview (thumbnail + page count + size) —
-  // best-effort, fire-and-forget: never awaited, never blocks the
-  // webhook. `message.document` is still in scope from the switch above
-  // (parseMessageContent only forwarded the derived mediaUrl/mediaType,
-  // not the raw payload), and downloading + rendering a page can take a
-  // few seconds — exactly the kind of side effect this codebase already
-  // keeps off the critical path (see `maybeActivateCtwaFep`). A message
-  // whose preview never lands just keeps the plain document pill the
-  // bubble already renders as a fallback.
-  //
-  // Awaited — not fire-and-forget. We're inside the route's `after()`
-  // block (see its comment above, issue #301/#409): `after()` only keeps
-  // the function alive for promises it can see, so a detached `void`
-  // here can get frozen mid-download/render once `after()`'s own
-  // callback returns, same failure mode as those issues one level down.
-  if (
-    contentType === 'document' &&
-    message.document?.id &&
-    looksLikePdf(message.document.mime_type ?? null, message.document.filename ?? null)
-  ) {
-    try {
-      const mediaInfo = await getMediaUrl({ mediaId: message.document!.id, accessToken })
-      const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
-      await generateDocumentPreview({
-        messageId: insertedMessage.id,
-        accountId,
-        pdfBuffer: buffer,
-      })
-    } catch (err) {
-      logError('webhook.document_preview_failed', err)
-    }
-  }
-
-  // Voice-note transcription — customer audio only, never the agent's own
-  // (this branch only runs inside processMessage's inbound/customer path
-  // to begin with). Same reasoning as the PDF preview block just above:
-  // awaited, not fire-and-forget, because a detached `void` here can get
-  // frozen mid-request once this route's `after()` block returns (see
-  // that block's comment, issue #301/#409). Best-effort — a transcription
-  // failure (no key configured, provider error, oversized file) must
-  // never break inbound message processing; the voice note itself was
-  // already saved above regardless. See transcribeInboundAudioMessage's
-  // doc comment for why this reuses the embeddings key, not the main
-  // chat key, and why it's silently a no-op with no key configured.
-  let audioTranscript: string | null = null
-  if (contentType === 'audio' && message.audio?.id) {
-    try {
-      // media_url stores our own internal proxy path (auth-cookie-gated,
-      // relative), not a fetchable URL — download the real bytes from
-      // Meta directly, same as the PDF preview block above.
-      const mediaInfo = await getMediaUrl({ mediaId: message.audio.id, accessToken })
-      const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
-      audioTranscript = await transcribeInboundAudioMessage(
-        supabaseAdmin(),
-        accountId,
-        insertedMessage.id,
-        buffer,
-      )
-    } catch (err) {
-      logError('webhook.audio_transcription_failed', err)
-    }
-  }
-
-  // Update conversation
+  // Update conversation preview/unread counter (best-effort once message is durable)
   const { error: convError } = await supabaseAdmin()
     .from('conversations')
     .update({
@@ -917,11 +962,112 @@ async function processMessage(
     logError('webhook.conversation_update_failed', convError)
   }
 
-  // Custom feature (not part of the upstream wacrm template): notify
-  // any device that's opted into mobile push (Settings → Appearance →
-  // "Notificações no celular"). Fire-and-forget — sendPushToAccount()
-  // never throws, so this can't block message processing, and a
-  // missing VAPID config (most installs) makes it a silent no-op.
+  return {
+    message,
+    contact,
+    accountId,
+    configOwnerUserId,
+    accessToken,
+    contactRecord,
+    contactWasCreated: contactOutcome.wasCreated,
+    conversation,
+    conversationCreated: convResult.created,
+    insertedMessageId: insertedMessage.id,
+    contentType,
+    contentText,
+    interactiveReplyId,
+    isFirstInboundMessage,
+  }
+}
+
+/**
+ * Phase 2 (ASYNC via `after()` — runs AFTER durable persistence & HTTP 200 ACK):
+ * Executes all best-effort side effects: follow-up cancellation, CTWA attribution,
+ * new-conversation deal creation, PDF preview, audio transcription, push,
+ * broadcast reply flag, Flows, automations, Clara AI auto-reply, lead analysis,
+ * and outbound `message.received` webhooks.
+ */
+async function runPostPersistSideEffects(task: DeferredInboundTask) {
+  const {
+    message,
+    contact,
+    accountId,
+    configOwnerUserId,
+    accessToken,
+    contactRecord,
+    contactWasCreated,
+    conversation,
+    conversationCreated,
+    insertedMessageId,
+    contentType,
+    contentText,
+    interactiveReplyId,
+    isFirstInboundMessage,
+  } = task
+
+  const senderPhone = normalizePhone(message.from)
+  const contactName = contact.profile.name
+
+  // Follow-up Inteligente: cancel active plan on customer reply
+  await cancelActiveFollowupPlan(accountId, contactRecord.id)
+
+  // Click-to-WhatsApp Ads (CTWA): first-touch attribution
+  if (message.referral) {
+    await captureCtwaReferral(supabaseAdmin(), conversation, message.referral)
+  }
+
+  if (conversationCreated) {
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
+      conversation_id: conversation.id,
+      contact_id: contactRecord.id,
+    })
+    await ensureDealForNewLead({
+      db: supabaseAdmin(),
+      accountId,
+      userId: configOwnerUserId,
+      contactId: contactRecord.id,
+      contactName: contactRecord.name || contactName || senderPhone,
+      conversationId: conversation.id,
+    })
+  }
+
+  // WhatsApp-style PDF preview (thumbnail + page count + size)
+  if (
+    contentType === 'document' &&
+    message.document?.id &&
+    looksLikePdf(message.document.mime_type ?? null, message.document.filename ?? null)
+  ) {
+    try {
+      const mediaInfo = await getMediaUrl({ mediaId: message.document!.id, accessToken })
+      const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
+      await generateDocumentPreview({
+        messageId: insertedMessageId,
+        accountId,
+        pdfBuffer: buffer,
+      })
+    } catch (err) {
+      logError('webhook.document_preview_failed', err)
+    }
+  }
+
+  // Voice-note transcription — customer audio only
+  let audioTranscript: string | null = null
+  if (contentType === 'audio' && message.audio?.id) {
+    try {
+      const mediaInfo = await getMediaUrl({ mediaId: message.audio.id, accessToken })
+      const { buffer } = await downloadMedia({ downloadUrl: mediaInfo.url, accessToken })
+      audioTranscript = await transcribeInboundAudioMessage(
+        supabaseAdmin(),
+        accountId,
+        insertedMessageId,
+        buffer,
+      )
+    } catch (err) {
+      logError('webhook.audio_transcription_failed', err)
+    }
+  }
+
+  // Mobile push notification (fire-and-forget)
   void sendPushToAccount(accountId, {
     title: contactName || senderPhone,
     body: contentText || `[${message.type}]`,
@@ -929,30 +1075,10 @@ async function processMessage(
     tag: `wacrm-conversation-${conversation.id}`,
   })
 
-  // If this contact was a recent broadcast recipient, flag the reply
-  // so the broadcast's `replied_count` advances (via the aggregate
-  // trigger installed in migration 003).
+  // Broadcast reply tracking
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
 
-  // ============================================================
-  // Flow runner dispatch.
-  //
-  // If the runner consumes the message (it either advanced an active
-  // run or started a new one), we suppress the `new_message_received`
-  // + `keyword_match` automation triggers for this inbound. Customer
-  // is navigating the bot menu, not sending a fresh trigger word
-  // that should fork into automations.
-  //
-  // The relationship-level triggers (`new_contact_created`,
-  // `first_inbound_message`) still fire even when consumed — those
-  // are about WHO is messaging, not what they said.
-  //
-  // Awaited (not fire-and-forget) because we need the `consumed`
-  // result before deciding whether to dispatch automations. The
-  // runner has its own try/catch and never throws. Accounts with
-  // no active flows take the runner's early-exit "no_match" path
-  // basically for free (one indexed SELECT for the active run).
-  // ============================================================
+  // Flow runner dispatch
   const flowResult = await dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,
@@ -975,11 +1101,6 @@ async function processMessage(
   })
   const flowConsumed = flowResult.consumed
 
-  // Fire any automations that react to this webhook event. All dispatches
-  // run here (not earlier) so the contact, conversation, and inbound
-  // message all exist before any step — including send_message — runs.
-  // Fire-and-forget: a slow or failing automation must not block the
-  // webhook's 200 OK response to Meta.
   const inboundText = contentText ?? message.text?.body ?? ''
   const automationTriggers: (
     | 'new_contact_created'
@@ -988,34 +1109,14 @@ async function processMessage(
     | 'keyword_match'
     | 'interactive_reply'
   )[] = []
-  // Content-level triggers are suppressed when a flow consumed the
-  // message — see the comment block above.
   if (!flowConsumed) {
     automationTriggers.push('new_message_received', 'keyword_match')
-    // Interactive tap → fire the interactive_reply trigger too (only
-    // meaningful when a button/list reply actually arrived). Enables
-    // automation-only chained menus; when a Flow owns the menu it will
-    // have consumed the reply and this is skipped.
     if (interactiveReplyId) {
       automationTriggers.push('interactive_reply')
     }
   }
-  // new_contact_created fires only when the webhook just auto-created the
-  // contact row. first_inbound_message fires whenever this is the contact's
-  // first-ever customer-sent message — a superset that also catches
-  // manually-imported contacts sending for the first time. We dispatch both
-  // so users can pick whichever semantic they want; an automation that
-  // listens to only one trigger runs only when that trigger matches.
-  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
+  if (contactWasCreated) automationTriggers.unshift('new_contact_created')
   if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
-  // Awaited — not fire-and-forget. We're inside the route's `after()`
-  // block, which only keeps the function alive for promises it can see, so
-  // a detached dispatch can be frozen part-way through: the log row is
-  // inserted, then the steps never run. That is issue #301's failure mode
-  // recurring one level down, and it's what issue #409 reported as runs
-  // logging zero steps. `runAutomationsForTrigger` owns its own try/catch
-  // and never throws; the `.catch` is belt-and-braces so one trigger
-  // type's failure can't skip the rest of the loop.
   for (const triggerType of automationTriggers) {
     await runAutomationsForTrigger({
       accountId,
@@ -1024,46 +1125,23 @@ async function processMessage(
       context: {
         message_text: inboundText,
         conversation_id: conversation.id,
-        // Only set on interactive taps; drives the interactive_reply
-        // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
       },
     }).catch((err) => logError('webhook.automation_dispatch_failed', err))
   }
 
-  // AI auto-reply. Runs only for plain-text inbound the deterministic
-  // flow runner did NOT consume (flows win over the LLM), and only when
-  // the account has enabled it. Awaited inside `after()` (same reason as
-  // the webhook dispatch below); `dispatchInboundToAiReply` owns its
-  // eligibility gates + try/catch and never throws.
+  // AI auto-reply (Clara)
   if (!flowConsumed && !interactiveReplyId && (inboundText.trim() || audioTranscript?.trim())) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
-      inboundMessageId: insertedMessage.id,
+      inboundMessageId: insertedMessageId,
     })
   }
 
-  // Lead intelligence (BLOCO 2/4) — analyzes the conversation and
-  // silently updates tags + (when warranted) proposes a pipeline-stage
-  // move in the Central de IA. Independent of the flow runner and of
-  // auto-reply: it runs whenever there's inbound text to learn from,
-  // even when a Flow or automation already handled the reply, since
-  // it's classifying the LEAD, not answering the customer.
-  // `dispatchInboundToLeadAnalysis` owns its own eligibility gates
-  // (AI configured + active, cooldown claim) and never throws.
-  //
-  // `|| audioTranscript` (not folded into `inboundText` itself, above):
-  // a voice-note-only message has no `inboundText` (audio never sets
-  // contentText — see parseMessageContent), so without this a customer
-  // who only ever sends voice notes would be invisible to lead scoring
-  // even after transcription. Deliberately scoped to lead analysis only
-  // — auto-reply and the keyword/automation triggers above intentionally
-  // still don't fire off a transcript (product decision 2026-09-01:
-  // auto-replying to a possibly-imperfect transcription is a materially
-  // different risk than silently scoring the lead from it).
+  // Lead intelligence (tags + pipeline-stage proposal)
   if (!interactiveReplyId && (inboundText.trim() || audioTranscript)) {
     await dispatchInboundToLeadAnalysis({
       accountId,
@@ -1072,13 +1150,7 @@ async function processMessage(
     })
   }
 
-  // message.received webhook (public API). Awaited — not fire-and-forget
-  // — because we're inside the route's `after()` block, which only keeps
-  // the function alive for promises it can see; a detached promise could
-  // be frozen before it delivers. `dispatchWebhookEvent` early-exits
-  // when the account has no matching endpoint and never throws.
-  // (conversation.created is emitted earlier, right after the thread is
-  // opened.)
+  // message.received webhook (public API)
   await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
     conversation_id: conversation.id,
     contact_id: contactRecord.id,
@@ -1248,13 +1320,11 @@ async function findOrCreateContact(
   configOwnerUserId: string,
   phone: string,
   name: string
-): Promise<ContactOutcome | null> {
+): Promise<ContactOutcome> {
   // Find an existing contact for this account by phone. The shared
   // helper pre-filters in SQL by the last-8-digit suffix (so we don't
   // pull every contact on every inbound message) then applies the
-  // strict `phonesMatch` in JS on the small candidate set. The same
-  // helper backs the manual contact form and CSV import, so all three
-  // paths agree on what "same number" means (issue #212).
+  // strict `phonesMatch` in JS on the small candidate set.
   const existingContact = await findExistingContact(
     supabaseAdmin(),
     accountId,
@@ -1262,7 +1332,7 @@ async function findOrCreateContact(
   )
 
   if (existingContact) {
-    // Update name if it changed
+    // Update name if it changed (best-effort)
     if (name && name !== existingContact.name) {
       await supabaseAdmin()
         .from('contacts')
@@ -1272,10 +1342,6 @@ async function findOrCreateContact(
     return { contact: existingContact, wasCreated: false }
   }
 
-  // Create new contact. account_id is the tenancy column;
-  // user_id is the NOT NULL FK audit column (no inbound message
-  // has a single "user who created" it — we attribute to the
-  // WhatsApp config owner as a stable default).
   const { data: newContact, error: createError } = await supabaseAdmin()
     .from('contacts')
     .insert({
@@ -1288,16 +1354,12 @@ async function findOrCreateContact(
     .single()
 
   if (createError) {
-    // Lost a race: a concurrent inbound delivery (or another path)
-    // created this contact between our lookup and insert, and the
-    // unique index (migration 022) rejected the duplicate. Re-resolve
-    // the existing row instead of dropping the message.
     if (isUniqueViolation(createError)) {
       const raced = await findExistingContact(supabaseAdmin(), accountId, phone)
       if (raced) return { contact: raced, wasCreated: false }
     }
     logError('webhook.create_contact_failed', createError)
-    return null
+    throw new WebhookPersistenceError('Failed creating contact', createError)
   }
 
   return { contact: newContact, wasCreated: true }
@@ -1307,20 +1369,7 @@ async function findOrCreateConversation(
   accountId: string,
   configOwnerUserId: string,
   contactId: string,
-) {
-  // Look for an existing conversation in this account, oldest-first.
-  //
-  // We deliberately do NOT use `.single()` here. `.single()` errors on
-  // *both* 0 rows and ≥2 rows, and the old code treated any error as
-  // "none found" and inserted a new row. So once two conversations
-  // existed for a contact (from a race — Meta retries a delivery, or a
-  // batch fans out to concurrent runs), every subsequent inbound
-  // message errored on the lookup and created yet another conversation,
-  // snowballing into a wall of duplicate chats (issue #363).
-  //
-  // Ordering oldest-first and taking one row makes the lookup resolve to
-  // the same canonical survivor the dedup migration (036) keeps, so any
-  // pre-existing duplicates converge instead of compounding.
+): Promise<{ conversation: Record<string, unknown> & { id: string; unread_count?: number | null }; created: boolean }> {
   const { data: existingRows, error: findError } = await supabaseAdmin()
     .from('conversations')
     .select('*')
@@ -1331,15 +1380,13 @@ async function findOrCreateConversation(
 
   if (findError) {
     logError('webhook.find_conversation_failed', findError)
-    return null
+    throw new WebhookPersistenceError('Failed finding conversation', findError)
   }
 
   if (existingRows && existingRows.length > 0) {
     return { conversation: existingRows[0], created: false }
   }
 
-  // Create new conversation. Same tenancy + audit split as
-  // findOrCreateContact above.
   const { data: newConv, error: createError } = await supabaseAdmin()
     .from('conversations')
     .insert({
@@ -1351,10 +1398,6 @@ async function findOrCreateConversation(
     .single()
 
   if (createError) {
-    // Lost a race: a concurrent inbound delivery created the
-    // conversation between our lookup and insert, and the unique index
-    // (migration 036) rejected the duplicate. Re-resolve the winning
-    // row instead of dropping the message — mirrors findOrCreateContact.
     if (isUniqueViolation(createError)) {
       const { data: raced } = await supabaseAdmin()
         .from('conversations')
@@ -1368,7 +1411,7 @@ async function findOrCreateConversation(
       }
     }
     logError('webhook.create_conversation_failed', createError)
-    return null
+    throw new WebhookPersistenceError('Failed creating conversation', createError)
   }
 
   return { conversation: newConv, created: true }
