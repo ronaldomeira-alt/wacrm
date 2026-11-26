@@ -9,7 +9,11 @@ import {
   Bot,
   Loader2,
   Save,
+  ChevronDown,
+  FileText,
 } from 'lucide-react';
+import { useAuth } from '@/hooks/use-auth';
+import { canEditSettings } from '@/lib/auth/roles';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -31,6 +35,9 @@ import type { AccountMember } from '@/types';
 const HANDOFF_QUEUE = '__queue__';
 
 export function AiBehaviorSettings() {
+  const { accountRole, profileLoading } = useAuth();
+  const canEdit = accountRole ? canEditSettings(accountRole) : false;
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [members, setMembers] = useState<AccountMember[]>([]);
@@ -47,7 +54,10 @@ export function AiBehaviorSettings() {
   const [isActive, setIsActive] = useState(false);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [safetyLimit, setSafetyLimit] = useState(8);
+  const [maxAutoReplies, setMaxAutoReplies] = useState(3);
   const [handoffAgentId, setHandoffAgentId] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [showLegacyPrompt, setShowLegacyPrompt] = useState(false);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -71,7 +81,9 @@ export function AiBehaviorSettings() {
         setIsActive(data.is_active || false);
         setAutoReplyEnabled(data.auto_reply_enabled || false);
         setSafetyLimit(data.safety_message_limit || 8);
+        setMaxAutoReplies(data.auto_reply_max_per_conversation ?? 3);
         setHandoffAgentId(data.handoff_agent_id || '');
+        setSystemPrompt(data.system_prompt || '');
       }
     } catch {
       toast.error('Erro ao carregar configurações de comportamento.');
@@ -85,6 +97,7 @@ export function AiBehaviorSettings() {
   }, [loadConfig]);
 
   const handleSave = async () => {
+    if (!canEdit) return;
     setSaving(true);
     try {
       const res = await fetch('/api/ai/config', {
@@ -102,7 +115,9 @@ export function AiBehaviorSettings() {
           is_active: isActive,
           auto_reply_enabled: autoReplyEnabled,
           safety_message_limit: safetyLimit,
+          auto_reply_max_per_conversation: maxAutoReplies,
           handoff_agent_id: handoffAgentId || null,
+          system_prompt: systemPrompt.trim() || null,
         }),
       });
 
@@ -120,7 +135,7 @@ export function AiBehaviorSettings() {
     }
   };
 
-  if (loading) {
+  if (loading || profileLoading) {
     return (
       <div className="flex h-48 items-center justify-center rounded-xl border border-border bg-card">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -128,9 +143,22 @@ export function AiBehaviorSettings() {
     );
   }
 
+  const effectiveLimit = Math.min(
+    Math.max(1, safetyLimit || 1),
+    Math.max(1, maxAutoReplies || 1),
+  );
+  const readOnly = !canEdit || saving;
+
   return (
     <div className="space-y-6">
+      {!canEdit && (
+        <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          Somente admins e proprietários podem alterar as configurações de comportamento da IA.
+        </p>
+      )}
+
       {/* 1. Identidade e Apresentação */}
+      <fieldset disabled={readOnly} className="space-y-6 disabled:opacity-90">
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
@@ -276,6 +304,7 @@ export function AiBehaviorSettings() {
           </div>
         </CardContent>
       </Card>
+      </fieldset>
 
       {/* 4. Controles Mestre de Produção */}
       <Card>
@@ -296,7 +325,12 @@ export function AiBehaviorSettings() {
                 Habilita o motor de IA para gerar sugestões, análises e testes no Playground.
               </p>
             </div>
-            <Switch checked={isActive} onCheckedChange={setIsActive} className="shrink-0" />
+            <Switch
+              checked={isActive}
+              onCheckedChange={setIsActive}
+              disabled={readOnly}
+              className="shrink-0"
+            />
           </div>
 
           <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 bg-muted/20">
@@ -316,7 +350,7 @@ export function AiBehaviorSettings() {
             <Switch
               checked={autoReplyEnabled}
               onCheckedChange={setAutoReplyEnabled}
-              disabled={!isActive}
+              disabled={readOnly || !isActive}
               className="shrink-0"
             />
           </div>
@@ -324,7 +358,7 @@ export function AiBehaviorSettings() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="safety-limit" className="text-xs">
-                Limite de Segurança de Mensagens por Conversa
+                Limite de Segurança de Mensagens por Conversa (1–30)
               </Label>
               <Input
                 id="safety-limit"
@@ -332,44 +366,119 @@ export function AiBehaviorSettings() {
                 min={1}
                 max={30}
                 value={safetyLimit}
-                onChange={(e) => setSafetyLimit(Number(e.target.value) || 8)}
+                disabled={readOnly}
+                onChange={(e) =>
+                  setSafetyLimit(Math.min(30, Math.max(1, Number(e.target.value) || 1)))
+                }
                 className="w-full"
               />
               <p className="text-[11px] text-muted-foreground">
-                Após esse número de mensagens, a IA transfere automaticamente para um atendente humano.
+                Teto de segurança conversacional antes de transferir para um atendente humano.
               </p>
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="handoff-target" className="text-xs">
-                Atendente Padrão para Transferência
+              <Label htmlFor="max-auto-replies" className="text-xs">
+                Máximo de Respostas Automáticas por Conversa (1–20)
               </Label>
-              <Select
-                value={handoffAgentId || HANDOFF_QUEUE}
-                onValueChange={(val) => setHandoffAgentId(!val || val === HANDOFF_QUEUE ? '' : val)}
-              >
-                <SelectTrigger id="handoff-target">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={HANDOFF_QUEUE}>
-                    Fila Geral (Não atribuído)
-                  </SelectItem>
-                  {members.map((m) => (
-                    <SelectItem key={m.user_id} value={m.user_id}>
-                      {memberLabel(m)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                id="max-auto-replies"
+                type="number"
+                min={1}
+                max={20}
+                value={maxAutoReplies}
+                disabled={readOnly}
+                onChange={(e) =>
+                  setMaxAutoReplies(Math.min(20, Math.max(1, Number(e.target.value) || 1)))
+                }
+                className="w-full"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Limite do bot de auto-reply por conversa antes de escalar para atendimento humano.
+              </p>
             </div>
+          </div>
+
+          <div className="rounded-lg border border-border/80 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            <strong className="text-foreground">Limite efetivo aplicado pelo motor:</strong>{' '}
+            <span className="font-semibold tabular-nums text-foreground">
+              {effectiveLimit} {effectiveLimit === 1 ? 'mensagem' : 'mensagens'}
+            </span>{' '}
+            por conversa (o motor sempre aplica o menor valor entre os dois limites acima).
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="handoff-target" className="text-xs">
+              Atendente Padrão para Transferência
+            </Label>
+            <Select
+              value={handoffAgentId || HANDOFF_QUEUE}
+              disabled={readOnly}
+              onValueChange={(val) => setHandoffAgentId(!val || val === HANDOFF_QUEUE ? '' : val)}
+            >
+              <SelectTrigger id="handoff-target">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={HANDOFF_QUEUE}>
+                  Fila Geral (Não atribuído)
+                </SelectItem>
+                {members.map((m) => (
+                  <SelectItem key={m.user_id} value={m.user_id}>
+                    {memberLabel(m)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>
 
+      {/* 5. Contexto Legado (Rascunhos / Fluxos Auxiliares) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <button
+            type="button"
+            onClick={() => setShowLegacyPrompt((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 text-left"
+          >
+            <div className="space-y-1">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <FileText className="h-4 w-4 text-muted-foreground" />
+                Instruções de Contexto Legado (Rascunhos e Fluxos Auxiliares)
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Campo de compatibilidade (<code className="text-[11px]">system_prompt</code>) preservado para fluxos legados. O atendimento principal da Clara utiliza os campos estruturados acima.
+              </CardDescription>
+            </div>
+            <ChevronDown
+              className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+                showLegacyPrompt ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+        </CardHeader>
+        {showLegacyPrompt && (
+          <CardContent className="pt-0 space-y-2">
+            <Label htmlFor="legacy-system-prompt" className="text-xs">
+              Contexto de negócio legado
+            </Label>
+            <Textarea
+              id="legacy-system-prompt"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              disabled={readOnly}
+              placeholder="Opcional — usado apenas por fluxos legados que consomem system_prompt diretamente."
+              rows={4}
+              className="text-sm"
+            />
+          </CardContent>
+        )}
+      </Card>
+
       {/* Save Button */}
       <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={saving} className="px-6">
+        <Button onClick={handleSave} disabled={readOnly} className="px-6">
           {saving ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (

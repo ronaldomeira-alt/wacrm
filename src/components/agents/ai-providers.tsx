@@ -5,8 +5,10 @@ import { toast } from 'sonner';
 import {
   Activity,
   ArrowLeftRight,
+  ArrowRight,
   CheckCircle2,
   Clock,
+  KeyRound,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -144,7 +146,16 @@ function formatResetCountdown(resetAt: string | null): string {
   return `${days}d ${hours % 24}h`;
 }
 
-export function AiProvidersPanel() {
+export interface AiProvidersPanelProps {
+  /** When true (unified AI Central), credential inputs live exclusively in Credenciais. */
+  hideCredentialInputs?: boolean;
+  onGoToCredentials?: () => void;
+}
+
+export function AiProvidersPanel({
+  hideCredentialInputs = false,
+  onGoToCredentials,
+}: AiProvidersPanelProps = {}) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingProvider, setTestingProvider] = useState<AiProvider | null>(null);
@@ -527,29 +538,75 @@ export function AiProvidersPanel() {
           {/* Credencial & Limites Preventivos por Janela OpenCode Go */}
           <div className="grid gap-4 rounded-lg border border-border bg-muted/20 p-4 sm:grid-cols-2">
             <div className="space-y-3">
-              <div className="space-y-2">
-                <Label>
-                  Chave OpenCode Go{' '}
-                  {data?.settings.hasOpencodeGoKey ? (
-                    <span className="text-xs text-emerald-500">(configurada no servidor)</span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">(não configurada)</span>
-                  )}
-                </Label>
-                <Input
-                  type="password"
-                  placeholder={
-                    data?.settings.hasOpencodeGoKey
-                      ? '•••••••••••••••• (digite para substituir)'
-                      : 'Cole a chave Bearer do OpenCode Go'
-                  }
-                  value={opencodeGoKeyInput}
-                  onChange={(e) => setOpencodeGoKeyInput(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Armazenada criptografada (AES-256-GCM) no servidor. Nunca é exibida no navegador.
-                </p>
-              </div>
+              {hideCredentialInputs ? (
+                <div className="space-y-2.5 rounded-lg border border-border bg-background/60 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                      <KeyRound className="h-3.5 w-3.5 text-primary" />
+                      Credenciais dos Provedores
+                    </span>
+                    {onGoToCredentials && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={onGoToCredentials}
+                        className="h-7 text-xs"
+                      >
+                        Gerenciar Credenciais
+                        <ArrowRight className="ml-1 h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge
+                      variant={data?.settings.hasOpencodeGoKey ? 'default' : 'outline'}
+                      className="text-[11px] font-normal"
+                    >
+                      OpenCode Go: {data?.settings.hasOpencodeGoKey ? 'Configurada' : 'Pendente'}
+                    </Badge>
+                    <Badge
+                      variant={data?.settings.hasDeepseekKey ? 'default' : 'outline'}
+                      className="text-[11px] font-normal"
+                    >
+                      DeepSeek: {data?.settings.hasDeepseekKey ? 'Configurada' : 'Pendente'}
+                    </Badge>
+                    <Badge
+                      variant={data?.settings.hasApiKey ? 'default' : 'outline'}
+                      className="text-[11px] font-normal"
+                    >
+                      OpenAI / Anthropic: {data?.settings.hasApiKey ? 'Configurada' : 'Pendente'}
+                    </Badge>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    As chaves de API são gerenciadas de forma centralizada e criptografada na seção Credenciais.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label>
+                    Chave OpenCode Go{' '}
+                    {data?.settings.hasOpencodeGoKey ? (
+                      <span className="text-xs text-emerald-500">(configurada no servidor)</span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">(não configurada)</span>
+                    )}
+                  </Label>
+                  <Input
+                    type="password"
+                    placeholder={
+                      data?.settings.hasOpencodeGoKey
+                        ? '•••••••••••••••• (digite para substituir)'
+                        : 'Cole a chave Bearer do OpenCode Go'
+                    }
+                    value={opencodeGoKeyInput}
+                    onChange={(e) => setOpencodeGoKeyInput(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Armazenada criptografada (AES-256-GCM) no servidor. Nunca é exibida no navegador.
+                  </p>
+                </div>
+              )}
               <div className="space-y-1.5">
                 <Label className="text-xs">Falhas consecutivas p/ abrir circuito</Label>
                 <Input

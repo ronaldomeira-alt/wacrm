@@ -8,6 +8,7 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { validateAiCredentials } from '@/lib/ai/validate'
 import { embedTexts } from '@/lib/ai/embeddings'
+import { AI_PROVIDER_DEFAULT_MODEL } from '@/lib/ai/defaults'
 import { AiError, type AiProvider } from '@/lib/ai/types'
 import { CONFIG_COLUMNS } from '@/lib/ai/config'
 
@@ -43,14 +44,21 @@ export async function GET() {
     }
 
     if (!data) return NextResponse.json({ configured: false })
-    // The keys are selected only to derive the has_* flags; neither is
+    // The keys are selected only to derive the has_* flags; none are
     // returned to the client.
-    const { api_key, embeddings_api_key, deepseek_api_key, ...safe } = data
+    const {
+      api_key,
+      embeddings_api_key,
+      deepseek_api_key,
+      opencode_go_api_key,
+      ...safe
+    } = data
     return NextResponse.json({
       configured: true,
       has_key: !!api_key,
       has_embeddings_key: !!embeddings_api_key,
       has_deepseek_key: !!deepseek_api_key,
+      has_opencode_go_key: !!opencode_go_api_key,
       ...safe,
     })
   } catch (err) {
@@ -102,13 +110,17 @@ export async function POST(request: Request) {
     const model = rawModel || existing?.model || ''
     if (!model) return bad('model is required')
 
+    const systemPromptProvided = 'system_prompt' in body
     const systemPrompt =
       typeof body.system_prompt === 'string' && body.system_prompt.trim()
         ? body.system_prompt.trim()
         : null
+    const isActiveProvided = 'is_active' in body
     const isActive = body.is_active === true
+    const autoReplyProvided = 'auto_reply_enabled' in body
     const autoReplyEnabled = body.auto_reply_enabled === true
 
+    const maxPerProvided = 'auto_reply_max_per_conversation' in body
     let maxPer = Number(body.auto_reply_max_per_conversation)
     if (!Number.isFinite(maxPer)) maxPer = 3
     maxPer = Math.min(20, Math.max(1, Math.floor(maxPer)))
@@ -180,10 +192,20 @@ export async function POST(request: Request) {
       return bad('A valid DeepSeek API key is required when DeepSeek is selected as provider.')
     }
 
+    const rawApiKeyProvider =
+      body.api_key_provider === 'openai' || body.api_key_provider === 'anthropic'
+        ? (body.api_key_provider as 'openai' | 'anthropic')
+        : null
+
     const activeKeyToValidate = provider === 'deepseek' ? deepseekKeyPlain! : apiKeyPlain
+    const isPrimarySlotProvider = provider === 'openai' || provider === 'anthropic'
     const credentialsChanged =
       !existing ||
-      (provider === 'deepseek' ? rawDeepseekKey !== '' : rawKey !== '') ||
+      (provider === 'deepseek'
+        ? rawDeepseekKey !== ''
+        : isPrimarySlotProvider
+          ? rawKey !== '' && (!rawApiKeyProvider || rawApiKeyProvider === provider)
+          : false) ||
       provider !== existing.provider ||
       model !== existing.model
 
@@ -210,6 +232,39 @@ export async function POST(request: Request) {
         }
         console.error('[ai/config POST] validation error:', err)
         return bad(`Could not validate the API key with ${provider}.`)
+      }
+    }
+
+    // Standalone validation when rotating the shared OpenAI/Anthropic `api_key`
+    // slot while another provider (e.g. `opencode_go` or `deepseek`) is active,
+    // or when explicitly targeting the alternate provider via `api_key_provider`.
+    const needsStandaloneApiKeyValidation =
+      Boolean(rawKey) &&
+      (!isPrimarySlotProvider || (rawApiKeyProvider !== null && rawApiKeyProvider !== provider))
+    if (needsStandaloneApiKeyValidation) {
+      const targetProvider: 'openai' | 'anthropic' =
+        rawApiKeyProvider ?? (rawKey.startsWith('sk-ant-') ? 'anthropic' : 'openai')
+      try {
+        await validateAiCredentials({
+          provider: targetProvider,
+          model: AI_PROVIDER_DEFAULT_MODEL[targetProvider],
+          apiKey: rawKey,
+          deepseekApiKey: null,
+          systemPrompt: 'You are a connectivity check. Reply with the single word: OK.',
+          isActive: true,
+          autoReplyEnabled: false,
+          autoReplyMaxPerConversation: 1,
+          handoffAgentId: null,
+          embeddingsApiKey: null,
+        })
+      } catch (err) {
+        if (err instanceof AiError) {
+          return NextResponse.json(
+            { error: `${targetProvider} key: ${err.message}`, code: err.code },
+            { status: 400 },
+          )
+        }
+        return bad(`Could not validate the ${targetProvider} API key.`)
       }
     }
 
@@ -257,14 +312,21 @@ export async function POST(request: Request) {
     }
 
     const encryptedKey = rawKey ? encrypt(rawKey) : null
+    // On partial updates (existing row), only include fields explicitly present
+    // in `body` so saving one section (e.g. Behavior or Credentials) never
+    // silently resets or wipes adjacent fields (`system_prompt`,
+    // `auto_reply_max_per_conversation`, `safety_message_limit`, `is_active`,
+    // `auto_reply_enabled`). On initial insert, apply the standard defaults.
     const shared: Record<string, unknown> = {
       provider,
       model,
-      system_prompt: systemPrompt,
-      is_active: isActive,
-      auto_reply_enabled: autoReplyEnabled,
-      auto_reply_max_per_conversation: maxPer,
-      safety_message_limit: maxPer,
+    }
+    if (!existing || systemPromptProvided) shared.system_prompt = systemPrompt
+    if (!existing || isActiveProvided) shared.is_active = isActive
+    if (!existing || autoReplyProvided) shared.auto_reply_enabled = autoReplyEnabled
+    if (!existing || maxPerProvided) shared.auto_reply_max_per_conversation = maxPer
+    if (!existing && !('safety_message_limit' in body)) {
+      shared.safety_message_limit = 8
     }
 
     if (rawDeepseekKey) {

@@ -17,11 +17,15 @@ import {
   TrendingUp,
   History,
   Layers,
+  Pencil,
 } from 'lucide-react';
+import { useAuth } from '@/hooks/use-auth';
+import { canEditSettings } from '@/lib/auth/roles';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { LearningDialog } from '@/components/ai-hub/learning-dialog';
 import type { AiSuggestion } from '@/types';
 
 interface LearningPayload {
@@ -77,13 +81,42 @@ const TYPE_CONFIG: Record<
     color: 'border-teal-500/30 bg-teal-500/10 text-teal-400',
     targetDesc: 'Sugestão operacional para a equipe',
   },
+  // Compatibilidade com tipos legados e memórias escopadas
+  factual: {
+    label: 'Informação Factual',
+    icon: Globe,
+    color: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+    targetDesc: 'Será incorporado à base de conhecimento',
+  },
+  commercial_rule: {
+    label: 'Regra Comercial',
+    icon: ShieldAlert,
+    color: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+    targetDesc: 'Regra comercial observada no atendimento',
+  },
+  procedure: {
+    label: 'Procedimento',
+    icon: Layers,
+    color: 'border-teal-500/30 bg-teal-500/10 text-teal-400',
+    targetDesc: 'Procedimento operacional observado',
+  },
+  communication_style: {
+    label: 'Estilo de Comunicação',
+    icon: MessageSquare,
+    color: 'border-purple-500/30 bg-purple-500/10 text-purple-400',
+    targetDesc: 'Estilo de linguagem da equipe',
+  },
 };
 
 export function AiEvolutionDashboard() {
+  const { accountRole } = useAuth();
+  const canApprove = accountRole ? canEditSettings(accountRole) : false;
+
   const [subTab, setSubTab] = useState<'pending' | 'history'>('pending');
   const [suggestions, setSuggestions] = useState<AiSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [editingSuggestion, setEditingSuggestion] = useState<AiSuggestion | null>(null);
 
   const fetchSuggestions = useCallback(async () => {
     setLoading(true);
@@ -106,7 +139,7 @@ export function AiEvolutionDashboard() {
 
   const handleAction = async (
     id: string,
-    action: 'approved' | 'rejected' | 'ignored' | 'revert',
+    action: 'approved' | 'rejected' | 'ignored' | 'pending' | 'revert',
   ) => {
     setProcessingId(id);
     try {
@@ -130,6 +163,8 @@ export function AiEvolutionDashboard() {
         toast.success('Sugestão aprovada e incorporada à IA com sucesso!');
       } else if (action === 'revert') {
         toast.success('Evolução revertida com sucesso!');
+      } else if (action === 'pending') {
+        toast.success('Aprendizado restaurado para pendentes.');
       } else if (action === 'rejected') {
         toast.info('Sugestão rejeitada.');
       } else {
@@ -267,6 +302,17 @@ export function AiEvolutionDashboard() {
                         size="sm"
                         className="h-8 text-xs text-muted-foreground"
                         disabled={isProcessing}
+                        onClick={() => setEditingSuggestion(suggestion)}
+                      >
+                        <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                        Inspecionar / Editar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs text-muted-foreground"
+                        disabled={isProcessing}
                         onClick={() => handleAction(suggestion.id, 'ignored')}
                       >
                         <EyeOff className="mr-1.5 h-3.5 w-3.5" />
@@ -287,7 +333,12 @@ export function AiEvolutionDashboard() {
                         type="button"
                         size="sm"
                         className="h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90"
-                        disabled={isProcessing}
+                        disabled={isProcessing || !canApprove}
+                        title={
+                          canApprove
+                            ? undefined
+                            : 'Apenas admins e proprietários podem aprovar aprendizados'
+                        }
                         onClick={() => handleAction(suggestion.id, 'approved')}
                       >
                         {isProcessing ? (
@@ -351,7 +402,12 @@ export function AiEvolutionDashboard() {
                       variant="outline"
                       size="sm"
                       className="h-7 text-xs text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 border-amber-500/30 shrink-0"
-                      disabled={isProcessing}
+                      disabled={isProcessing || !canApprove}
+                      title={
+                        canApprove
+                          ? undefined
+                          : 'Apenas admins e proprietários podem reverter aprendizados'
+                      }
                       onClick={() => handleAction(suggestion.id, 'revert')}
                     >
                       {isProcessing ? (
@@ -362,11 +418,42 @@ export function AiEvolutionDashboard() {
                       Desfazer / Reverter
                     </Button>
                   )}
+                  {suggestion.status === 'ignored' && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs shrink-0"
+                      disabled={isProcessing}
+                      onClick={() => handleAction(suggestion.id, 'pending')}
+                    >
+                      {isProcessing ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="mr-1 h-3 w-3" />
+                      )}
+                      Restaurar
+                    </Button>
+                  )}
                 </div>
               );
             })}
           </div>
         )
+      )}
+
+      {editingSuggestion && (
+        <LearningDialog
+          suggestion={editingSuggestion}
+          open={Boolean(editingSuggestion)}
+          onOpenChange={(open) => {
+            if (!open) setEditingSuggestion(null);
+          }}
+          onResolved={() => {
+            setEditingSuggestion(null);
+            fetchSuggestions();
+          }}
+        />
       )}
     </div>
   );
