@@ -494,6 +494,7 @@
       "send": "Send",
       "sendRecording": "Send voice message",
       "recordingFailed": "Failed to send voice note",
+      "recordingInitializing": "Preparing microphone…",
       "retryRecording": "Retry",
       "unsupportedVideoType": "This video is in a format WhatsApp doesn't accept (e.g. iPhone .MOV). Send it as MP4 — on iPhone, switch Settings → Camera → Formats → Most Compatible, or pick a video that's already MP4.",
       "unsupportedFileType": "This file type isn't supported.",

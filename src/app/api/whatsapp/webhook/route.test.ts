@@ -260,4 +260,63 @@ describe('WhatsApp webhook inbound audio auto-reply gate', () => {
     expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
     expect(h.dispatchInboundToLeadAnalysis).not.toHaveBeenCalled()
   })
+
+  it('logs Meta status.errors details when an outbound message fails asynchronously via webhook', async () => {
+    const { logError } = await import('@/lib/observability/log')
+    const payload = {
+      entry: [
+        {
+          id: 'waba-1',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '5583988100000', phone_number_id: 'PNID-1' },
+                statuses: [
+                  {
+                    id: 'wamid.failed.audio.1',
+                    status: 'failed',
+                    timestamp: '1763218805',
+                    recipient_id: '5583999998888',
+                    errors: [
+                      {
+                        code: 131053,
+                        title: 'Media upload error',
+                        error_data: { details: 'Unsupported audio MIME/container' },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    const res = await POST(
+      new Request('https://example.test/api/whatsapp/webhook', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-hub-signature-256': 'sha256=mock',
+        },
+        body: JSON.stringify(payload),
+      }),
+    )
+    expect(res.status).toBe(200)
+    await Promise.all(h.pendingAfter)
+
+    expect(logError).toHaveBeenCalledWith(
+      'webhook.message_status_failed',
+      expect.any(Error),
+      expect.objectContaining({
+        whatsappMessageId: 'wamid.failed.audio.1',
+        status: 'failed',
+        errorCode: 131053,
+        errorTitle: 'Media upload error',
+      }),
+    )
+  })
 })

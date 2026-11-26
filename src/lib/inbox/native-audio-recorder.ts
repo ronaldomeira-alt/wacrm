@@ -31,9 +31,11 @@ export function pickBestNativeAudioMimeType(): string {
   }
   const candidates = [
     "audio/ogg;codecs=opus",
-    "audio/mp4",
+    // Safari 18.4+ / iOS 26 supports WebM/Opus, which avoids fragmented fMP4
+    // rejection on downstream WhatsApp ingestion.
     "audio/webm;codecs=opus",
     "audio/webm",
+    "audio/mp4",
   ];
   for (const c of candidates) {
     try {
@@ -48,17 +50,22 @@ export function pickBestNativeAudioMimeType(): string {
  * primarily for iOS Lockdown Mode or platforms where `opus-recorder` initialization fails.
  */
 export async function startNativeAudioCapture(options?: {
+  stream?: MediaStream;
+  audioContext?: AudioContext | null;
+  ownsAudioContext?: boolean;
   onTrackEnded?: () => void;
   onError?: (err: unknown) => void;
 }): Promise<NativeRecorderHandle> {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-      channelCount: 1,
-    },
-  });
+  const stream =
+    options?.stream ??
+    (await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1,
+      },
+    }));
 
   const preferredMime = pickBestNativeAudioMimeType();
   const recorder = preferredMime
@@ -71,14 +78,17 @@ export async function startNativeAudioCapture(options?: {
   let closed = false;
 
   // Passive RMS monitor (no Proxy on AudioContext)
-  let ctx: AudioContext | null = null;
+  let ctx: AudioContext | null = options?.audioContext ?? null;
+  const ownsCtx = options?.ownsAudioContext ?? !options?.audioContext;
   let source: MediaStreamAudioSourceNode | null = null;
   let analyser: AnalyserNode | null = null;
   let sampleBuf: Uint8Array<ArrayBuffer> | null = null;
 
   try {
-    if (typeof AudioContext !== "undefined") {
+    if (!ctx && typeof AudioContext !== "undefined") {
       ctx = new AudioContext();
+    }
+    if (ctx && typeof ctx.createMediaStreamSource === "function" && typeof ctx.createAnalyser === "function") {
       source = ctx.createMediaStreamSource(stream);
       analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
@@ -124,7 +134,7 @@ export async function startNativeAudioCapture(options?: {
     try {
       analyser?.disconnect();
     } catch {}
-    if (ctx) {
+    if (ctx && ownsCtx) {
       void ctx.close().catch(() => {});
       ctx = null;
     }
@@ -135,7 +145,15 @@ export async function startNativeAudioCapture(options?: {
     }
   };
 
-  recorder.start(250);
+  const effectiveMime = (recorder.mimeType || preferredMime || "").toLowerCase();
+  // Safari emits fragmented MP4 (`moof`/`mdat` chunks) when started with a timeslice,
+  // which WhatsApp rejects asynchronously. Calling `start()` without timeslice emits
+  // a complete single-container MP4 on `stop()`.
+  if (effectiveMime.includes("mp4")) {
+    recorder.start();
+  } else {
+    recorder.start(250);
+  }
 
   return {
     mimeType: (recorder.mimeType || preferredMime || "audio/mp4").split(";")[0].toLowerCase().trim(),

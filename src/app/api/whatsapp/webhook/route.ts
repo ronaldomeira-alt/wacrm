@@ -96,6 +96,12 @@ interface WhatsAppWebhookEntry {
         status: string
         timestamp: string
         recipient_id: string
+        errors?: Array<{
+          code?: number
+          title?: string
+          message?: string
+          error_data?: { details?: string }
+        }>
       }>
     }
     field: string
@@ -391,7 +397,31 @@ async function handleStatusUpdate(status: {
   status: string
   timestamp: string
   recipient_id: string
+  errors?: Array<{
+    code?: number
+    title?: string
+    message?: string
+    error_data?: { details?: string }
+  }>
 }) {
+  if (status.status === 'failed' || (status.errors && status.errors.length > 0)) {
+    const firstErr = status.errors?.[0]
+    logError(
+      'webhook.message_status_failed',
+      new Error(
+        firstErr
+          ? `Meta status failed (${firstErr.code ?? 'unknown'}): ${firstErr.title ?? firstErr.message ?? 'unknown'} ${firstErr.error_data?.details ?? ''}`.trim()
+          : 'Meta status failed without error payload'
+      ),
+      {
+        whatsappMessageId: status.id,
+        status: status.status,
+        errorCode: firstErr?.code,
+        errorTitle: firstErr?.title,
+      }
+    )
+  }
+
   // 1) Mirror onto messages with monotonic transition ordering — `message_id`
   //    is not unique across numbers, so query matching rows and only update
   //    those whose current status advances forward.

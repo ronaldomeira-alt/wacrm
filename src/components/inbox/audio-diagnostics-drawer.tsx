@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Activity, Check, Copy, RefreshCw, Trash2, X } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import {
+  assessIosUaVersion,
   clearAudioDiagnosticSessions,
-  detectIosVersion,
   detectRuntimeMode,
   getAudioDiagnosticSessions,
   getLiveRecorderResources,
@@ -14,6 +14,7 @@ import {
   type AudioDiagnosticSession,
   type LiveRecorderResources,
 } from "@/lib/inbox/audio-telemetry";
+import { pickBestNativeAudioMimeType } from "@/lib/inbox/native-audio-recorder";
 import {
   isAuthorizedForAudioFlags,
   resolveAudioFeatureFlags,
@@ -74,6 +75,112 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
   const [flags, setFlags] = useState(() => resolveAudioFeatureFlags(authCtx));
   const [copied, setCopied] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [runningProbes, setRunningProbes] = useState(false);
+  const [probeReport, setProbeReport] = useState<Record<string, unknown> | null>(null);
+
+  const runIsolationProbes = () => {
+    setRunningProbes(true);
+    const startedAt = Date.now();
+    // Trigger hardware probes synchronously inside user click turn to mirror
+    // real mic acquisition gesture semantics.
+    let audioCtx: AudioContext | null = null;
+    let ctxInitialState = "unavailable";
+    let ctxResumedPromise: Promise<void> | null = null;
+    try {
+      if (typeof AudioContext !== "undefined") {
+        audioCtx = new AudioContext();
+        ctxInitialState = audioCtx.state;
+        ctxResumedPromise = audioCtx.resume();
+      }
+    } catch (err) {
+      ctxInitialState = `error:${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    const gumPromise =
+      typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia
+        ? navigator.mediaDevices.getUserMedia({ audio: true })
+        : Promise.reject(new Error("getUserMedia unavailable"));
+
+    void (async () => {
+      const gumStart = Date.now();
+      let micProbe: Record<string, unknown>;
+      try {
+        const stream = await gumPromise;
+        const tracks = stream.getTracks();
+        micProbe = {
+          ok: tracks.length > 0,
+          latencyMs: Date.now() - gumStart,
+          trackCount: tracks.length,
+          readyStates: tracks.map((t) => t.readyState),
+          mutedStates: tracks.map((t) => Boolean(t.muted)),
+        };
+        for (const t of tracks) {
+          try {
+            t.stop();
+          } catch {}
+        }
+      } catch (err) {
+        micProbe = {
+          ok: false,
+          latencyMs: Date.now() - gumStart,
+          error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        };
+      }
+
+      let ctxProbe: Record<string, unknown> = { ok: false, initialState: ctxInitialState };
+      if (audioCtx) {
+        try {
+          if (ctxResumedPromise) {
+            await Promise.race([
+              ctxResumedPromise,
+              new Promise((_, rej) => setTimeout(() => rej(new Error("resume_timeout_3000ms")), 3000)),
+            ]);
+          }
+          ctxProbe = {
+            ok: audioCtx.state === "running",
+            initialState: ctxInitialState,
+            resumedState: audioCtx.state,
+            sampleRate: audioCtx.sampleRate,
+            hasAudioWorklet: Boolean(audioCtx.audioWorklet),
+          };
+        } catch (err) {
+          ctxProbe = {
+            ok: false,
+            initialState: ctxInitialState,
+            currentState: audioCtx.state,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        } finally {
+          await audioCtx.close().catch(() => {});
+        }
+      }
+
+      let workerProbe: Record<string, unknown>;
+      try {
+        const res = await fetch("/opus/encoderWorker.8.0.5-c3a64a87b286.min.js", { method: "HEAD" });
+        workerProbe = { ok: res.ok, status: res.status };
+      } catch (err) {
+        workerProbe = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+
+      const nativeBestMime = pickBestNativeAudioMimeType();
+      const audioSessionType =
+        typeof navigator !== "undefined"
+          ? ((navigator as Navigator & { audioSession?: { type?: string } }).audioSession?.type ?? "unsupported")
+          : "unsupported";
+
+      setProbeReport({
+        testedAt: new Date().toISOString(),
+        totalMs: Date.now() - startedAt,
+        audioSessionType,
+        probeA_getUserMedia: micProbe,
+        probeB_audioContext: ctxProbe,
+        probeC_opusWorker: workerProbe,
+        probeD_nativeBestMime: nativeBestMime || "none",
+      });
+      setRunningProbes(false);
+    })();
+  };
 
   const refreshState = useCallback(async () => {
     setSessions(getAudioDiagnosticSessions());
@@ -163,11 +270,14 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
   const handleCopyJson = async () => {
     const build = getPublishedBuildInfo();
     const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+    const uaAssessment = assessIosUaVersion(ua);
     const exportPayload = {
       exportedAt: new Date().toISOString(),
       build,
       runtimeMode: detectRuntimeMode(),
-      iosVersion: detectIosVersion(ua),
+      iosVersion: uaAssessment.iosVersion,
+      safariVersion: uaAssessment.safariVersion,
+      iosVersionNote: uaAssessment.note,
       online: typeof navigator !== "undefined" ? navigator.onLine : true,
       visibilityState: typeof document !== "undefined" ? document.visibilityState : "unknown",
       flags,
@@ -175,6 +285,7 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
         ...resources,
         pendingDbCount,
       },
+      probeReport,
       sessions: sessions.slice(0, 30),
     };
     const json = JSON.stringify(exportPayload, null, 2);
@@ -204,6 +315,7 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
 
   const build = getPublishedBuildInfo();
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  const uaAssessment = assessIosUaVersion(ua);
 
   return (
     <div
@@ -221,7 +333,8 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
               <h2 className="text-sm font-semibold">Diagnóstico de Áudio (iOS PWA)</h2>
               <p className="text-[11px] text-muted-foreground">
                 v{build.wacrmVersion} · {build.buildCommit} · {detectRuntimeMode()}
-                {detectIosVersion(ua) ? ` · iOS ${detectIosVersion(ua)}` : ""}
+                {uaAssessment.iosVersion ? ` · iOS ${uaAssessment.iosVersion}` : ""}
+                {uaAssessment.safariVersion ? ` (Safari ${uaAssessment.safariVersion})` : ""}
               </p>
             </div>
           </div>
@@ -282,9 +395,9 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
               </div>
             </div>
             <div className="rounded-lg border border-border bg-muted/40 p-2.5">
-              <div className="text-[10px] text-muted-foreground">Pendentes</div>
+              <div className="text-[10px] text-muted-foreground">Pendentes (Outbox v2 / Legado v1)</div>
               <div className="mt-0.5 font-semibold">
-                IDB: {pendingDbCount} · RAM: {resources.ramVaultCount}
+                Outbox: {resources.pendingCount} · Legado IDB: {pendingDbCount} · RAM: {resources.ramVaultCount}
               </div>
             </div>
           </div>
@@ -319,6 +432,33 @@ export function AudioDiagnosticsDrawer({ open, onOpenChange }: AudioDiagnosticsD
                 );
               })}
             </div>
+          </div>
+
+          {/* Isolated Device Probes (Owner/Beta only) */}
+          <div className="rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Autoteste Isolado (Hardware / WebKit)
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  Testa getUserMedia, AudioContext, Worker Opus e Codecs sem enviar áudio.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={runIsolationProbes}
+                disabled={runningProbes}
+                className="shrink-0 rounded-md bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/20 disabled:opacity-50"
+              >
+                {runningProbes ? "Testando…" : "Executar Probes"}
+              </button>
+            </div>
+            {probeReport && (
+              <pre className="mt-2 max-h-36 overflow-auto rounded bg-muted/60 p-2 font-mono text-[10px] text-foreground">
+                {JSON.stringify(probeReport, null, 2)}
+              </pre>
+            )}
           </div>
 
           {/* Recent recordings */}

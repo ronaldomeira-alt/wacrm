@@ -67,10 +67,14 @@ export interface AudioDiagnosticSession {
   wacrmVersion: string;
   buildCommit: string;
   iosVersion: string | null;
+  safariVersion?: string | null;
+  iosVersionNote?: string;
   runtimeMode: AudioRuntimeMode;
   stage: string;
   interactionStartedAt: number;
   updatedAt: number;
+  gestureToGetUserMediaMs?: number;
+  getUserMediaDurationMs?: number;
   userActivationState: { isActive: boolean; hasBeenActive: boolean } | null;
   micPermission: {
     preState?: string;
@@ -86,6 +90,7 @@ export interface AudioDiagnosticSession {
     onStop?: string;
     sampleRate?: number;
     interruptionCount: number;
+    intentionalClose?: boolean;
   };
   trackStates: {
     count: number;
@@ -152,6 +157,7 @@ export interface AudioDiagnosticSession {
     ok: boolean;
     tracksStopped: number;
     audioContextClosed: boolean;
+    lateResolutionGuarded?: boolean;
     error?: string;
   } | null;
 }
@@ -204,6 +210,36 @@ export function detectIosVersion(userAgent: string): string | null {
   const match = userAgent.match(/OS (\d+[_.]\d+(?:[_.]\d+)?)/i);
   if (!match || !/iPhone|iPad|iPod/i.test(userAgent)) return null;
   return match[1].replace(/_/g, ".");
+}
+
+export function detectSafariVersion(userAgent: string): string | null {
+  const match = userAgent.match(/Version\/(\d+\.\d+(?:\.\d+)?)/i);
+  return match ? match[1] : null;
+}
+
+export function assessIosUaVersion(userAgent: string): {
+  iosVersion: string | null;
+  safariVersion: string | null;
+  note?: string;
+} {
+  const iosVersion = detectIosVersion(userAgent);
+  const safariVersion = detectSafariVersion(userAgent);
+  if (!iosVersion) {
+    return { iosVersion: null, safariVersion };
+  }
+  const majorOs = Number(iosVersion.split(".")[0]);
+  const majorSafari = safariVersion ? Number(safariVersion.split(".")[0]) : NaN;
+  if (majorOs === 18 && Number.isFinite(majorSafari) && majorSafari >= 19) {
+    return { iosVersion, safariVersion, note: "ua_os_token_frozen_ios26_candidate" };
+  }
+  if (iosVersion === "18.6" || iosVersion === "18.7") {
+    return {
+      iosVersion,
+      safariVersion,
+      note: safariVersion ? "ua_os_token_may_be_frozen" : "ua_frozen_or_standalone_omits_version",
+    };
+  }
+  return { iosVersion, safariVersion };
 }
 
 export function detectRuntimeMode(): AudioRuntimeMode {
@@ -355,13 +391,16 @@ export function startAudioDiagnosticSession(input: {
   const now = Date.now();
   const { wacrmVersion, buildCommit } = getPublishedBuildInfo();
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  const uaAssessment = assessIosUaVersion(ua);
 
   const session: AudioDiagnosticSession = {
     recordingId: input.recordingId,
     correlationId: input.correlationId ?? createCorrelationId("aud"),
     wacrmVersion,
     buildCommit,
-    iosVersion: detectIosVersion(ua),
+    iosVersion: uaAssessment.iosVersion,
+    ...(uaAssessment.safariVersion ? { safariVersion: uaAssessment.safariVersion } : {}),
+    ...(uaAssessment.note ? { iosVersionNote: uaAssessment.note } : {}),
     runtimeMode: detectRuntimeMode(),
     stage: "interaction_started",
     interactionStartedAt: now,

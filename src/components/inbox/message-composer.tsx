@@ -62,18 +62,15 @@ import {
 } from "@/lib/inbox/audio-outbox-db";
 import { discardOutboxAudioJob } from "@/lib/inbox/audio-outbox-sync";
 import { useAudioFeatureFlags } from "@/lib/inbox/use-audio-feature-flags";
+import { validateCapturedAudio } from "@/lib/inbox/audio-validation";
 import {
-  computeByteTimeDomainRms,
-  validateCapturedAudio,
-} from "@/lib/inbox/audio-validation";
-import {
-  isNativeMediaRecorderSupported,
-  startNativeAudioCapture,
-  type NativeRecorderHandle,
-} from "@/lib/inbox/native-audio-recorder";
+  AudioCaptureController,
+  type CaptureControllerPhase,
+  type CaptureDataPayload,
+  type CapturePhaseMeta,
+} from "@/lib/inbox/audio-capture-controller";
 import { audioLog, audioLogError } from "@/lib/inbox/pending-audio-log";
 import {
-  startAudioDiagnosticSession,
   updateAudioDiagnosticSession,
   updateLiveRecorderResources,
   type AudioFailureCategory,
@@ -86,7 +83,6 @@ import {
 } from "@/lib/inbox/use-resolved-media-src";
 import { stopAllAudioPlayback } from "@/lib/inbox/audio-playback-coordinator";
 import { forensic } from "@/lib/media/forensic-tracer";
-import { TimeoutError, withTimeout } from "@/lib/net/with-timeout";
 
 /** Media content types an agent can send from the composer. */
 export type ComposerMediaKind = "image" | "video" | "document" | "audio";
@@ -101,9 +97,6 @@ export const MEDIA_CAPTION_MAX = 1024;
 /** Hard cap on a single voice recording so it can't blow the upload/
  *  transcode limits — auto-stops the recorder when reached. */
 const MAX_RECORDING_SECONDS = 5 * 60;
-const CAPTURE_READY_TIMEOUT_MS = 12_000;
-const RECORDER_STOP_TIMEOUT_MS = 12_000;
-const RECORDER_CLOSE_TIMEOUT_MS = 3_000;
 
 export interface SendMediaPayload {
   kind: ComposerMediaKind;
@@ -276,11 +269,6 @@ function findSlashToken(
   return null;
 }
 
-/** Worker that encodes mic input to Ogg/Opus entirely in the browser
- *  (vendored from opus-recorder into /public). Recording client-side in a
- *  Meta-accepted format means no server ffmpeg / transcode step. */
-const OPUS_ENCODER_PATH = "/opus/encoderWorker.8.0.5-c3a64a87b286.min.js";
-
 // Vertical drag distance (px) that arms "locked" (hands-free) recording —
 // same idea as WhatsApp's own slide-up-to-lock gesture. Slightly more
 // than a hair-trigger tap needs, on purpose: the progressive visual
@@ -295,28 +283,11 @@ const OPUS_ENCODER_PATH = "/opus/encoderWorker.8.0.5-c3a64a87b286.min.js";
 // diagonal drag locks exactly as readily as a straight one.
 const LOCK_THRESHOLD_PX = 80;
 
-// Touch-only arming delay before a recording is allowed to start —
-// desktop mice skip this entirely (see handleMicPointerDown) and start on
-// the first click. Set to 0 so a tap arms it on the very next tick, same
-// as WhatsApp on iPhone (an immediate press-and-hold, not a perceptible
-// long-press). Kept as a real timer (rather than calling
-// startRecordingGesture synchronously) so the scroll-cancel check in
-// handleMicPointerMove still has a tick to run.
-const LONG_PRESS_MS = 0;
-
-// Movement (px) during the LONG_PRESS_MS window that cancels the pending
-// long-press — distinct from LOCK_THRESHOLD_PX above, which only applies
-// once a recording is already underway. Small on purpose: only meant to
-// catch a real scroll gesture, not natural finger jitter on a stationary hold.
-const TOUCH_MOVE_CANCEL_PX = 8;
-
-// "sending" is now purely the brief, LOCAL recorder-stop → encoder-flush
-// window (bounded by opus-recorder finishing its last frame — no network
-// involved) — never "waiting on the upload", which is what used to leave
-// this stuck forever on iOS. "failed" covers both a real upload/send
-// failure and a rehydrated take found left over from a previous session
-// (see the mount effect below) whose true outcome is unknown either way.
-type MicPhase = "idle" | "recording" | "paused" | "sending" | "failed";
+// "initializing" is shown while microphone permission / encoder startup runs
+// (with a spinner and 0:00 timer paused — NEVER pretending audio is live yet).
+// "sending" is purely the brief, LOCAL recorder-stop -> encoder-flush window
+// (never waiting on network upload). "failed" covers a rehydrated failed take.
+type MicPhase = "idle" | "initializing" | "recording" | "paused" | "sending" | "failed";
 
 export function MessageComposer({
   sessionExpired,
@@ -517,83 +488,36 @@ export function MessageComposer({
   // The bar shown for every non-idle phase is the same trash/timer/send
   // layout — only the icon/text in the middle and the lock indicator differ.
   const [micPhase, setMicPhase] = useState<MicPhase>("idle");
-  // Holds the Screen Wake Lock exactly while the mic is actively capturing
-  // — see use-wake-lock.ts. Without it, iOS's own inactivity timer dims
-  // and locks the screen mid-recording (most visibly during a locked/
-  // hands-free take, where the agent may not touch the screen for a
-  // while), which backgrounds the page and cuts the mic.
-  useWakeLock(micPhase === "recording");
+  // Holds the Screen Wake Lock while capturing or initializing mic hardware
+  useWakeLock(micPhase === "recording" || micPhase === "initializing");
   const [locked, setLocked] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
-  const recorderRef = useRef<import("opus-recorder").default | null>(null);
-  const nativeRecorderRef = useRef<NativeRecorderHandle | null>(null);
-  const rmsPeakRef = useRef<number>(0);
-  const analyserSamplesRef = useRef<number>(0);
-  const analyserNodeRef = useRef<AnalyserNode | null>(null);
-  const analyserSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const analyserBufRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const micPhaseRef = useRef<MicPhase>(micPhase);
   useEffect(() => {
     micPhaseRef.current = micPhase;
   }, [micPhase]);
-  const disconnectRmsMonitor = useCallback(() => {
-    try {
-      analyserSourceRef.current?.disconnect();
-    } catch {}
-    try {
-      analyserNodeRef.current?.disconnect();
-    } catch {}
-    analyserSourceRef.current = null;
-    analyserNodeRef.current = null;
-    analyserBufRef.current = null;
-  }, []);
-  const sampleRmsTick = useCallback(() => {
-    if (nativeRecorderRef.current) {
-      rmsPeakRef.current = nativeRecorderRef.current.sampleRms();
-      return;
-    }
-    const analyser = analyserNodeRef.current;
-    const buf = analyserBufRef.current;
-    if (!analyser || !buf) return;
-    try {
-      analyser.getByteTimeDomainData(buf);
-      const rms = computeByteTimeDomainRms(buf);
-      analyserSamplesRef.current += 1;
-      if (rms > rmsPeakRef.current) rmsPeakRef.current = rms;
-    } catch {}
-  }, []);
-  // Pre-load opus-recorder constructor on mount so recording starts synchronously
-  // within the active user gesture token without waiting on an async dynamic import.
-  const recorderModuleRef = useRef<{ new (options: unknown): import("opus-recorder").default } | null>(null);
+
+  // Pre-load opus-recorder constructor on mount so recording starts without
+  // waiting on an extra dynamic module fetch when tapped.
+  const recorderModuleRef = useRef<{ new (config: unknown): import("opus-recorder").default } | null>(null);
   useEffect(() => {
     import("opus-recorder")
       .then((m) => {
-        recorderModuleRef.current = m.default as unknown as { new (options: unknown): import("opus-recorder").default };
+        recorderModuleRef.current = m.default as unknown as { new (config: unknown): import("opus-recorder").default };
       })
       .catch((err) => {
         console.warn("[audio] Failed to pre-warm opus-recorder:", err);
       });
   }, []);
-  // The in-flight beginCapture() promise. Any stop request awaits this
-  // before touching recorderRef — otherwise a stop arriving while the
-  // recorder is still being constructed (dynamic import + getUserMedia +
-  // encoder init) finds recorderRef.current still null, no-ops silently,
-  // and the recorder ends up starting *after* the UI already moved past
-  // "recording" with nothing left to ever stop it.
-  const captureReadyRef = useRef<Promise<void> | null>(null);
-  const recordingTraceIdRef = useRef<string | null>(null);
-  const captureStartedAtRef = useRef<number | null>(null);
+
+  const captureControllerRef = useRef<AudioCaptureController | null>(null);
   const finalizationInFlightRef = useRef(false);
-  const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Id of the pending-audio-db.ts record backing the current "paused" or
-  // "failed" bar — Send/Discard/Retry all act on whichever record this
-  // points at. Null whenever there's nothing recorded-but-undecided.
+  // Id of the pending-audio-db.ts / outbox record backing the current "paused" or
+  // "failed" bar — Send/Discard/Retry all act on whichever record this points at.
   const pendingRecordIdRef = useRef<string | null>(null);
-  // Set (only while still `micPhase === "recording"`) when the agent taps
-  // Send on a locked, hands-free take — finalizeRecording checks this the
-  // moment the encoder actually finishes and queues the send immediately,
-  // instead of the old pattern of waiting on an in-progress upload.
+  // Set when the agent taps Send while actively recording — finalizeRecording
+  // reads this when the encoded audio finishes flushing.
   const sendOnStopRef = useRef(false);
   // Failure reason for the rehydrated/failed bar — display-only.
   const [failedError, setFailedError] = useState<string | undefined>(undefined);
@@ -616,10 +540,6 @@ export function MessageComposer({
   const micButtonRef = useRef<HTMLButtonElement>(null);
   const lockHintRef = useRef<HTMLDivElement>(null);
   const gestureRef = useRef<{ startY: number } | null>(null);
-  // Touch-only long-press timer + its start position (for the scroll-cancel
-  // check above) — both null whenever no long-press is currently pending.
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Viewers (read-only role) can browse the inbox but never send.
   // For solo users this is always true — single-owner accounts pass
@@ -653,7 +573,9 @@ export function MessageComposer({
             setFailedError(undefined);
             setManagedDraftAudioUrl(null);
             setLocked(false);
-            setMicPhase((prev) => (prev === "recording" || prev === "sending" ? prev : "idle"));
+            setMicPhase((prev) =>
+              prev === "initializing" || prev === "recording" || prev === "sending" ? prev : "idle",
+            );
             return;
           }
           const entry = await getOutboxEntry(draftJob.id, { accountId, userId: user.id });
@@ -699,13 +621,6 @@ export function MessageComposer({
     if (timerRef.current !== null) {
       clearInterval(timerRef.current);
       timerRef.current = null;
-    }
-  }, []);
-
-  const clearLongPressTimer = useCallback(() => {
-    if (longPressTimerRef.current !== null) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
     }
   }, []);
 
@@ -1185,29 +1100,28 @@ export function MessageComposer({
   // entirely outside this component's render lifecycle. This function
   // itself now never awaits the network, so it always returns fast.
   const finalizeRecording = useCallback(
-    async (
-      bytes: Uint8Array,
-      capturedMimeType = "audio/ogg",
-      explicitRmsPeak?: number,
-      explicitAnalyserSamples?: number,
-    ) => {
-      const traceId = recordingTraceIdRef.current;
+    async (payload: CaptureDataPayload) => {
+      const {
+        recordingId: id,
+        bytes,
+        mimeType: capturedMimeType,
+        captureDurationMs,
+        sendOnStop,
+        rmsPeak,
+        analyserSamples,
+        replyToId,
+      } = payload;
+
       if (finalizationInFlightRef.current) {
-        audioLog("recording:dataavailable:duplicate", { traceId, sizeBytes: bytes.byteLength });
+        audioLog("recording:dataavailable:duplicate", { traceId: id, sizeBytes: bytes.byteLength });
         return;
       }
       finalizationInFlightRef.current = true;
-      sampleRmsTick();
       const baseMime = (capturedMimeType || "audio/ogg").split(";")[0].toLowerCase().trim();
       const ext = baseMime === "audio/mp4" ? "m4a" : baseMime === "audio/webm" ? "webm" : "ogg";
-      const rmsPeak = explicitRmsPeak ?? (analyserSamplesRef.current > 0 ? rmsPeakRef.current : undefined);
-      const analyserSamples = explicitAnalyserSamples ?? analyserSamplesRef.current;
-      const captureDurationMs = captureStartedAtRef.current
-        ? Math.max(0, Date.now() - captureStartedAtRef.current)
-        : 0;
-      captureStartedAtRef.current = null;
+      const effectiveReplyToId = replyToId ?? replyTo?.id;
 
-      audioLog("recording:dataavailable", { traceId, sizeBytes: bytes.byteLength, mimeType: baseMime });
+      audioLog("recording:dataavailable", { traceId: id, sizeBytes: bytes.byteLength, mimeType: baseMime });
 
       const validation = audioFlags.audio_capture_v2_enabled
         ? validateCapturedAudio({
@@ -1223,8 +1137,8 @@ export function MessageComposer({
       const file = new File([bytes as unknown as BlobPart], `voice-${Date.now()}.${ext}`, {
         type: baseMime,
       });
-      audioLog("recording:file-created", { traceId, sizeBytes: file.size, mimeType: file.type });
-      audioLog("recording:stopped", { traceId, sizeBytes: file.size });
+      audioLog("recording:file-created", { traceId: id, sizeBytes: file.size, mimeType: file.type });
+      audioLog("recording:stopped", { traceId: id, sizeBytes: file.size });
 
       if (validation && !validation.ok) {
         const failureCat: AudioFailureCategory =
@@ -1233,35 +1147,33 @@ export function MessageComposer({
             : validation.reason === "silent-capture-interrupted"
               ? "silent_capture_interrupted"
               : "empty_or_silent_capture";
-        if (traceId) {
-          updateAudioDiagnosticSession(
-            traceId,
-            (prev) => ({
-              ...prev,
-              stage:
-                validation.reason === "file-too-large"
-                  ? "validation_failed_too_large"
-                  : "validation_failed_empty",
-              recorderState: "failed",
-              captureDurationMs,
-              fragmentCount: validation.pageCount || 1,
-              fileSizeBytes: file.size,
-              format: file.type || "audio/ogg",
-              codec: ext === "ogg" ? "opus" : "aac",
-              rmsPeak,
-              validationResult: {
-                ok: false,
-                reason: validation.reason,
-                hasOggMagic: validation.hasOggMagic,
-                hasEosPage: validation.hasEosPage,
-              },
-              failureCategory: failureCat,
-              errorDetail: validation.detail,
-            }),
-            { flush: true },
-          );
-          updateLiveRecorderResources({ micPhase: "idle" });
-        }
+        updateAudioDiagnosticSession(
+          id,
+          (prev) => ({
+            ...prev,
+            stage:
+              validation.reason === "file-too-large"
+                ? "validation_failed_too_large"
+                : "validation_failed_empty",
+            recorderState: "failed",
+            captureDurationMs,
+            fragmentCount: validation.pageCount || 1,
+            fileSizeBytes: file.size,
+            format: file.type || "audio/ogg",
+            codec: ext === "ogg" ? "opus" : "aac",
+            rmsPeak,
+            validationResult: {
+              ok: false,
+              reason: validation.reason,
+              hasOggMagic: validation.hasOggMagic,
+              hasEosPage: validation.hasEosPage,
+            },
+            failureCategory: failureCat,
+            errorDetail: validation.detail,
+          }),
+          { flush: true },
+        );
+        updateLiveRecorderResources({ micPhase: "idle" });
         if (validation.reason === "file-too-large") {
           toast.error(t("recordingTooLong"));
         } else if (validation.reason === "silent-capture-interrupted") {
@@ -1273,8 +1185,7 @@ export function MessageComposer({
         setMicPhase("idle");
         setLocked(false);
         finalizationInFlightRef.current = false;
-        recordingTraceIdRef.current = null;
-        audioLog("recording:error", { traceId, reason: validation.reason, sizeBytes: file.size });
+        audioLog("recording:error", { traceId: id, reason: validation.reason, sizeBytes: file.size });
         return;
       }
 
@@ -1288,67 +1199,57 @@ export function MessageComposer({
             bytes[3] === 0x53;
 
       if (!validation && file.size < 200) {
-        if (traceId) {
-          updateAudioDiagnosticSession(
-            traceId,
-            (prev) => ({
-              ...prev,
-              stage: "validation_failed_empty",
-              recorderState: "failed",
-              captureDurationMs,
-              fragmentCount: 1,
-              fileSizeBytes: file.size,
-              format: file.type || "audio/ogg",
-              codec: "opus",
-              validationResult: { ok: false, reason: "empty-file", hasOggMagic },
-              failureCategory: "empty_or_silent_capture",
-              errorDetail: `Empty/header-only file (${file.size} bytes)`,
-            }),
-            { flush: true },
-          );
-          updateLiveRecorderResources({ micPhase: "idle" });
-        }
+        updateAudioDiagnosticSession(
+          id,
+          (prev) => ({
+            ...prev,
+            stage: "validation_failed_empty",
+            recorderState: "failed",
+            captureDurationMs,
+            fragmentCount: 1,
+            fileSizeBytes: file.size,
+            format: file.type || "audio/ogg",
+            codec: "opus",
+            validationResult: { ok: false, reason: "empty-file", hasOggMagic },
+            failureCategory: "empty_or_silent_capture",
+            errorDetail: `Empty/header-only file (${file.size} bytes)`,
+          }),
+          { flush: true },
+        );
+        updateLiveRecorderResources({ micPhase: "idle" });
         sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
         finalizationInFlightRef.current = false;
-        recordingTraceIdRef.current = null;
-        audioLog("recording:error", { traceId, reason: "empty-file", sizeBytes: file.size });
+        audioLog("recording:error", { traceId: id, reason: "empty-file", sizeBytes: file.size });
         return;
       }
       if (!validation && file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
-        if (traceId) {
-          updateAudioDiagnosticSession(
-            traceId,
-            (prev) => ({
-              ...prev,
-              stage: "validation_failed_too_large",
-              recorderState: "failed",
-              captureDurationMs,
-              fragmentCount: 1,
-              fileSizeBytes: file.size,
-              validationResult: { ok: false, reason: "file-too-large", hasOggMagic },
-              failureCategory: "file_too_large",
-            }),
-            { flush: true },
-          );
-          updateLiveRecorderResources({ micPhase: "idle" });
-        }
+        updateAudioDiagnosticSession(
+          id,
+          (prev) => ({
+            ...prev,
+            stage: "validation_failed_too_large",
+            recorderState: "failed",
+            captureDurationMs,
+            fragmentCount: 1,
+            fileSizeBytes: file.size,
+            validationResult: { ok: false, reason: "file-too-large", hasOggMagic },
+            failureCategory: "file_too_large",
+          }),
+          { flush: true },
+        );
+        updateLiveRecorderResources({ micPhase: "idle" });
         toast.error(t("recordingTooLong"));
         sendOnStopRef.current = false;
         setMicPhase("idle");
         setLocked(false);
         finalizationInFlightRef.current = false;
-        recordingTraceIdRef.current = null;
-        audioLog("recording:error", { traceId, reason: "file-too-large", sizeBytes: file.size });
+        audioLog("recording:error", { traceId: id, reason: "file-too-large", sizeBytes: file.size });
         return;
       }
 
-      const id =
-        traceId ||
-        (typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const shouldSendNow = sendOnStop || sendOnStopRef.current;
 
       updateAudioDiagnosticSession(id, (prev) => ({
         ...prev,
@@ -1381,17 +1282,17 @@ export function MessageComposer({
             accountId,
             userId: user.id,
             conversationId,
-            replyToId: replyTo?.id,
+            replyToId: effectiveReplyToId,
             arrayBuffer: exactBuffer,
             mimeType: file.type || "audio/ogg",
             codec: ext === "ogg" ? "opus" : "aac",
             durationMs: captureDurationMs,
             rmsPeak,
-            sendAuthorized: Boolean(sendOnStopRef.current),
+            sendAuthorized: Boolean(shouldSendNow),
           });
           audioLog("recording:saved-local", {
             id,
-            traceId,
+            traceId: id,
             persistedInIdb: outboxRes.persistedInIdb,
           });
           updateAudioDiagnosticSession(id, (prev) => ({
@@ -1432,7 +1333,7 @@ export function MessageComposer({
         const record: PendingAudioRecord = {
           id,
           conversationId,
-          replyToId: replyTo?.id,
+          replyToId: effectiveReplyToId,
           blob: file,
           mimeType: file.type,
           sizeBytes: file.size,
@@ -1444,7 +1345,7 @@ export function MessageComposer({
 
         try {
           await putPendingAudio(record);
-          audioLog("recording:saved-local", { id, traceId });
+          audioLog("recording:saved-local", { id, traceId: id });
           updateAudioDiagnosticSession(id, (prev) => ({
             ...prev,
             stage: "persisted_local",
@@ -1475,18 +1376,17 @@ export function MessageComposer({
         }
       }
 
-      if (sendOnStopRef.current) {
+      if (shouldSendNow) {
         sendOnStopRef.current = false;
         pendingRecordIdRef.current = null;
         setManagedDraftAudioUrl(null);
         setMicPhase("idle");
         setLocked(false);
         updateLiveRecorderResources({ micPhase: "idle" });
-        onRecordAudio(id, replyTo?.id);
+        onRecordAudio(id, effectiveReplyToId);
         onClearReply?.();
-        audioLog("recording:finalized", { id, traceId, mode: "send-on-stop" });
+        audioLog("recording:finalized", { id, traceId: id, mode: "send-on-stop" });
         finalizationInFlightRef.current = false;
-        recordingTraceIdRef.current = null;
         return;
       }
 
@@ -1507,9 +1407,8 @@ export function MessageComposer({
         recorderState: "paused",
       }));
       updateLiveRecorderResources({ micPhase: "paused" });
-      audioLog("recording:finalized", { id, traceId, mode: "paused" });
+      audioLog("recording:finalized", { id, traceId: id, mode: "paused" });
       finalizationInFlightRef.current = false;
-      recordingTraceIdRef.current = null;
     },
     [
       conversationId,
@@ -1522,660 +1421,118 @@ export function MessageComposer({
       accountId,
       user?.id,
       setManagedDraftAudioUrl,
-      sampleRmsTick,
     ],
   );
 
-  const stopRecordingGestureRef = useRef<(() => void) | null>(null);
+  const finalizeRecordingRef = useRef(finalizeRecording);
+  useEffect(() => {
+    finalizeRecordingRef.current = finalizeRecording;
+  }, [finalizeRecording]);
 
-  // Actual mic/encoder setup — deliberately kept separate from the
-  // pointerdown handler below, which flips the UI to "recording"
-  // *before* awaiting any of this, so the bar appears instantly instead
-  // of waiting on getUserMedia + the encoder worker load. On failure
-  // this rolls the optimistic UI back.
-  const beginCapture = useCallback(async () => {
-    const traceId = recordingTraceIdRef.current;
-    const canNativeFallback = isNativeMediaRecorderSupported();
-    if (!navigator.mediaDevices?.getUserMedia || (typeof AudioContext === "undefined" && !canNativeFallback)) {
-      if (traceId) {
-        updateAudioDiagnosticSession(
-          traceId,
-          (prev) => ({
-            ...prev,
-            stage: "capture_unsupported",
-            recorderState: "failed",
-            failureCategory: "encoder_init_failed",
-            errorDetail: "getUserMedia or AudioContext unavailable",
-          }),
-          { flush: true },
-        );
-      }
-      toast.error(t("recordingNotSupported"));
+  const handlePhaseChangeRef = useRef<(phase: CaptureControllerPhase, meta?: CapturePhaseMeta) => void>(() => {});
+  handlePhaseChangeRef.current = (phase, meta) => {
+    if (phase === "initializing") {
       clearTimer();
-      setMicPhase("idle");
+      setRecordSeconds(0);
+      setFailedError(undefined);
       setLocked(false);
-      updateLiveRecorderResources({ micPhase: "idle" });
+      setMicPhase("initializing");
       return;
     }
-
-    // Best-effort permission state probe (never blocks capture)
-    if (traceId && navigator.permissions?.query) {
-      void navigator.permissions
-        .query({ name: "microphone" as PermissionName })
-        .then((perm) => {
-          updateAudioDiagnosticSession(traceId, (prev) => ({
-            ...prev,
-            micPermission: { ...prev.micPermission, preState: perm.state },
-          }));
-        })
-        .catch(() => {});
-    }
-
-    const startNativeFallback = async (): Promise<boolean> => {
-      if (!canNativeFallback) return false;
-      const handle = await startNativeAudioCapture({
-        onTrackEnded: () => {
-          if (traceId) {
-            updateAudioDiagnosticSession(traceId, (prev) => ({
-              ...prev,
-              interruptionEvents: [
-                ...prev.interruptionEvents,
-                { type: "track_ended_native", at: Date.now() },
-              ],
-            }));
-          }
-          if (micPhaseRef.current === "recording" && !cancelledRef.current) {
-            sendOnStopRef.current = false;
-            toast.warning("Microfone interrompido pelo iOS — salvando o áudio gravado.");
-            stopRecordingGestureRef.current?.();
-          }
-        },
-        onError: (err) => {
-          audioLogError("recording:error", err, { traceId, reason: "native-recorder-error" });
-          cancelledRef.current = true;
-          clearTimer();
-          handle.close();
-          if (nativeRecorderRef.current === handle) nativeRecorderRef.current = null;
-          setMicPhase("failed");
-          setLocked(false);
-        },
-      });
-      nativeRecorderRef.current = handle;
-      if (traceId) {
-        updateAudioDiagnosticSession(traceId, (prev) => ({
-          ...prev,
-          stage: "recording_active_native",
-          recorderState: "recording",
-          format: handle.mimeType,
-          codec: handle.mimeType.includes("mp4") ? "aac" : "opus",
-          micPermission: { ...prev.micPermission, resolvedAt: Date.now(), outcome: "granted" },
-          trackStates: {
-            count: handle.stream.getTracks().length,
-            readyStates: handle.stream.getTracks().map((tr) => tr.readyState),
-            mutedStates: handle.stream.getTracks().map((tr) => Boolean(tr.muted)),
-            endedEvents: prev.trackStates.endedEvents,
-          },
-        }));
-        updateLiveRecorderResources({
-          micPhase: "recording",
-          activeRecorders: 1,
-          activeTracks: handle.stream.getTracks().length,
-          audioContextState: "native_mediarecorder",
-        });
-      }
-      return true;
-    };
-
-    const initStartedAt = Date.now();
-    try {
-      if (
-        audioFlags.audio_native_capture_enabled ||
-        (typeof AudioContext === "undefined" && audioFlags.audio_capture_v2_enabled)
-      ) {
-        cancelledRef.current = false;
-        const okNative = await startNativeFallback();
-        if (okNative) return;
-      }
-
-      // Use pre-warmed constructor if available to execute synchronously within user gesture
-      const Recorder = recorderModuleRef.current || (await import("opus-recorder")).default;
-      const recorder = new Recorder({
-        encoderPath: OPUS_ENCODER_PATH,
-        numberOfChannels: 1,
-        encoderApplication: 2048, // VOIP — tuned for speech
-        encoderSampleRate: 48000,
-        streamPages: false, // one callback with the complete file on stop
-        mediaTrackConstraints: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1,
-        },
-      });
-      cancelledRef.current = false;
-      recorder.ondataavailable = (bytes) => {
-        if (cancelledRef.current) return;
-        void finalizeRecording(bytes, "audio/ogg");
-      };
-      recorder.onerror = (error) => {
-        audioLogError("recording:error", error, {
-          traceId: recordingTraceIdRef.current,
-          reason: "recorder-error",
-        });
-        if (traceId) {
-          updateAudioDiagnosticSession(
-            traceId,
-            (prev) => ({
-              ...prev,
-              stage: "recorder_error",
-              recorderState: "failed",
-              failureCategory: "recorder_error",
-              errorDetail: error instanceof Error ? error.message : String(error),
-            }),
-            { flush: true },
-          );
-        }
-        cancelledRef.current = true;
-        finalizationInFlightRef.current = false;
-        clearTimer();
-        disconnectRmsMonitor();
-        const failedRec = recorderRef.current;
-        if (failedRec === recorder) recorderRef.current = null;
-        try {
-          const st = (recorder as unknown as { stream?: MediaStream }).stream;
-          st?.getTracks?.().forEach((tr) => {
-            try {
-              tr.stop();
-            } catch {}
-          });
-          void recorder.close().catch(() => {});
-        } catch {}
-        setMicPhase("failed");
-        setLocked(false);
-        updateLiveRecorderResources({
-          micPhase: "failed",
-          activeRecorders: 0,
-          activeTracks: 0,
-          audioContextState: null,
-        });
-      };
-      recorderRef.current = recorder;
-      if (traceId) {
-        updateAudioDiagnosticSession(traceId, (prev) => ({
-          ...prev,
-          stage: "recorder_starting",
-          micPermission: { ...prev.micPermission, requestedAt: Date.now() },
-        }));
-      }
-      await recorder.start();
-
-      // Observe internal WebKit audio state non-intrusively (NO Proxy on AudioContext)
-      const internal = recorder as unknown as {
-        audioContext?: AudioContext;
-        stream?: MediaStream;
-      };
-      const ctx = internal.audioContext;
-      const stream = internal.stream;
-      const tracks = stream?.getTracks?.() ?? [];
-
-      // Passive AnalyserNode monitor to detect silent digital mic drops on iOS
-      if (audioFlags.audio_capture_v2_enabled && ctx && stream && typeof ctx.createAnalyser === "function") {
-        try {
-          const src = ctx.createMediaStreamSource(stream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          src.connect(analyser);
-          analyserSourceRef.current = src;
-          analyserNodeRef.current = analyser;
-          analyserBufRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
-        } catch {
-          // Non-fatal: continue recording without analyser
-        }
-      }
-
-      for (const tr of tracks) {
-        tr.addEventListener("ended", () => {
-          if (traceId) {
-            updateAudioDiagnosticSession(traceId, (prev) => ({
-              ...prev,
-              trackStates: {
-                ...prev.trackStates,
-                endedEvents: prev.trackStates.endedEvents + 1,
-                readyStates: tracks.map((x) => x.readyState),
-              },
-              interruptionEvents: [
-                ...prev.interruptionEvents,
-                { type: "track_ended", at: Date.now(), detail: tr.readyState },
-              ],
-            }));
-          }
-          if (
-            audioFlags.audio_capture_v2_enabled &&
-            micPhaseRef.current === "recording" &&
-            !cancelledRef.current
-          ) {
-            sendOnStopRef.current = false;
-            toast.warning("Microfone interrompido pelo iOS — tentando salvar o áudio gravado.");
-            stopRecordingGestureRef.current?.();
-          }
-        });
-        tr.addEventListener("mute", () => {
-          if (traceId) {
-            updateAudioDiagnosticSession(traceId, (prev) => ({
-              ...prev,
-              interruptionEvents: [
-                ...prev.interruptionEvents,
-                { type: "track_mute", at: Date.now() },
-              ],
-            }));
-          }
-        });
-      }
-
-      if (traceId) {
-        updateAudioDiagnosticSession(traceId, (prev) => ({
-          ...prev,
-          stage: "recording_active",
-          recorderState: "recording",
-          micPermission: {
-            ...prev.micPermission,
-            resolvedAt: Date.now(),
-            outcome: "granted",
-          },
-          encoderInit: {
-            ...prev.encoderInit,
-            readyAt: Date.now(),
-            latencyMs: Date.now() - initStartedAt,
-          },
-          audioContextState: {
-            ...prev.audioContextState,
-            beforeStart: ctx?.state,
-            sampleRate: ctx?.sampleRate,
-          },
-          trackStates: {
-            count: tracks.length,
-            readyStates: tracks.map((tr) => tr.readyState),
-            mutedStates: tracks.map((tr) => Boolean(tr.muted)),
-            endedEvents: prev.trackStates.endedEvents,
-          },
-        }));
-        updateLiveRecorderResources({
-          micPhase: "recording",
-          activeRecorders: 1,
-          activeTracks: tracks.length,
-          audioContextState: ctx?.state ?? null,
-        });
-
-        if (ctx && typeof ctx.addEventListener === "function") {
-          ctx.addEventListener("statechange", () => {
-            updateAudioDiagnosticSession(traceId, (prev) => ({
-              ...prev,
-              audioContextState: {
-                ...prev.audioContextState,
-                afterGetUserMedia: ctx.state,
-                interruptionCount:
-                  ctx.state !== "running"
-                    ? prev.audioContextState.interruptionCount + 1
-                    : prev.audioContextState.interruptionCount,
-              },
-              interruptionEvents: [
-                ...prev.interruptionEvents,
-                { type: "audiocontext_statechange", at: Date.now(), detail: ctx.state },
-              ],
-            }));
-            updateLiveRecorderResources({ audioContextState: ctx.state });
-          });
-        }
-      }
-    } catch (err) {
-      const errName = err instanceof Error ? err.name : "Error";
-      const errMsg = err instanceof Error ? err.message : String(err);
-      let category: AudioFailureCategory = "unknown";
-      if (errName === "NotAllowedError" || errName === "PermissionDeniedError") {
-        category = "permission_denied";
-      } else if (errName === "TypeError" || errMsg.toLowerCase().includes("audiocontext")) {
-        category = "gesture_or_context_blocked";
-      } else if (errMsg.toLowerCase().includes("worker") || errMsg.toLowerCase().includes("wasm")) {
-        category = "encoder_init_failed";
-      }
-
-      const failedOpus = recorderRef.current;
-      recorderRef.current = null;
-      disconnectRmsMonitor();
-      if (failedOpus) {
-        try {
-          const stream = (failedOpus as unknown as { stream?: MediaStream }).stream;
-          stream?.getTracks?.().forEach((tr) => {
-            try {
-              tr.stop();
-            } catch {}
-          });
-          void failedOpus.stop().catch(() => {}).then(() => failedOpus.close()).catch(() => {});
-        } catch {}
-      }
-
-      // Automatic contingency: if WASM/AudioContext failed (not mic permission denial),
-      // try native hardware MediaRecorder before aborting the recording.
-      if (
-        audioFlags.audio_capture_v2_enabled &&
-        category !== "permission_denied" &&
-        canNativeFallback &&
-        !audioFlags.audio_native_capture_enabled
-      ) {
-        try {
-          const recovered = await startNativeFallback();
-          if (recovered) return;
-        } catch (nativeErr) {
-          audioLogError("recording:error", nativeErr, { reason: "native-fallback-failed" });
-        }
-      }
-
-      audioLogError("recording:error", err, { reason: "start-failed" });
-      if (traceId) {
-        updateAudioDiagnosticSession(
-          traceId,
-          (prev) => ({
-            ...prev,
-            stage: "start_failed",
-            recorderState: "failed",
-            micPermission: {
-              ...prev.micPermission,
-              resolvedAt: Date.now(),
-              outcome: category === "permission_denied" ? "denied" : "error",
-              errorName: errName,
-            },
-            encoderInit: {
-              ...prev.encoderInit,
-              latencyMs: Date.now() - initStartedAt,
-              error: errMsg,
-            },
-            failureCategory: category,
-            errorDetail: `${errName}: ${errMsg}`,
-          }),
-          { flush: true },
-        );
-      }
+    if (phase === "recording") {
       clearTimer();
-      cancelledRef.current = true;
+      setRecordSeconds(0);
+      setMicPhase("recording");
+      timerRef.current = setInterval(() => {
+        captureControllerRef.current?.sampleRms();
+        setRecordSeconds((s) => s + 1);
+      }, 1000);
+      return;
+    }
+    if (phase === "finalizing") {
+      clearTimer();
+      setMicPhase(sendOnStopRef.current ? "sending" : "paused");
+      return;
+    }
+    if (phase === "failed") {
+      clearTimer();
       finalizationInFlightRef.current = false;
-      setMicPhase("idle");
+      sendOnStopRef.current = false;
       setLocked(false);
-      updateLiveRecorderResources({
-        micPhase: "idle",
-        activeRecorders: 0,
-        activeTracks: 0,
-        audioContextState: null,
-      });
-      if (category === "permission_denied") {
+      if (meta?.reason === "unsupported") {
+        toast.error(t("recordingNotSupported"));
+      } else if (meta?.category === "permission_denied") {
         toast.error(t("recordingPermissionDenied"));
-      } else if (category === "encoder_init_failed" || category === "gesture_or_context_blocked") {
-        toast.error("Não foi possível inicializar o gravador neste navegador. Tente novamente.");
+      } else if (meta?.category === "recorder_timeout") {
+        toast.error("Microfone demorou para responder. Toque novamente para gravar.");
       } else {
-        toast.error(t("recordingPermissionDenied"));
+        toast.error("Não foi possível inicializar o gravador neste navegador. Tente novamente.");
       }
-    }
-  }, [
-    clearTimer,
-    finalizeRecording,
-    t,
-    audioFlags.audio_capture_v2_enabled,
-    audioFlags.audio_native_capture_enabled,
-    disconnectRmsMonitor,
-  ]);
-
-  // Every "stop the mic" action funnels through here instead of touching
-  // recorderRef directly, so it always waits out any in-flight beginCapture() first.
-  const stopRecorder = useCallback(async (): Promise<boolean> => {
-    const traceId = recordingTraceIdRef.current;
-    audioLog("recording:cleanup:start", { traceId });
-    try {
-      if (captureReadyRef.current) {
-        audioLog("recording:capture-ready-wait:start", { traceId });
-        await withTimeout(captureReadyRef.current, CAPTURE_READY_TIMEOUT_MS, "audio capture initialization");
-        audioLog("recording:capture-ready-wait:success", { traceId });
-      }
-    } catch (error) {
-      audioLogError(
-        error instanceof TimeoutError ? "recording:capture-ready-wait:timeout" : "recording:error",
-        error,
-        { traceId, reason: "capture-ready" },
-      );
-      if (traceId) {
-        updateAudioDiagnosticSession(
-          traceId,
-          (prev) => ({
-            ...prev,
-            stage: "capture_ready_timeout",
-            recorderState: "failed",
-            failureCategory: error instanceof TimeoutError ? "recorder_timeout" : "unknown",
-            errorDetail: error instanceof Error ? error.message : String(error),
-          }),
-          { flush: true },
-        );
-      }
-      disconnectRmsMonitor();
-      const recorder = recorderRef.current;
-      recorderRef.current = null;
-      const nativeRec = nativeRecorderRef.current;
-      nativeRecorderRef.current = null;
-      nativeRec?.close();
-      try {
-        if (recorder) {
-          const st = (recorder as unknown as { stream?: MediaStream }).stream;
-          st?.getTracks?.().forEach((tr) => {
-            try {
-              tr.stop();
-            } catch {}
-          });
-          await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
-        }
-      } catch (closeError) {
-        audioLogError("recording:error", closeError, { traceId, reason: "close-after-capture-failure" });
-      }
-      clearTimer();
-      setMicPhase("failed");
-      setLocked(false);
-      finalizationInFlightRef.current = false;
-      updateLiveRecorderResources({
-        micPhase: "failed",
-        activeRecorders: 0,
-        activeTracks: 0,
-        audioContextState: null,
-      });
-      audioLog("recording:cleanup:complete", { traceId, result: "capture-failure" });
-      return false;
-    }
-
-    const nativeRec = nativeRecorderRef.current;
-    if (nativeRec) {
-      nativeRecorderRef.current = null;
-      try {
-        const res = await withTimeout(nativeRec.stop(), RECORDER_STOP_TIMEOUT_MS, "native audio stop");
-        if (!cancelledRef.current) {
-          await finalizeRecording(res.bytes, res.mimeType, res.rmsPeak, res.analyserSamples);
-        }
-      } catch (err) {
-        audioLogError("recording:error", err, { traceId, reason: "native-stop" });
-        nativeRec.close();
+      if (!pendingRecordIdRef.current) {
+        setFailedError(undefined);
+        setMicPhase("idle");
+        updateLiveRecorderResources({ micPhase: "idle" });
+      } else {
+        setFailedError(meta?.errorDetail);
         setMicPhase("failed");
-        setLocked(false);
-      } finally {
-        updateLiveRecorderResources({
-          activeRecorders: 0,
-          activeTracks: 0,
-          audioContextState: null,
-        });
       }
-      return true;
+      return;
     }
+    clearTimer();
+    finalizationInFlightRef.current = false;
+    sendOnStopRef.current = false;
+    setLocked(false);
+    setMicPhase("idle");
+  };
 
-    const recorder = recorderRef.current;
-    if (!recorder) {
-      audioLog("recording:cleanup:complete", { traceId, result: "no-recorder" });
-      return false;
-    }
-
-    const internalBeforeStop = recorder as unknown as {
-      audioContext?: AudioContext;
-      stream?: MediaStream;
-    };
-    const audioCtxBeforeStop = internalBeforeStop.audioContext?.state;
-    let tracksStopped = 0;
-    const stopAllTracks = () => {
-      try {
-        const stream = internalBeforeStop.stream;
-        stream?.getTracks?.().forEach((track) => {
-          try {
-            if (track.readyState !== "ended") {
-              track.stop();
-            }
-            tracksStopped++;
-          } catch {}
-        });
-      } catch {}
-    };
-
-    disconnectRmsMonitor();
-
-    // Legacy stop behavior ONLY if capture v2 flag was explicitly rolled back
-    if (!audioFlags.audio_capture_v2_enabled) {
-      stopAllTracks();
-    }
-
-    try {
-      audioLog("recording:recorder-stop:start", { traceId });
-      await withTimeout(recorder.stop(), RECORDER_STOP_TIMEOUT_MS, "audio recorder stop");
-      audioLog("recording:recorder-stop:success", { traceId });
-    } catch (error) {
-      audioLogError(
-        error instanceof TimeoutError ? "recording:recorder-stop:timeout" : "recording:error",
-        error,
-        { traceId, reason: "recorder-stop" },
-      );
-      if (traceId) {
-        updateAudioDiagnosticSession(
-          traceId,
-          (prev) => ({
-            ...prev,
-            stage: "recorder_stop_timeout",
-            recorderState: "failed",
-            audioContextState: { ...prev.audioContextState, onStop: audioCtxBeforeStop },
-            failureCategory: error instanceof TimeoutError ? "recorder_timeout" : "recorder_error",
-            errorDetail: error instanceof Error ? error.message : String(error),
-          }),
-          { flush: true },
-        );
-      }
-      cancelledRef.current = true;
-      clearTimer();
-      setMicPhase("failed");
-      setLocked(false);
-      finalizationInFlightRef.current = false;
-      stopAllTracks();
-      try {
-        await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
-      } catch (closeError) {
-        audioLogError("recording:error", closeError, { traceId, reason: "close-after-stop-failure" });
-      }
-      if (recorderRef.current === recorder) recorderRef.current = null;
-      updateLiveRecorderResources({
-        micPhase: "failed",
-        activeRecorders: 0,
-        activeTracks: 0,
-        audioContextState: null,
+  const getCaptureController = useCallback(() => {
+    if (!captureControllerRef.current) {
+      captureControllerRef.current = new AudioCaptureController({
+        onPhaseChange: (phase, meta) => handlePhaseChangeRef.current(phase, meta),
+        onDataReady: (payload) => finalizeRecordingRef.current(payload),
+        onWarning: (msg) => toast.warning(msg),
       });
-      audioLog("recording:cleanup:complete", { traceId, result: "stop-failure" });
-      return false;
-    } finally {
-      // Phase 4A fix: extinguish iOS red/orange mic indicator AFTER recorder.stop() flushes frames
-      if (audioFlags.audio_capture_v2_enabled) {
-        stopAllTracks();
-      }
     }
-
-    let closedOk = true;
-    try {
-      await withTimeout(recorder.close(), RECORDER_CLOSE_TIMEOUT_MS, "audio recorder close");
-    } catch (error) {
-      closedOk = false;
-      audioLogError("recording:error", error, { traceId, reason: "recorder-close" });
-    }
-    if (traceId) {
-      updateAudioDiagnosticSession(traceId, (prev) => ({
-        ...prev,
-        audioContextState: { ...prev.audioContextState, onStop: audioCtxBeforeStop },
-        cleanupResult: {
-          ok: closedOk,
-          tracksStopped,
-          audioContextClosed: closedOk,
-        },
-      }));
-    }
-    updateLiveRecorderResources({
-      activeRecorders: 0,
-      activeTracks: 0,
-      audioContextState: null,
-    });
-    if (recorderRef.current === recorder) recorderRef.current = null;
-    audioLog("recording:cleanup:complete", { traceId, result: "stopped" });
-    return true;
-  }, [clearTimer, disconnectRmsMonitor, finalizeRecording, audioFlags.audio_capture_v2_enabled]);
+    return captureControllerRef.current;
+  }, []);
 
   // ---- Mic pointer gesture ---------------------------------------------
   const startRecordingGesture = useCallback(() => {
-    if (micPhase !== "idle") return;
-    const traceId =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `audio-trace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    recordingTraceIdRef.current = traceId;
-    captureStartedAtRef.current = Date.now();
-    rmsPeakRef.current = 0;
-    analyserSamplesRef.current = 0;
-    disconnectRmsMonitor();
-    nativeRecorderRef.current = null;
-    startAudioDiagnosticSession({
-      recordingId: traceId,
-      correlationId: traceId,
-      prewarmed: Boolean(recorderModuleRef.current),
-    });
-    updateLiveRecorderResources({ micPhase: "recording" });
+    if (micPhaseRef.current !== "idle") return;
+    pendingRecordIdRef.current = null;
     finalizationInFlightRef.current = false;
-    stopAllAudioPlayback();
+    sendOnStopRef.current = false;
+    setFailedError(undefined);
+    setManagedDraftAudioUrl(null);
     setLocked(false);
     setRecordSeconds(0);
-    // Optimistic — the bar shows immediately; beginCapture (mic
-    // permission + encoder init) runs in the background and rolls
-    // this back on failure.
-    setMicPhase("recording");
-    clearTimer();
-    timerRef.current = setInterval(() => {
-      sampleRmsTick();
-      setRecordSeconds((s) => s + 1);
-    }, 1000);
-    captureReadyRef.current = beginCapture();
-  }, [micPhase, clearTimer, beginCapture, disconnectRmsMonitor, sampleRmsTick]);
+    getCaptureController().startGesture({
+      captureV2Enabled: audioFlags.audio_capture_v2_enabled,
+      nativeCaptureEnabled: audioFlags.audio_native_capture_enabled,
+      prewarmedRecorderClass: recorderModuleRef.current,
+      replyToId: replyTo?.id,
+    });
+  }, [
+    audioFlags.audio_capture_v2_enabled,
+    audioFlags.audio_native_capture_enabled,
+    getCaptureController,
+    replyTo?.id,
+    setManagedDraftAudioUrl,
+  ]);
 
   const stopRecordingGesture = useCallback(() => {
-    if (micPhaseRef.current !== "recording") return;
+    const phase = micPhaseRef.current;
+    if (phase !== "recording" && phase !== "initializing") return;
     clearTimer();
-    setMicPhase("paused");
-    void stopRecorder();
-  }, [clearTimer, stopRecorder]);
-
-  useEffect(() => {
-    stopRecordingGestureRef.current = stopRecordingGesture;
-  }, [stopRecordingGesture]);
+    void getCaptureController().stop({ sendOnStop: false });
+  }, [clearTimer, getCaptureController]);
 
   // If iOS locks the screen or switches apps mid-recording, preserve what was
   // spoken so far locally as `saved_draft` (`paused`) — NEVER auto-send.
   useEffect(() => {
     if (!audioFlags.audio_capture_v2_enabled) return;
     const handleBackgroundSave = () => {
-      if (micPhaseRef.current === "recording" && !cancelledRef.current) {
-        sendOnStopRef.current = false;
-        stopRecordingGestureRef.current?.();
-      }
+      void captureControllerRef.current?.handleVisibilityInterruption();
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
@@ -2193,68 +1550,30 @@ export function MessageComposer({
   const handleMicPointerDown = useCallback(
     (e: React.PointerEvent<HTMLButtonElement>) => {
       if (inputsDisabled || busy) return;
+      if (micPhaseRef.current !== "idle") return;
 
-      // Stop any audio playing in the CRM immediately when mic interaction begins
-      stopAllAudioPlayback();
-
-      if (e.pointerType === "mouse") {
-        // Desktop: 1 click starts. The button itself is hidden the moment
-        // recording begins (swapped for the recording bar below), so the
-        // matching "1 click stops" happens on the bar's own stop button,
-        // not a second pointerdown here — both call stopRecordingGesture.
-        if (micPhase !== "idle") return;
-        e.preventDefault();
-        startRecordingGesture();
-        return;
-      }
-
-      // Touch/pen: don't start yet — arm a long-press timer. Guard against
-      // a second touch arming an overlapping timer while this one is
-      // still pending (micPhase only flips once the timer actually fires).
-      if (micPhase !== "idle" || longPressTimerRef.current !== null) return;
       e.preventDefault();
-      micButtonRef.current?.setPointerCapture(e.pointerId);
-      gestureRef.current = { startY: e.clientY };
-      longPressStartRef.current = { x: e.clientX, y: e.clientY };
-      longPressTimerRef.current = setTimeout(() => {
-        longPressTimerRef.current = null;
-        startRecordingGesture();
-      }, LONG_PRESS_MS);
+      // Start synchronously inside pointerdown for BOTH mouse and touch/pen so
+      // iOS WebKit preserves userActivation for AudioContext.resume() and getUserMedia().
+      if (e.pointerType !== "mouse") {
+        try {
+          micButtonRef.current?.setPointerCapture(e.pointerId);
+        } catch {}
+        gestureRef.current = { startY: e.clientY };
+      }
+      startRecordingGesture();
     },
-    [inputsDisabled, busy, micPhase, startRecordingGesture],
+    [inputsDisabled, busy, startRecordingGesture],
   );
 
   const handleMicPointerMove = useCallback(
     (e: React.PointerEvent<HTMLButtonElement>) => {
       if (e.pointerType === "mouse") return;
-
-      // Still waiting out the long-press: a scroll-sized movement cancels
-      // it outright so brushing/scrolling over the button can never arm
-      // the recorder.
-      if (longPressTimerRef.current !== null) {
-        const start = longPressStartRef.current;
-        if (!start) return;
-        const dx = e.clientX - start.x;
-        const dy = e.clientY - start.y;
-        if (Math.hypot(dx, dy) > TOUCH_MOVE_CANCEL_PX) {
-          clearLongPressTimer();
-        }
-        return;
-      }
-
-      // Recording already started (long-press completed) — unchanged
-      // drag-up-to-lock gesture.
       const gesture = gestureRef.current;
-      if (!gesture || locked || micPhase !== "recording") return;
+      const phase = micPhaseRef.current;
+      if (!gesture || locked || (phase !== "recording" && phase !== "initializing")) return;
       const dy = gesture.startY - e.clientY; // positive = dragged up
       if (lockHintRef.current) {
-        // Ease-out (not a 1:1 linear follow): the hint travels faster
-        // at the start of the drag and settles as it nears the top —
-        // a natural deceleration, closer to how WhatsApp's own lock
-        // indicator moves than a rigid ruler-straight mapping. Scale
-        // and opacity build up alongside it, so the *whole* icon
-        // visibly grows more confident as the gesture continues
-        // instead of just sitting there until an abrupt flip.
         const progress = Math.min(1, Math.max(0, dy / LOCK_THRESHOLD_PX));
         const eased = 1 - (1 - progress) * (1 - progress);
         lockHintRef.current.style.transform = `translateY(${-(eased * LOCK_THRESHOLD_PX)}px) scale(${0.85 + eased * 0.35})`;
@@ -2264,31 +1583,21 @@ export function MessageComposer({
         setLocked(true);
       }
     },
-    [locked, micPhase, clearLongPressTimer],
+    [locked],
   );
 
-  // Touch/pen release (or the gesture getting cancelled by the platform,
-  // e.g. an incoming call) — mouse never reaches here (handled entirely on
-  // pointerdown above). Two distinct outcomes depending on where the
-  // gesture was when it ended:
-  //   - long-press still pending → just a tap/scroll, cancel the timer,
-  //     no recording was ever started.
-  //   - already recording → stop, unless locked (locking is exactly what
-  //     makes the finger-lift a no-op, same as before).
   const handleMicPointerEnd = useCallback(
     (e: React.PointerEvent<HTMLButtonElement>) => {
       if (e.pointerType === "mouse") return;
       e.preventDefault();
-      micButtonRef.current?.releasePointerCapture(e.pointerId);
+      try {
+        micButtonRef.current?.releasePointerCapture(e.pointerId);
+      } catch {}
       gestureRef.current = null;
-      if (longPressTimerRef.current !== null) {
-        clearLongPressTimer();
-        return;
-      }
       if (locked) return;
       stopRecordingGesture();
     },
-    [locked, clearLongPressTimer, stopRecordingGesture],
+    [locked, stopRecordingGesture],
   );
 
   const handleDiscardRecording = useCallback(() => {
@@ -2296,16 +1605,11 @@ export function MessageComposer({
       draftPreviewAudioRef.current?.pause();
     } catch {}
     setManagedDraftAudioUrl(null);
-    if (micPhase === "recording") {
-      // Still actively capturing (held or locked) — full cancel, mirrors
-      // the pre-existing cancel behaviour: mark cancelled so
-      // finalizeRecording's ondataavailable callback skips saving/sending
-      // entirely once the recorder actually stops.
-      cancelledRef.current = true;
+    if (micPhase === "initializing" || micPhase === "recording") {
       clearTimer();
-      setMicPhase("idle");
+      sendOnStopRef.current = false;
       setLocked(false);
-      void stopRecorder();
+      void getCaptureController().cancel("user_discarded");
       return;
     }
     if (micPhase === "paused" || micPhase === "failed") {
@@ -2322,11 +1626,20 @@ export function MessageComposer({
         }
       }
     }
-  }, [micPhase, clearTimer, stopRecorder, audioFlags.audio_outbox_v2_enabled, setManagedDraftAudioUrl]);
+  }, [
+    micPhase,
+    clearTimer,
+    getCaptureController,
+    audioFlags.audio_outbox_v2_enabled,
+    setManagedDraftAudioUrl,
+  ]);
 
   const handleSendRecording = useCallback(() => {
     if (finalizationInFlightRef.current) return;
-    audioLog("recording:send-click", { traceId: recordingTraceIdRef.current });
+    if (micPhase === "initializing" || micPhase === "sending") return;
+    audioLog("recording:send-click", {
+      traceId: captureControllerRef.current?.getActiveRecordingId() ?? pendingRecordIdRef.current,
+    });
     try {
       draftPreviewAudioRef.current?.pause();
     } catch {}
@@ -2334,7 +1647,7 @@ export function MessageComposer({
       clearTimer();
       sendOnStopRef.current = true;
       setMicPhase("sending");
-      void stopRecorder();
+      void getCaptureController().stop({ sendOnStop: true });
       return;
     }
     if (micPhase === "paused" || micPhase === "failed") {
@@ -2352,10 +1665,10 @@ export function MessageComposer({
   }, [
     micPhase,
     clearTimer,
+    getCaptureController,
     onRecordAudio,
     replyTo?.id,
     onClearReply,
-    stopRecorder,
     setManagedDraftAudioUrl,
   ]);
 
@@ -2365,31 +1678,28 @@ export function MessageComposer({
   useEffect(() => {
     if (micPhase === "recording" && recordSeconds >= MAX_RECORDING_SECONDS) {
       clearTimer();
-      setMicPhase("paused");
-      void stopRecorder();
+      void getCaptureController().stop({ sendOnStop: false });
     }
-  }, [micPhase, recordSeconds, clearTimer, stopRecorder]);
+  }, [micPhase, recordSeconds, clearTimer, getCaptureController]);
 
-  // Tear down any live recording + timer on unmount so a mid-record
-  // navigation doesn't leak the mic, and GC any staged-but-unsent
-  // image/video/document draft so it doesn't orphan in the bucket. A
-  // paused/failed voice note is deliberately NOT GC'd here — it's already
-  // durable locally and survives conversation switch / unmount.
+  // Tear down ONLY on true component unmount (empty dependency array).
+  // Re-renders or parent callback changes must NEVER cancel an active recording.
+  const unmountCleanupRef = useRef<() => void>(() => {});
+  unmountCleanupRef.current = () => {
+    clearTimer();
+    if (draftAudioUrlRef.current?.startsWith("blob:")) {
+      URL.revokeObjectURL(draftAudioUrlRef.current);
+      draftAudioUrlRef.current = null;
+    }
+    void captureControllerRef.current?.destroy();
+    removeStaged(draftRef.current?.path);
+    revokeStagedPreview(draftRef.current?.previewUrl);
+  };
   useEffect(() => {
     return () => {
-      clearTimer();
-      clearLongPressTimer();
-      cancelledRef.current = true;
-      if (draftAudioUrlRef.current?.startsWith("blob:")) {
-        URL.revokeObjectURL(draftAudioUrlRef.current);
-        draftAudioUrlRef.current = null;
-      }
-      // stop() releases the mic stream + audio context inside opus-recorder.
-      void stopRecorder();
-      removeStaged(draftRef.current?.path);
-      revokeStagedPreview(draftRef.current?.previewUrl);
+      unmountCleanupRef.current();
     };
-  }, [clearTimer, clearLongPressTimer, removeStaged, stopRecorder]);
+  }, []);
 
   // ---- Draft send / discard (image/video/document) --------------------
 
@@ -2880,6 +2190,8 @@ export function MessageComposer({
                 )}
                 {micPhase === "sending" ? (
                   <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                ) : micPhase === "initializing" ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
                 ) : micPhase === "failed" ? (
                   <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />
                 ) : (
@@ -2888,10 +2200,18 @@ export function MessageComposer({
                 <span
                   className={cn(
                     "text-sm font-medium tabular-nums",
-                    micPhase === "failed" ? "text-red-500" : "text-foreground",
+                    micPhase === "failed"
+                      ? "text-red-500"
+                      : micPhase === "initializing"
+                        ? "text-muted-foreground"
+                        : "text-foreground",
                   )}
                 >
-                  {micPhase === "failed" ? t("recordingFailed") : formatDuration(recordSeconds)}
+                  {micPhase === "failed"
+                    ? t("recordingFailed")
+                    : micPhase === "initializing"
+                      ? t("recordingInitializing")
+                      : formatDuration(recordSeconds)}
                 </span>
               </div>
 
@@ -2899,7 +2219,7 @@ export function MessageComposer({
                 size="sm"
                 canAct={!readOnly}
                 gateReason="enviar mensagens"
-                disabled={micPhase === "sending"}
+                disabled={micPhase === "sending" || micPhase === "initializing"}
                 onPointerDown={(e) => e.preventDefault()}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={handleSendRecording}
