@@ -289,7 +289,7 @@ const nextConfig = {
         ],
       },
       {
-        source: "/opus/encoderWorker.8.0.5-64badcc1a612.min.js",
+        source: "/opus/encoderWorker.8.0.5-c3a64a87b286.min.js",
         headers: [
           {
             key: "Cache-Control",

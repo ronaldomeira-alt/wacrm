@@ -259,7 +259,7 @@ function findSlashToken(
 /** Worker that encodes mic input to Ogg/Opus entirely in the browser
  *  (vendored from opus-recorder into /public). Recording client-side in a
  *  Meta-accepted format means no server ffmpeg / transcode step. */
-const OPUS_ENCODER_PATH = "/opus/encoderWorker.8.0.5-64badcc1a612.min.js";
+const OPUS_ENCODER_PATH = "/opus/encoderWorker.8.0.5-c3a64a87b286.min.js";
 
 // Vertical drag distance (px) that arms "locked" (hands-free) recording —
 // same idea as WhatsApp's own slide-up-to-lock gesture. Slightly more
