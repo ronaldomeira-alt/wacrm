@@ -60,7 +60,7 @@ describe("sendMediaMessage — payload shape", () => {
     });
   });
 
-  it("sends audio with NO caption and NO filename (Meta rejects both)", async () => {
+  it("sends audio with NO caption and NO filename, and includes voice: true for OGG/PTT voice notes", async () => {
     await sendMediaMessage({
       ...BASE,
       kind: "audio",
@@ -69,6 +69,33 @@ describe("sendMediaMessage — payload shape", () => {
     });
     expect(captured?.type).toBe("audio");
     expect(captured?.audio).toEqual({ link: BASE.link });
+
+    await sendMediaMessage({
+      ...BASE,
+      link: "https://cdn.example.com/voice.ogg",
+      kind: "audio",
+      caption: "should be dropped",
+      filename: "voice.ogg",
+    });
+    expect(captured?.audio).toEqual({
+      link: "https://cdn.example.com/voice.ogg",
+      voice: true,
+    });
+
+    await sendMediaMessage({
+      ...BASE,
+      kind: "audio",
+      voice: true,
+    });
+    expect(captured?.audio).toEqual({ link: BASE.link, voice: true });
+
+    await sendMediaMessage({
+      ...BASE,
+      link: "https://cdn.example.com/fallback.m4a",
+      kind: "audio",
+      voice: false,
+    });
+    expect(captured?.audio).toEqual({ link: "https://cdn.example.com/fallback.m4a" });
   });
 
   it("throws when no link is provided", async () => {

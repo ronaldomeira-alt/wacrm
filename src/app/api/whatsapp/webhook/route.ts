@@ -366,24 +366,58 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
+// Monotonic transition guard for `messages.status`: prevents delayed/out-of-order
+// Meta webhooks from regressing `read` -> `delivered` -> `sent`, or overwriting
+// an already `delivered`/`read` message with `failed`.
+const MESSAGE_STATUS_LADDER = ['sending', 'pending', 'sent', 'delivered', 'read'] as const
+
+function isValidMessageStatusTransition(current: string | null | undefined, incoming: string): boolean {
+  if (!current) return true
+  if (incoming === 'failed') {
+    return current === 'sending' || current === 'pending' || current === 'sent'
+  }
+  if (current === 'failed') {
+    return false
+  }
+  const ci = (MESSAGE_STATUS_LADDER as readonly string[]).indexOf(current)
+  const ii = (MESSAGE_STATUS_LADDER as readonly string[]).indexOf(incoming)
+  if (ii < 0) return false
+  if (ci < 0) return true
+  return ii > ci
+}
+
 async function handleStatusUpdate(status: {
   id: string
   status: string
   timestamp: string
   recipient_id: string
 }) {
-  // 1) Mirror onto messages (legacy behavior) — Meta's status values
-  //    already match the CHECK constraint on messages.status. No
-  //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
-  //    repeat across numbers), so this updates 0..N rows and must not
-  //    assume a single row.
-  const { error: msgErr } = await supabaseAdmin()
+  // 1) Mirror onto messages with monotonic transition ordering — `message_id`
+  //    is not unique across numbers, so query matching rows and only update
+  //    those whose current status advances forward.
+  const { data: msgRows, error: msgFetchErr } = await supabaseAdmin()
     .from('messages')
-    .update({ status: status.status })
+    .select('id, status')
     .eq('message_id', status.id)
 
-  if (msgErr) {
-    logError('webhook.status_update_failed', msgErr)
+  if (msgFetchErr) {
+    logError('webhook.status_fetch_failed', msgFetchErr)
+  } else if (msgRows && msgRows.length > 0) {
+    const typedRows = msgRows as Array<{ id: string; status: string | null }>
+    const eligibleIds = typedRows
+      .filter((row) => isValidMessageStatusTransition(row.status, status.status))
+      .map((row) => row.id)
+
+    if (eligibleIds.length > 0) {
+      const { error: msgErr } = await supabaseAdmin()
+        .from('messages')
+        .update({ status: status.status })
+        .in('id', eligibleIds)
+
+      if (msgErr) {
+        logError('webhook.status_update_failed', msgErr)
+      }
+    }
   }
 
   // Webhook fan-out for this status change happens at the END of this

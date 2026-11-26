@@ -352,6 +352,7 @@ export async function POST(request: Request) {
         success: true,
         message_id: result.messageId,
         whatsapp_message_id: result.whatsappMessageId,
+        deduplicated: Boolean(result.deduplicated),
       })
     } catch (err) {
       // The send itself failed — release the claim above so this

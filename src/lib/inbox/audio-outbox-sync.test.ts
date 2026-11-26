@@ -11,6 +11,7 @@ import {
   discardOutboxAudioJob,
   isPermanentSendError,
   processOutboxAudioJob,
+  reconcileOutboxAudioJob,
   scanAndRetryOutboxAudio,
 } from "./audio-outbox-sync";
 
@@ -306,5 +307,89 @@ describe("audio-outbox-sync worker", () => {
     await discardOutboxAudioJob("job-safe-discard");
     expect(mocks.deleteR2Media).toHaveBeenCalledWith("acct-1/audio/job-safe-discard.ogg");
     expect(await getOutboxEntry("job-safe-discard")).toBeNull();
+  });
+
+  it("reconciles awaiting_confirmation jobs read-only without blind resends", async () => {
+    // 1) Server already confirmed -> marks sent, never calls send POST
+    await persistAudioToOutbox({
+      id: "job-rec-confirmed",
+      accountId: "acct-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      arrayBuffer: makeAudioBuffer(9),
+      mimeType: "audio/ogg",
+      durationMs: 2200,
+      sendAuthorized: true,
+      initialStatus: "awaiting_confirmation",
+    });
+    const fetchMock1 = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          state: "confirmed",
+          message_id: "db-confirmed",
+          whatsapp_message_id: "wamid.confirmed",
+          status: "delivered",
+        }),
+        { status: 200 },
+      ),
+    );
+    globalThis.fetch = fetchMock1;
+    const res1 = await reconcileOutboxAudioJob("job-rec-confirmed");
+    expect(res1.reconciled).toBe(true);
+    expect(res1.job?.status).toBe("delivered");
+    expect(res1.job?.wamid).toBe("wamid.confirmed");
+    expect(fetchMock1).toHaveBeenCalledTimes(1);
+
+    // 2) Ambiguous dispatch -> blocks automatic resend and requires user confirmation
+    await persistAudioToOutbox({
+      id: "job-rec-ambiguous",
+      accountId: "acct-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      arrayBuffer: makeAudioBuffer(10),
+      mimeType: "audio/ogg",
+      durationMs: 2200,
+      sendAuthorized: true,
+      initialStatus: "awaiting_confirmation",
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ state: "ambiguous_dispatch" }), { status: 200 }),
+    );
+    const res2 = await reconcileOutboxAudioJob("job-rec-ambiguous");
+    expect(res2.reconciled).toBe(true);
+    expect(res2.job?.status).toBe("permanent_failure");
+    expect(res2.job?.requiresUserDecision).toBe(true);
+
+    // 3) safe_to_retry -> retries send automatically using existing mediaUrl
+    await persistAudioToOutbox({
+      id: "job-rec-retry",
+      accountId: "acct-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      arrayBuffer: makeAudioBuffer(11),
+      mimeType: "audio/ogg",
+      durationMs: 2200,
+      sendAuthorized: true,
+      initialStatus: "awaiting_confirmation",
+    });
+    await updateOutboxJob("job-rec-retry", {
+      mediaUrl: "acct-1/audio/job-rec-retry.ogg",
+      r2Key: "acct-1/audio/job-rec-retry.ogg",
+      storageProvider: "r2",
+    });
+    const fetchMock3 = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes("/reconcile")) {
+        return new Response(JSON.stringify({ state: "safe_to_retry" }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({ message_id: "db-retry-ok", whatsapp_message_id: "wamid.retry" }),
+        { status: 200 },
+      );
+    });
+    globalThis.fetch = fetchMock3;
+    const res3 = await reconcileOutboxAudioJob("job-rec-retry");
+    expect(res3.reconciled).toBe(true);
+    expect(res3.job?.status).toBe("sent");
+    expect(res3.job?.wamid).toBe("wamid.retry");
   });
 });

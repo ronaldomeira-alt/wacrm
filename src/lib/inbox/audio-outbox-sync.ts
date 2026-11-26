@@ -283,6 +283,13 @@ export async function processOutboxAudioJob(
     if (!entry.job.sendAuthorized) {
       return { ok: false, error: "Draft has not been authorized for sending.", job: entry.job };
     }
+    if (entry.job.requiresUserDecision) {
+      return {
+        ok: false,
+        error: "Confirmation required before resending after ambiguous connection loss.",
+        job: entry.job,
+      };
+    }
 
     if (entry.job.storageOrigin === "ram_vault") {
       await retryPersistFromRamVault(id);
@@ -350,6 +357,91 @@ export async function authorizeAndSendDraftJob(
 }
 
 /**
+ * Reconciles a job whose HTTP send ended ambiguously (`awaiting_confirmation`)
+ * via read-only `GET /api/whatsapp/send/reconcile?client_ref=...` BEFORE ever
+ * attempting a resend. Guarantees zero duplicate Meta sends.
+ */
+export async function reconcileOutboxAudioJob(
+  id: string,
+  cb?: OutboxRunCallbacks,
+): Promise<{ reconciled: boolean; job?: AudioJobRecord | null }> {
+  if (!tryAcquireAudioJobLock(id)) {
+    return { reconciled: false };
+  }
+
+  try {
+    const entry = await getOutboxEntry(id);
+    if (!entry || entry.job.status !== "awaiting_confirmation") {
+      return { reconciled: false, job: entry?.job };
+    }
+
+    const res = await fetch(
+      `/api/whatsapp/send/reconcile?client_ref=${encodeURIComponent(entry.job.clientRef)}`,
+      { method: "GET", cache: "no-store" },
+    );
+    if (!res.ok) {
+      return { reconciled: false, job: entry.job };
+    }
+    const payload = (await res.json().catch(() => ({}))) as {
+      state?: "confirmed" | "in_flight" | "ambiguous_dispatch" | "safe_to_retry";
+      message_id?: string;
+      whatsapp_message_id?: string | null;
+      status?: string;
+    };
+
+    if (payload.state === "confirmed") {
+      const updated = await updateOutboxJob(id, {
+        status: payload.status === "read" ? "read" : payload.status === "delivered" ? "delivered" : "sent",
+        messageDbId: payload.message_id,
+        wamid: payload.whatsapp_message_id ?? undefined,
+        confirmedAt: Date.now(),
+        requiresUserDecision: false,
+        lastError: undefined,
+        lastErrorCategory: undefined,
+      });
+      if (updated) cb?.onJobUpdate?.(updated);
+      return { reconciled: true, job: updated };
+    }
+
+    if (payload.state === "in_flight") {
+      return { reconciled: false, job: entry.job };
+    }
+
+    if (payload.state === "ambiguous_dispatch") {
+      // Server started calling Meta and lost acknowledgment without returning —
+      // require explicit user decision instead of risking a duplicate audio.
+      const updated = await updateOutboxJob(id, {
+        status: "permanent_failure",
+        requiresUserDecision: true,
+        lastError: "Conexão caiu durante confirmação com o WhatsApp. Toque em Reenviar se o cliente não recebeu.",
+        lastErrorCategory: "send_timeout",
+      });
+      if (updated) cb?.onJobUpdate?.(updated);
+      return { reconciled: true, job: updated };
+    }
+
+    if (payload.state === "safe_to_retry") {
+      const updated = await updateOutboxJob(id, {
+        status: "retryable_failure",
+        requiresUserDecision: false,
+        nextRetryAt: Date.now(),
+      });
+      if (updated) cb?.onJobUpdate?.(updated);
+      releaseAudioJobLock(id);
+      await processOutboxAudioJob(id, cb);
+      return { reconciled: true, job: (await getOutboxEntry(id))?.job };
+    }
+
+    return { reconciled: false, job: entry.job };
+  } catch (err) {
+    audioLogError("outbox:reconcile-failed", err, { id });
+    return { reconciled: false };
+  } finally {
+    releaseAudioJobLock(id);
+  }
+}
+
+/**
  * Discards an outbox entry safely. Never triggers remote R2 deletion when
  * the job is confirmed, sending, or awaiting confirmation.
  */
@@ -381,7 +473,8 @@ export async function discardOutboxAudioJob(id: string): Promise<void> {
 
 /**
  * Resumes eligible `queued` / `retryable_failure` jobs whose backoff has
- * elapsed. NEVER auto-sends `saved_draft` or `awaiting_confirmation`.
+ * elapsed, and reconciles `awaiting_confirmation` jobs via read-only server check.
+ * NEVER auto-sends `saved_draft` or jobs requiring explicit user decision.
  */
 export async function scanAndRetryOutboxAudio(
   scope: { accountId: string; userId?: string },
@@ -390,9 +483,16 @@ export async function scanAndRetryOutboxAudio(
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   const jobs = await listAllOutboxJobs(scope);
   const now = Date.now();
+
+  const awaiting = jobs.filter((j) => j.sendAuthorized && j.status === "awaiting_confirmation");
+  for (const job of awaiting) {
+    await reconcileOutboxAudioJob(job.id, cb);
+  }
+
   const eligible = jobs.filter(
     (j) =>
       j.sendAuthorized &&
+      !j.requiresUserDecision &&
       (j.status === "queued" ||
         (j.status === "retryable_failure" && (!j.nextRetryAt || j.nextRetryAt <= now))),
   );

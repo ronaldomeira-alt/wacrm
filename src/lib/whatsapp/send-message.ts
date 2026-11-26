@@ -175,6 +175,8 @@ export interface SendMessageResult {
   messageId: string;
   /** Meta's `wamid` for the delivered message. */
   whatsappMessageId: string;
+  /** True when returned via client_ref idempotency deduplication without re-calling Meta. */
+  deduplicated?: boolean;
 }
 
 /**
@@ -433,14 +435,23 @@ export async function sendMessageToConversation(
         .eq('client_ref', clientRef)
         .maybeSingle();
 
-      if (existing?.status === 'sent' && existing.message_id) {
+      if (
+        (existing?.status === 'sent' ||
+          existing?.status === 'delivered' ||
+          existing?.status === 'read') &&
+        existing.message_id
+      ) {
         logIdempotencyEvent({
           client_ref: clientRef,
           status: 'idempotent-hit',
           message_id: existing.id,
           action: 'returned_existing_message',
         });
-        return { messageId: existing.id, whatsappMessageId: existing.message_id };
+        return {
+          messageId: existing.id,
+          whatsappMessageId: existing.message_id,
+          deduplicated: true,
+        };
       }
 
       if (existing?.status === 'failed') {
@@ -652,6 +663,9 @@ export async function sendMessageToConversation(
       return result.messageId;
     }
     if (isMediaKind) {
+      const voice =
+        messageType === 'audio' &&
+        !/\.(mp4|m4a|aac|mp3|webm)(\?|$)/i.test(mediaUrl || resolvedMediaUrl || '');
       const result = await sendMediaMessage({
         phoneNumberId: config.phone_number_id,
         accessToken,
@@ -660,6 +674,7 @@ export async function sendMessageToConversation(
         link: resolvedMediaUrl!,
         caption: contentText || undefined,
         filename: filename || undefined,
+        voice,
         contextMessageId,
       });
       return result.messageId;
@@ -708,6 +723,19 @@ export async function sendMessageToConversation(
   let waMessageId = '';
   let workingPhone = sanitizedPhone;
   try {
+    if (claimedMessageId) {
+      // Mark pre-Meta dispatch best-effort so /api/whatsapp/send/reconcile can
+      // tell pre-dispatch crashes apart from lost-ACK Meta calls.
+      try {
+        await db
+          .from('messages')
+          .update({ meta_dispatch_started_at: new Date().toISOString() })
+          .eq('id', claimedMessageId);
+      } catch {
+        // Non-fatal on environments or test mocks lacking meta_dispatch_started_at
+      }
+    }
+
     const variants = phoneVariants(sanitizedPhone);
     let lastError: unknown = null;
 

@@ -201,6 +201,8 @@ export const RATE_LIMITS = {
   mediaPublicRedirect: { limit: 60, windowMs: 60_000 },
   /** Structured audio diagnostic telemetry + forensic log endpoints, per user. */
   audioTelemetry: { limit: 60, windowMs: 60_000 },
+  /** Read-only WhatsApp send reconciliation checks (`GET /api/whatsapp/send/reconcile`). */
+  audioReconcile: { limit: 120, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't
