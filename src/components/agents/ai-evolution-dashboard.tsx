@@ -26,6 +26,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LearningDialog } from '@/components/ai-hub/learning-dialog';
+import { fetchEvolutionLearnings } from '@/lib/ai/evolution-fetch';
 import type { AiSuggestion } from '@/types';
 
 interface LearningPayload {
@@ -108,12 +109,17 @@ const TYPE_CONFIG: Record<
   },
 };
 
+const PAGE_SIZE = 25;
+
 export function AiEvolutionDashboard() {
   const { accountRole } = useAuth();
   const canApprove = accountRole ? canEditSettings(accountRole) : false;
 
   const [subTab, setSubTab] = useState<'pending' | 'history'>('pending');
-  const [suggestions, setSuggestions] = useState<AiSuggestion[]>([]);
+  const [pendingList, setPendingList] = useState<AiSuggestion[]>([]);
+  const [historyList, setHistoryList] = useState<AiSuggestion[]>([]);
+  const [pendingVisible, setPendingVisible] = useState(PAGE_SIZE);
+  const [historyVisible, setHistoryVisible] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [editingSuggestion, setEditingSuggestion] = useState<AiSuggestion | null>(null);
@@ -121,11 +127,9 @@ export function AiEvolutionDashboard() {
   const fetchSuggestions = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/ai/suggestions?category=learning');
-      if (res.ok) {
-        const data = await res.json();
-        setSuggestions(data.suggestions || []);
-      }
+      const { pending, history } = await fetchEvolutionLearnings();
+      setPendingList(pending);
+      setHistoryList(history);
     } catch (err) {
       console.error('Failed to load evolution suggestions:', err);
     } finally {
@@ -180,8 +184,8 @@ export function AiEvolutionDashboard() {
     }
   };
 
-  const pendingList = suggestions.filter((s) => s.status === 'pending');
-  const historyList = suggestions.filter((s) => s.status !== 'pending');
+  const visiblePending = pendingList.slice(0, pendingVisible);
+  const visibleHistory = historyList.slice(0, historyVisible);
 
   return (
     <div className="space-y-6">
@@ -232,7 +236,7 @@ export function AiEvolutionDashboard() {
           </Card>
         ) : (
           <div className="grid grid-cols-1 gap-4">
-            {pendingList.map((suggestion) => {
+            {visiblePending.map((suggestion) => {
               const p = (suggestion.payload || {}) as LearningPayload;
               const typeKey = String(p.type || 'global_knowledge');
               const cfg = TYPE_CONFIG[typeKey] || TYPE_CONFIG.global_knowledge;
@@ -353,6 +357,21 @@ export function AiEvolutionDashboard() {
                 </Card>
               );
             })}
+            {pendingList.length > pendingVisible && (
+              <div className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-2.5 text-xs text-muted-foreground">
+                <span>
+                  Exibindo {visiblePending.length} de {pendingList.length} aprendizados pendentes
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPendingVisible((n) => n + PAGE_SIZE)}
+                >
+                  Carregar mais
+                </Button>
+              </div>
+            )}
           </div>
         )
       ) : (
@@ -365,7 +384,7 @@ export function AiEvolutionDashboard() {
           </Card>
         ) : (
           <div className="space-y-3">
-            {historyList.map((suggestion) => {
+            {visibleHistory.map((suggestion) => {
               const p = (suggestion.payload || {}) as LearningPayload;
               const typeKey = String(p.type || 'global_knowledge');
               const cfg = TYPE_CONFIG[typeKey] || TYPE_CONFIG.global_knowledge;
@@ -438,6 +457,21 @@ export function AiEvolutionDashboard() {
                 </div>
               );
             })}
+            {historyList.length > historyVisible && (
+              <div className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-2.5 text-xs text-muted-foreground">
+                <span>
+                  Exibindo {visibleHistory.length} de {historyList.length} registros no histórico
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setHistoryVisible((n) => n + PAGE_SIZE)}
+                >
+                  Carregar mais
+                </Button>
+              </div>
+            )}
           </div>
         )
       )}

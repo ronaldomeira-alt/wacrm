@@ -88,7 +88,7 @@ export function AiOverviewPanel({
           fetch('/api/ai/config', { cache: 'no-store' }).then((r) =>
             r.ok ? r.json() : null,
           ),
-          fetch('/api/ai/suggestions?status=pending', { cache: 'no-store' }).then((r) =>
+          fetch('/api/ai/suggestions?status=pending&limit=500', { cache: 'no-store' }).then((r) =>
             r.ok ? r.json() : null,
           ),
           canAccessInfrastructure

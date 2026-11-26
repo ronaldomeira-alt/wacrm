@@ -41,8 +41,10 @@ interface AiSummaryStatus {
 
 export function SettingsOverview({
   onSelect,
+  hideAiAgents = false,
 }: {
   onSelect: (section: SettingsSection) => void;
+  hideAiAgents?: boolean;
 }) {
   const { user, profile, accountId, accountRole, defaultCurrency, canManageMembers } =
     useAuth();
@@ -275,6 +277,9 @@ export function SettingsOverview({
       subtitle: t('notifications'),
     },
   ];
+  const visibleTiles = hideAiAgents
+    ? tiles.filter((tile) => tile.section !== 'ai-agents')
+    : tiles;
 
   return (
     <section className="animate-in fade-in-50 duration-200">
@@ -308,7 +313,7 @@ export function SettingsOverview({
 
       {/* Status tiles */}
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {tiles.map(({ section, loading, subtitle }) => {
+        {visibleTiles.map(({ section, loading, subtitle }) => {
           const meta = SECTION_META[section];
           const Icon = meta.icon;
           return (

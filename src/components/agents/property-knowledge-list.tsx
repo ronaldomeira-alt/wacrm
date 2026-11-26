@@ -177,7 +177,7 @@ export function PropertyKnowledgeList() {
           )}
         </div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3">
           {filteredProperties.map((prop) => {
             const ctx = prop.ai_context;
             const stage = ctx?.stage || 'lancamento';
@@ -194,7 +194,7 @@ export function PropertyKnowledgeList() {
                 <div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <h3 className="truncate text-base font-semibold text-foreground group-hover:text-primary transition-colors">
+                      <h3 className="line-clamp-2 text-base font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">
                         {prop.name}
                       </h3>
                       <p className="truncate text-xs text-muted-foreground mt-0.5">
@@ -202,38 +202,36 @@ export function PropertyKnowledgeList() {
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {prop.status === 'provisorio' && (
-                        <Badge
-                          variant="outline"
-                          className="text-[11px] font-normal border-amber-500/30 bg-amber-500/10 text-amber-600"
-                        >
-                          Em aprendizagem
-                        </Badge>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={isDeleting}
+                      onClick={(e) => handleDeleteProperty(e, prop)}
+                      className="h-7 w-7 shrink-0 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md"
+                      title="Excluir empreendimento"
+                    >
+                      {isDeleting ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-destructive" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
                       )}
-                      <Badge variant="outline" className="text-[11px] font-normal">
-                        {STAGE_LABELS[stage] || stage}
-                      </Badge>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        disabled={isDeleting}
-                        onClick={(e) => handleDeleteProperty(e, prop)}
-                        className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md"
-                        title="Excluir empreendimento"
-                      >
-                        {isDeleting ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-destructive" />
-                        ) : (
-                          <Trash2 className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                    </div>
+                    </Button>
                   </div>
 
-                  {/* Status Badges */}
-                  <div className="mt-4 flex flex-wrap items-center gap-1.5">
+                  {/* Stage & Status Badges */}
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    {prop.status === 'provisorio' && (
+                      <Badge
+                        variant="outline"
+                        className="text-[11px] font-normal border-amber-500/30 bg-amber-500/10 text-amber-600"
+                      >
+                        Em aprendizagem
+                      </Badge>
+                    )}
+                    <Badge variant="outline" className="text-[11px] font-normal">
+                      {STAGE_LABELS[stage] || stage}
+                    </Badge>
                     {/* Ficha Técnica / Book Status */}
                     {hasBookSummary ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">

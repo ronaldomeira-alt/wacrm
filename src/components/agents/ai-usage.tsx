@@ -628,11 +628,11 @@ export function AiUsageCard() {
         </div>
 
         {/* Filtros com rótulos em português */}
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-3 grid gap-2.5 sm:grid-cols-2 2xl:grid-cols-4">
           <Select value={preset} onValueChange={(v) => v && setPreset(v)}>
-            <SelectTrigger>
-              <SelectValue>
-                <span>{PRESET_LABELS[preset] ?? 'Período'}</span>
+            <SelectTrigger className="w-full min-w-0">
+              <SelectValue className="truncate">
+                <span className="truncate">{PRESET_LABELS[preset] ?? 'Período'}</span>
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -645,9 +645,9 @@ export function AiUsageCard() {
           </Select>
 
           <Select value={providerFilter} onValueChange={(v) => v && setProviderFilter(v)}>
-            <SelectTrigger>
-              <SelectValue>
-                <span>
+            <SelectTrigger className="w-full min-w-0">
+              <SelectValue className="truncate">
+                <span className="truncate">
                   {providerFilter === 'all'
                     ? 'Todos os provedores'
                     : PROVIDER_LABELS[providerFilter] ?? providerFilter}
@@ -664,9 +664,9 @@ export function AiUsageCard() {
           </Select>
 
           <Select value={modelFilter} onValueChange={(v) => v && setModelFilter(v)}>
-            <SelectTrigger>
-              <SelectValue>
-                <span>
+            <SelectTrigger className="w-full min-w-0">
+              <SelectValue className="truncate">
+                <span className="truncate">
                   {modelFilter === 'all' ? 'Todos os modelos' : modelFilter}
                 </span>
               </SelectValue>
@@ -682,9 +682,9 @@ export function AiUsageCard() {
           </Select>
 
           <Select value={modeFilter} onValueChange={(v) => v && setModeFilter(v)}>
-            <SelectTrigger>
-              <SelectValue>
-                <span>
+            <SelectTrigger className="w-full min-w-0">
+              <SelectValue className="truncate">
+                <span className="truncate">
                   {modeFilter === 'all'
                     ? 'Todas as funcionalidades'
                     : MODE_LABELS[modeFilter] ?? modeFilter}
