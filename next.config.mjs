@@ -289,7 +289,25 @@ const nextConfig = {
         ],
       },
       {
-        source: "/:path((?!_next/static|_next/image|api).*)",
+        source: "/opus/encoderWorker.8.0.5-64badcc1a612.min.js",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
+        source: "/opus/encoderWorker.min.js",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=3600, must-revalidate",
+          },
+        ],
+      },
+      {
+        source: "/:path((?!_next/static|_next/image|api|opus/encoderWorker).*)",
         headers: [
           {
             key: "Cache-Control",
