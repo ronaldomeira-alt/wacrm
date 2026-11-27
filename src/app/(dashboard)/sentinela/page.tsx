@@ -199,7 +199,7 @@ export default function SentinelaPage() {
       : new Date().toLocaleString('pt-BR')
 
     const lines: string[] = [
-      `Atue como Engenheiro Sênior do WACRM (C:\\Projetos\\WACRM) com acesso ao Supabase de produção (advgpexabtbvkvpqxqjl).`,
+      `Atue como Engenheiro Sênior do WACRM (C:\\Projetos\\WACRM) com acesso ao Supabase de produção (supabase.ronaldomeira.com.br — Homelab Self-Hosted).`,
       `O Sentinela do CRM gerou este diagnóstico em ${timestamp}.`,
       ``,
     ]
