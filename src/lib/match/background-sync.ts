@@ -107,7 +107,13 @@ async function runGateCycle(
   const periodicFullDue = !lastFullMs || options.nowMs - lastFullMs >= options.fullReconcileIntervalMs;
 
   if (!periodicFullDue && claim.lastFingerprint === probe.fingerprint) {
-    await commitMatchSync(db, accountId, lockToken, probe, 'skipped');
+    const committed = await commitMatchSync(db, accountId, lockToken, probe, 'skipped');
+    if (!committed) {
+      // Sem isso o lock fica preso até o TTL (900 s) e os ticks seguintes caem em
+      // sync_already_in_flight sem nenhum sinal.
+      await releaseMatchSync(db, accountId, lockToken);
+      console.warn('[match-background-sync] commit(skipped) falhou; lock liberado');
+    }
     return { checked: true, driftDetected: false, reason: 'up_to_date' };
   }
 
@@ -125,7 +131,11 @@ async function runGateCycle(
       failureBackoffUntilByAccount.delete(accountId);
     }
     if (!partial) {
-      await commitMatchSync(db, accountId, lockToken, probe, 'full');
+      const committed = await commitMatchSync(db, accountId, lockToken, probe, 'full');
+      if (!committed) {
+        await releaseMatchSync(db, accountId, lockToken);
+        console.warn('[match-background-sync] commit(full) falhou; lock liberado');
+      }
     } else if (claim.lastFingerprint) {
       await commitMatchSync(
         db,

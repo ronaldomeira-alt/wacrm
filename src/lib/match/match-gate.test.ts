@@ -35,6 +35,7 @@ function createRpcDb(options: {
   lastFullSyncAt?: string | null;
   acquired?: boolean;
   reconcilePartial?: boolean;
+  commitResult?: boolean;
 }) {
   const calls: RpcCall[] = [];
   const db = {
@@ -77,6 +78,9 @@ function createRpcDb(options: {
           },
           error: null,
         };
+      }
+      if (fn === 'commit_match_sync') {
+        return { data: options.commitResult ?? true, error: null };
       }
       return { data: true, error: null };
     },
@@ -193,6 +197,18 @@ describe('gate persistente (DEM-004)', () => {
 
     delete process.env.MATCH_SYNC_GATE;
     resetBackgroundSyncState('acct-1');
+  });
+
+  it('commit que falha libera o lock em vez de deixa-lo preso por 900 s', async () => {
+    const { db, calls } = createRpcDb({
+      fingerprint: 'fp-1',
+      lastFingerprint: 'fp-1',
+      commitResult: false,
+    });
+
+    await runMatchInventorySyncIfChanged(db, 'acct-1');
+
+    expect(calls.map((c) => c.fn)).toContain('release_match_sync');
   });
 
   it('roda o full periodico mesmo sem mudanca de fingerprint', async () => {

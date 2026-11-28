@@ -37,6 +37,14 @@ export interface MatchSyncClaim {
 
 export type MatchSyncMode = 'skipped' | 'full' | 'incremental';
 
+const warnedFunctions = new Set<string>();
+
+function warnOnce(fn: string, detail: unknown): void {
+  if (warnedFunctions.has(fn)) return;
+  warnedFunctions.add(fn);
+  console.warn(`[match-sync-state] falha em ${fn}; usando caminho legado:`, detail);
+}
+
 function asNumber(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -68,10 +76,16 @@ export async function probeMatchSync(
       p_operational_account_id: operationalAccountId,
       p_source_account_id: sourceAccountId,
     });
-    if (error || !data) return null;
+    if (error || !data) {
+      warnOnce('probe_match_sync', error || 'sem dados');
+      return null;
+    }
 
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-    if (!row || typeof row.fingerprint !== 'string') return null;
+    if (!row || typeof row.fingerprint !== 'string') {
+      warnOnce('probe_match_sync', 'fingerprint ausente');
+      return null;
+    }
 
     return {
       inventoryWatermark: asString(row.inventoryWatermark),
@@ -98,10 +112,16 @@ export async function claimMatchSync(
       p_operational_account_id: operationalAccountId,
       p_lock_seconds: lockSeconds,
     });
-    if (error) return null;
+    if (error) {
+      warnOnce('claim_match_sync', error);
+      return null;
+    }
 
     const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-    if (!row) return null;
+    if (!row) {
+      warnOnce('claim_match_sync', 'sem linha de retorno');
+      return null;
+    }
 
     return {
       acquired: Boolean(row.acquired),
@@ -133,8 +153,10 @@ export async function commitMatchSync(
       p_tombstone_count: probe.tombstoneCount,
       p_deleted_match_count: probe.deletedMatchCount,
     });
+    if (error) warnOnce('commit_match_sync', error);
     return !error && data === true;
-  } catch {
+  } catch (err) {
+    warnOnce('commit_match_sync', err);
     return false;
   }
 }
@@ -150,8 +172,10 @@ export async function releaseMatchSync(
       p_operational_account_id: operationalAccountId,
       p_lock_token: lockToken,
     });
+    if (error) warnOnce('release_match_sync', error);
     return !error && data === true;
-  } catch {
+  } catch (err) {
+    warnOnce('release_match_sync', err);
     return false;
   }
 }

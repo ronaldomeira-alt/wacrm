@@ -34,6 +34,10 @@ create table if not exists public.match_sync_state (
 comment on table public.match_sync_state is
   'DEM-004: impressão digital e lock do ciclo de Match do WACRM. Escrita só por service_role.';
 
+-- Idempotência entre revisões: a v2 não tinha esta coluna.
+alter table public.match_sync_state
+  add column if not exists last_full_sync_at timestamptz;
+
 alter table public.match_sync_state enable row level security;
 revoke all on public.match_sync_state from anon, authenticated;
 grant select, insert, update, delete on public.match_sync_state to service_role;
