@@ -89,6 +89,7 @@ describe('gate persistente (DEM-004)', () => {
     vi.clearAllMocks();
     resetBackgroundSyncState();
     delete process.env.MATCH_SYNC_STATE;
+    delete process.env.MATCH_SYNC_GATE;
     delete process.env.MATCH_CANONICAL_ACCOUNT_ID;
   });
 
@@ -147,6 +148,29 @@ describe('gate persistente (DEM-004)', () => {
     expect(commit?.args.p_fingerprint).toBe('fp-1');
   });
 
+  it('falha continua entra em backoff e nao repete a leitura integral a cada tick', async () => {
+    reconcileMock.mockResolvedValue({
+      executed: true,
+      partial: true,
+      upsertedProjections: 0,
+      deactivatedOrphans: 0,
+      recalculatedProperties: 0,
+      archivedContactMatchesCleaned: 0,
+    });
+    const { db } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: null });
+
+    const first = await runMatchInventorySyncIfChanged(db, 'acct-1');
+    const second = await runMatchInventorySyncIfChanged(db, 'acct-1');
+    const third = await runMatchInventorySyncIfChanged(db, 'acct-1');
+
+    expect(first.checked).toBe(true);
+    expect(second.reason).toBe('reconcile_failed_backoff');
+    expect(third.reason).toBe('reconcile_failed_backoff');
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+
+    resetBackgroundSyncState('acct-1');
+  });
+
   it('roda o full periodico mesmo sem mudanca de fingerprint', async () => {
     const old = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
     const { db } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: 'fp-1', lastFullSyncAt: old });
@@ -157,7 +181,16 @@ describe('gate persistente (DEM-004)', () => {
     expect(result.reason).toBe('periodic_full_verification');
   });
 
-  it('GATE=off volta ao caminho legado', async () => {
+  it('MATCH_SYNC_GATE=off volta ao caminho legado', async () => {
+    process.env.MATCH_SYNC_GATE = 'off';
+    const { db, calls } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: 'fp-1' });
+
+    await runMatchInventorySyncIfChanged(db, 'acct-1');
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('MATCH_SYNC_STATE=off (nome legado) tambem desliga', async () => {
     process.env.MATCH_SYNC_STATE = 'off';
     const { db, calls } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: 'fp-1' });
 

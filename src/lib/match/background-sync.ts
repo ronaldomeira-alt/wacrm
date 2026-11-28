@@ -26,11 +26,18 @@ const lastObservedInventoryByAccount = new Map<
   { count: number; latestUpdatedAt: number; lastFullReconcileAt: number }
 >();
 
+// Freio de falha contínua: se a reconciliação falhar (ou voltar parcial), não
+// repete a leitura integral a cada tick indefinidamente.
+const failureBackoffUntilByAccount = new Map<string, number>();
+const FAILURE_BACKOFF_MS = 15 * 60 * 1000;
+
 export function resetBackgroundSyncState(accountId?: string): void {
   if (accountId) {
     lastObservedInventoryByAccount.delete(accountId);
+    failureBackoffUntilByAccount.delete(accountId);
   } else {
     lastObservedInventoryByAccount.clear();
+    failureBackoffUntilByAccount.clear();
     cachedOperationalAccountId = null;
   }
 }
@@ -112,6 +119,11 @@ async function runGateCycle(
     });
 
     const partial = Boolean(reconcile.partial);
+    if (partial) {
+      failureBackoffUntilByAccount.set(accountId, Date.now() + FAILURE_BACKOFF_MS);
+    } else {
+      failureBackoffUntilByAccount.delete(accountId);
+    }
     if (!partial) {
       await commitMatchSync(db, accountId, lockToken, probe, 'full');
     } else if (claim.lastFingerprint) {
@@ -173,6 +185,10 @@ export async function runMatchInventorySyncIfChanged(
     }
 
     const nowMs = Date.now();
+    if (!options?.force && (failureBackoffUntilByAccount.get(targetAccountId) ?? 0) > nowMs) {
+      return { checked: false, driftDetected: false, reason: 'reconcile_failed_backoff' };
+    }
+
     const fullReconcileIntervalMs = Math.max(
       60_000,
       options?.fullReconcileIntervalMs ??
@@ -318,6 +334,10 @@ export async function runMatchInventorySyncIfChanged(
     };
   } catch (err) {
     console.warn('[match-background-sync] Falha no check automático:', err);
+    failureBackoffUntilByAccount.set(
+      accountId || cachedOperationalAccountId || 'default',
+      Date.now() + FAILURE_BACKOFF_MS
+    );
     return { checked: false, driftDetected: false, reason: 'error' };
   } finally {
     syncInFlight = false;

@@ -51,8 +51,9 @@ export function resolveSourceInventoryAccountId(): string {
 }
 
 export function isMatchSyncStateEnabled(): boolean {
-  if (process.env.MATCH_SYNC_STATE === 'off') return false;
-  return true;
+  // Dois nomes aceitos: MATCH_SYNC_GATE (documentado) e MATCH_SYNC_STATE (legado).
+  const value = process.env.MATCH_SYNC_GATE ?? process.env.MATCH_SYNC_STATE;
+  return value !== 'off';
 }
 
 /** Uma única chamada ~300 B; retorna null se a função ainda não existir no banco. */
