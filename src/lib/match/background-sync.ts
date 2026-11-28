@@ -137,13 +137,17 @@ async function runGateCycle(
         console.warn('[match-background-sync] commit(full) falhou; lock liberado');
       }
     } else if (claim.lastFingerprint) {
-      await commitMatchSync(
+      const committed = await commitMatchSync(
         db,
         accountId,
         lockToken,
         { ...probe, fingerprint: claim.lastFingerprint },
         'incremental'
       );
+      if (!committed) {
+        await releaseMatchSync(db, accountId, lockToken);
+        console.warn('[match-background-sync] commit(incremental) falhou; lock liberado');
+      }
     } else {
       await releaseMatchSync(db, accountId, lockToken);
     }
@@ -188,11 +192,13 @@ export async function runMatchInventorySyncIfChanged(
   }
 
   syncInFlight = true;
+  let syncAccountKey: string | null = null;
   try {
     const targetAccountId = accountId || (await resolveOperationalMatchAccountId(db));
     if (!targetAccountId) {
       return { checked: false, driftDetected: false, reason: 'account_not_resolved' };
     }
+    syncAccountKey = targetAccountId;
 
     const nowMs = Date.now();
     // O kill switch tem precedência: com o gate desligado, o caminho legado roda
@@ -351,7 +357,7 @@ export async function runMatchInventorySyncIfChanged(
   } catch (err) {
     console.warn('[match-background-sync] Falha no check automático:', err);
     failureBackoffUntilByAccount.set(
-      accountId || cachedOperationalAccountId || 'default',
+      syncAccountKey || accountId || 'default',
       Date.now() + FAILURE_BACKOFF_MS
     );
     return { checked: false, driftDetected: false, reason: 'error' };

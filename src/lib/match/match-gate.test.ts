@@ -36,6 +36,7 @@ function createRpcDb(options: {
   acquired?: boolean;
   reconcilePartial?: boolean;
   commitResult?: boolean;
+  probeNull?: boolean;
 }) {
   const calls: RpcCall[] = [];
   const db = {
@@ -54,6 +55,7 @@ function createRpcDb(options: {
     rpc: async (fn: string, args: Record<string, unknown>) => {
       calls.push({ fn, args });
       if (fn === 'probe_match_sync') {
+        if (options.probeNull) return { data: null, error: null };
         return {
           data: {
             inventoryWatermark: '2026-11-26T20:36:21Z',
@@ -209,6 +211,32 @@ describe('gate persistente (DEM-004)', () => {
     await runMatchInventorySyncIfChanged(db, 'acct-1');
 
     expect(calls.map((c) => c.fn)).toContain('release_match_sync');
+  });
+
+  it('backoff usa a conta resolvida pelo env quando accountId vem nulo', async () => {
+    process.env.MATCH_CANONICAL_ACCOUNT_ID = 'acct-env';
+    reconcileMock.mockRejectedValueOnce(new Error('boom'));
+    const { db } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: null });
+
+    const first = await runMatchInventorySyncIfChanged(db, null);
+    const second = await runMatchInventorySyncIfChanged(db, null);
+
+    expect(first.reason).toBe('error');
+    expect(second.reason).toBe('reconcile_failed_backoff');
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+
+    delete process.env.MATCH_CANONICAL_ACCOUNT_ID;
+    resetBackgroundSyncState();
+  });
+
+  it('probe nulo libera o lock e segue pelo caminho legado', async () => {
+    const { db, calls } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: null, probeNull: true });
+
+    const out = await runMatchInventorySyncIfChanged(db, 'acct-1');
+
+    expect(calls.map((c) => c.fn)).toContain('release_match_sync');
+    expect(calls.map((c) => c.fn)).not.toContain('commit_match_sync');
+    expect(out.checked).toBe(true);
   });
 
   it('roda o full periodico mesmo sem mudanca de fingerprint', async () => {
