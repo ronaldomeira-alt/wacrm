@@ -171,6 +171,30 @@ describe('gate persistente (DEM-004)', () => {
     resetBackgroundSyncState('acct-1');
   });
 
+  it('GATE=off ignora backoff remanescente e roda o caminho legado', async () => {
+    reconcileMock.mockResolvedValueOnce({
+      executed: true,
+      partial: true,
+      upsertedProjections: 0,
+      deactivatedOrphans: 0,
+      recalculatedProperties: 0,
+      archivedContactMatchesCleaned: 0,
+    });
+    const { db, calls } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: null });
+
+    await runMatchInventorySyncIfChanged(db, 'acct-1');
+    process.env.MATCH_SYNC_GATE = 'off';
+    calls.length = 0;
+
+    const legado = await runMatchInventorySyncIfChanged(db, 'acct-1');
+
+    expect(legado.reason).not.toBe('reconcile_failed_backoff');
+    expect(calls).toHaveLength(0);
+
+    delete process.env.MATCH_SYNC_GATE;
+    resetBackgroundSyncState('acct-1');
+  });
+
   it('roda o full periodico mesmo sem mudanca de fingerprint', async () => {
     const old = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
     const { db } = createRpcDb({ fingerprint: 'fp-1', lastFingerprint: 'fp-1', lastFullSyncAt: old });

@@ -185,7 +185,13 @@ export async function runMatchInventorySyncIfChanged(
     }
 
     const nowMs = Date.now();
-    if (!options?.force && (failureBackoffUntilByAccount.get(targetAccountId) ?? 0) > nowMs) {
+    // O kill switch tem precedência: com o gate desligado, o caminho legado roda
+    // como antes e o backoff não se aplica.
+    if (
+      isMatchSyncStateEnabled() &&
+      !options?.force &&
+      (failureBackoffUntilByAccount.get(targetAccountId) ?? 0) > nowMs
+    ) {
       return { checked: false, driftDetected: false, reason: 'reconcile_failed_backoff' };
     }
 
