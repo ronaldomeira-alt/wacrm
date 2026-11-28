@@ -214,6 +214,8 @@ export function inventoryRowToProjectionRow(
 
 export interface ReconcileInventoryResult {
   executed: boolean;
+  /** true quando o ciclo não completou (erro de leitura ou exceção) e o gate deve repetir. */
+  partial?: boolean;
   upsertedProjections: number;
   deactivatedOrphans: number;
   recalculatedProperties: number;
@@ -309,6 +311,7 @@ export async function reconcileInventoryWithProjections(
     if (typeof invTable?.select !== 'function') {
       return {
         executed: true,
+        partial: true,
         upsertedProjections,
         deactivatedOrphans,
         recalculatedProperties,
@@ -329,6 +332,7 @@ export async function reconcileInventoryWithProjections(
     if (invErr || projErr || !invRows || invRows.length === 0) {
       return {
         executed: true,
+        partial: true,
         upsertedProjections,
         deactivatedOrphans,
         recalculatedProperties,
@@ -465,6 +469,14 @@ export async function reconcileInventoryWithProjections(
     }
   } catch (err) {
     console.warn('[reconcileInventory] Erro durante reconciliação:', err);
+    return {
+      executed: true,
+      partial: true,
+      upsertedProjections,
+      deactivatedOrphans,
+      recalculatedProperties,
+      archivedContactMatchesCleaned,
+    };
   }
 
   return {

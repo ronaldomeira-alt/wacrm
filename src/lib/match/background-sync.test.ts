@@ -145,7 +145,7 @@ describe('runMatchInventorySyncIfChanged (P0 egress loop fix)', () => {
     const afterUpdate = await runMatchInventorySyncIfChanged(db, 'acct-1');
 
     expect(afterUpdate.driftDetected).toBe(true);
-    expect(afterUpdate.reason).toBe('inventory_newer_than_projection');
+    expect(afterUpdate.reason).toBe('inventory_watermark_changed');
     expect(reconcileMock).toHaveBeenCalledTimes(1);
   });
 
@@ -160,6 +160,33 @@ describe('runMatchInventorySyncIfChanged (P0 egress loop fix)', () => {
     const result = await runMatchInventorySyncIfChanged(db, 'acct-1');
     expect(result.driftDetected).toBe(true);
     expect(result.reason).toBe('inventory_missing_projections');
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('NAO entra em loop quando o inventario tem updated_at maior que as projecoes (caso de producao)', async () => {
+    // Estado real em 28/11: max(inventory_properties)=26/11 20:36:21
+    //                      max(property_match_projections)=26/11 20:35:11
+    // A v2 tratava isso como drift permanente e lia 13,2 MB em todo tick.
+    const state = {
+      invLatest: '2026-11-26T20:36:21.000Z',
+      projLatest: '2026-11-26T20:35:11.000Z',
+      invCount: 660,
+      projCount: 662,
+    };
+    const db = createMockDb(state);
+
+    const coldStart = await runMatchInventorySyncIfChanged(db, 'acct-1');
+    // Primeiro tick após restart: uma reconciliacao de bootstrap e só.
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+    expect(coldStart.checked).toBe(true);
+
+    const second = await runMatchInventorySyncIfChanged(db, 'acct-1');
+    const third = await runMatchInventorySyncIfChanged(db, 'acct-1');
+
+    expect(second.reason).toBe('up_to_date');
+    expect(third.reason).toBe('up_to_date');
+    expect(second.driftDetected).toBe(false);
+    expect(third.driftDetected).toBe(false);
     expect(reconcileMock).toHaveBeenCalledTimes(1);
   });
 
